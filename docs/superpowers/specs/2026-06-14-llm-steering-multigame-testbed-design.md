@@ -13,9 +13,10 @@ steering vectors and prompt injections change agent behavior. Steering must work
 different strategic settings — pure numeric games and turn-based
 negotiation/deduction/economic games.
 
-Steering vectors themselves are derived later and outside this project's first
-version — the testbed must *apply* them and leave a clean extension point, not
-compute them.
+The steering *application* mechanism (prompt injection and activation-vector
+addition via forward hooks) is fully implemented and tested in this version. Only
+the offline *derivation* of meaningful vectors is out of scope and done later; the
+apply-path is verified now with synthetic vectors.
 
 A hard secondary requirement is **faithful play**: agents must comprehend and
 play the games competently so behavioral changes can be attributed to steering
@@ -40,10 +41,12 @@ parsing with error feedback.
 - Turn model: **turn-based** (env names the player whose turn it is)
 
 ### Cross-cutting (both families)
-- `Policy` abstraction wrapping a vLLM-served model
-- Steering interface: no-op + prompt-injection implementations; activation
-  steering present as a documented, stubbed extension point — applied uniformly
-  regardless of game
+- `Policy` abstraction with two backends: in-process HuggingFace transformers
+  (steering-capable) and a vLLM client (fast, no-steering baselines)
+- Steering interface fully implemented: no-op, prompt-injection, **and
+  activation steering** (load a vector, add it to the residual stream at a chosen
+  layer with a coefficient via forward hooks) — applied uniformly regardless of
+  game. Only the offline *derivation* of meaningful vectors is out of scope.
 - Sequential per-step agent execution (config-selectable; only sequential
   implemented)
 - Full-trace logging (prompt + completion + action + reward per agent per turn)
@@ -51,8 +54,8 @@ parsing with error feedback.
 
 ### Out of scope (first version)
 - **MeltingPot / any pixel-based games** (removed from scope)
-- Computing/deriving steering vectors (done offline, later)
-- Activation-steering *implementation* inside vLLM (interface only)
+- Computing/deriving *meaningful* steering vectors (done offline, later); the
+  application mechanism IS implemented and tested with synthetic vectors
 - Concurrent/async agent execution (interface defined, not implemented)
 - TextArena 1- and 2-player games (only 3+ player included; trivially added later)
 - Additional native symbolic games beyond beauty contest and GBS
@@ -179,13 +182,22 @@ class Policy(Protocol):
     def act(self, system_prompt: str, user_prompt: str,
             agent_id: str, steering: SteeringSpec | None) -> str   # raw completion
 ```
-- First implementation: `VLLMPolicy` → local vLLM server running
-  `Qwen2.5-3B-Instruct` (model id from config).
-- **Serving:** vLLM with **custom forward hooks** on transformer layers so
-  steering vectors can be injected (custom request param / per-agent
-  registration), keeping vLLM throughput and an OpenAI-compatible surface for the
-  prompt-injection path. Hook machinery is built; activation-vector application is
-  a v1 stub (see 5.5).
+Two interchangeable backends, selected by config:
+
+- **`TransformersPolicy`** (steering-capable, default for steering runs) — loads
+  `Qwen2.5-3B-Instruct` in-process via HuggingFace `transformers`. Registers
+  PyTorch **forward hooks** on the decoder layer named in a `SteeringSpec` and
+  adds `coefficient * vector` to that layer's residual-stream output during
+  generation. This is the standard, robust way to do activation steering (cf.
+  `repeng` / `steering-vectors`). Slower than vLLM but correct and easy to verify;
+  fine for small models and sequential play.
+- **`VLLMPolicy`** (fast, no-steering baselines) — OpenAI-compatible client to a
+  local vLLM server. Used for prompt-injection and no-op runs where activation
+  steering is not needed and throughput matters.
+
+The two backends are behind the same `Policy.act` interface; `agents.backend`
+in config picks one. Activation steering requires `TransformersPolicy`; selecting
+`VLLMPolicy` with an `ActivationSteering` spec is a config error caught at startup.
 
 ### 5.5 SteeringMethod — interface + stubs (uniform across all games)
 ```python
@@ -196,9 +208,14 @@ class SteeringMethod(Protocol):
 ```
 - `NoOpSteering` — identity; baseline for faithful-play validation.
 - `PromptInjectionSteering` — mutates system/user prompt per agent.
-- `ActivationSteering` — **stub** in v1: interface + vLLM hook-registration path
-  exist; loading precomputed vectors (`.pt`/`.npy`) and the hook math are
-  documented extension points, filled once vectors are derived offline.
+- `ActivationSteering` — **fully implemented**. A `SteeringSpec` carries
+  `{layer, vector_path, coefficient}`. The method loads the vector (`.pt`/`.npy`),
+  and `TransformersPolicy` registers a forward hook on the named layer that adds
+  `coefficient * vector` to the residual stream for that agent's generation, then
+  removes the hook afterward (so per-agent specs don't leak across agents). The
+  only deferred piece is *obtaining meaningful* vectors (offline contrastive
+  derivation); the apply-path is real and verified with synthetic vectors (see
+  Testing).
 - Steering is **per-agent** and **game-agnostic**: any agent in any game can carry
   a `SteeringSpec`, enabling steered-vs-unsteered comparisons within one game and
   across games.
@@ -256,13 +273,15 @@ MA_Environments/
 │   │   ├── symbolic/ (beauty_contest.py, gbs.py)
 │   │   └── textarena.py               # near pass-through parser
 │   ├── policy/
-│   │   ├── base.py
-│   │   └── vllm_policy.py
+│   │   ├── base.py                    # Policy protocol
+│   │   ├── transformers_policy.py     # in-process HF model + steering hook integration
+│   │   └── vllm_policy.py             # fast OpenAI-compatible client (no steering)
 │   ├── steering/
 │   │   ├── base.py                    # SteeringMethod + SteeringSpec
 │   │   ├── noop.py
 │   │   ├── prompt_injection.py
-│   │   └── activation.py              # stub + documented extension point
+│   │   ├── activation.py              # implemented: vector load + hook fn factory
+│   │   └── vectors/                   # precomputed vectors dropped here (gitignored)
 │   ├── registry.py                    # game_id → (adapter, renderer, parser)
 │   └── logging/
 │       └── episode_logger.py
@@ -316,8 +335,14 @@ turn-based games (TextArena) yield one. The flow above is identical either way.
 - **Integration — full loop with stub Policy** (returns canned valid actions per
   family): run a few turns end-to-end per family; assert logs written, rewards
   flow, no crashes. Validates the harness with no GPU.
+- **Steering — apply-path verification (GPU):** with `TransformersPolicy` and a
+  **synthetic** vector, assert (a) the forward hook fires at the configured layer,
+  (b) hidden states / logits differ from the no-op run, (c) a large coefficient
+  measurably shifts outputs, and (d) the hook is removed after generation so an
+  unsteered agent in the same episode is unaffected. This proves the mechanism
+  before any meaningful vector exists.
 - **Manual/GPU smoke:** one short episode per game with Qwen2.5-3B to confirm
-  faithful play before steering work begins.
+  faithful play before steering experiments begin.
 
 ## 10. Configuration (example)
 
@@ -333,9 +358,9 @@ episodes: 1
 max_steps: 1000
 
 model:
-  backend: vllm
+  backend: transformers       # transformers (steering-capable) | vllm (fast, no steering)
   model_id: Qwen/Qwen2.5-3B-Instruct
-  endpoint: http://localhost:8000
+  endpoint: http://localhost:8000   # used only by vllm backend
   temperature: 0.7
 
 agents:
@@ -347,7 +372,11 @@ steering:
   default: noop               # noop | prompt_injection | activation
   per_agent:
     player_0: noop
-    # player_1: { method: activation, layer: 14, vector: vectors/coop.pt }  # later
+    player_1:                 # activation steering is implemented; needs transformers backend
+      method: activation
+      layer: model.layers.14
+      vector: testbed/steering/vectors/coop.pt
+      coefficient: 8.0
 
 logging:
   dir: logs/
@@ -365,8 +394,8 @@ logging:
 | Turn model | Generalized `pending()`/`submit()` adapter | One orchestrator serves simultaneous and turn-based games |
 | Symbolic games | Implemented directly | State is tiny; renderer/parser are a few lines |
 | TextArena games | Single adapter, all multiplayer games via `env_id` | Text-native; framework supplies the language interface |
-| Serving | vLLM + custom forward hooks | Fast + OpenAI-compatible for prompt injection; hooks enable activation steering |
-| Steering in v1 | Interface + noop/prompt-injection; activation stubbed | Vectors derived later, offline |
+| Serving | Two backends: transformers in-process (steering) + vLLM client (fast baselines) | Robust activation steering via HF forward hooks; vLLM kept for throughput on no-steering runs |
+| Steering in v1 | noop + prompt-injection + **activation, all implemented** | Apply-path is real and tested with synthetic vectors; only meaningful-vector derivation is deferred |
 | First model | Qwen2.5-3B-Instruct (config-driven) | Small/fast for iteration; swappable |
 | Concurrency | Config option; sequential implemented | Debuggable first; async path left open |
 | Logging | Full traces, no activations | Auditability without prohibitive storage |
@@ -374,8 +403,13 @@ logging:
 
 ## 12. Open Questions / Future Work
 
-- Activation-steering implementation: exact vLLM hook layer API, vector format,
-  per-token vs per-sequence application — deferred until vectors exist.
+- Offline derivation of *meaningful* steering vectors (contrastive activation
+  pairs, etc.) — the only deferred part of the steering work; the apply-path is
+  implemented now.
+- Steering application detail to settle during implementation: per-token vs
+  per-sequence addition, and which layer(s) work best for Qwen2.5-3B — the
+  interface supports a configurable layer + coefficient so this is a tuning, not
+  redesign, question.
 - Async concurrency executor for high-agent-count simultaneous games.
 - Derived per-game behavioral metrics (cooperation rate, beauty-contest
   convergence toward 0) beyond raw reward — easy to add on full traces.
