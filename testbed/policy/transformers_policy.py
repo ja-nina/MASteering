@@ -46,8 +46,10 @@ class TransformersPolicy:
         self.max_new_tokens = max_new_tokens
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        # GTX 16xx / Turing cards don't support bfloat16; use float16 on CUDA
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype="auto").to(self.device)
+            model_id, torch_dtype=dtype).to(self.device)
         self.model.eval()
         # the steering method (ActivationSteering) used to load vectors by agent
         self.steering = steering
