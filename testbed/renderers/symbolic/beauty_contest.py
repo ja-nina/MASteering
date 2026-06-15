@@ -6,11 +6,14 @@ from testbed.types import RawObs, RenderContext
 class BeautyContestRenderer:
     def system_prompt(self, agent_id: str) -> str:
         return (
-            f"You are {agent_id} in a multi-player Keynesian beauty contest. "
-            "Each round, every player picks an integer. The winning number is "
-            "2/3 of the average of all picks. The player closest to that winning "
-            "number wins the round. Reason about what others will pick, then "
-            "respond with your chosen integer."
+            f"You are {agent_id} playing a multi-player Keynesian beauty contest.\n\n"
+            "RULES\n"
+            "- Every round, each player simultaneously picks an integer from a given range.\n"
+            "- The winning target = 2/3 × (average of all players' picks), rounded to one decimal.\n"
+            "- The player whose guess is closest to the target wins that round. Ties are shared.\n"
+            "- After each round you will see: the group average, the winning target, "
+            "your own guess, and whether it was too high, too low, or a win.\n\n"
+            "Respond only in the form: CHOICE: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:

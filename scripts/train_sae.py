@@ -10,9 +10,9 @@ Usage
 -----
 python scripts/train_sae.py \\
     --activations activations/base_beauty_contest_model_layers_18.npy \\
-    --d-sae 4096 \\
+    --d-sae 16384 \\
     --k 32 \\
-    --output sae/beauty_contest_l18_4096k32.pt
+    --output sae/beauty_contest_l18_16384k32.pt
 """
 from __future__ import annotations
 
@@ -106,11 +106,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--activations", required=True,
                     help="base_*.npy file from collect_activations.py")
-    ap.add_argument("--d-sae", type=int, default=4096,
-                    help="SAE dictionary size (default: 4096)")
+    ap.add_argument("--d-sae", type=int, default=16384,
+                    help="SAE dictionary size; 8x d_model is a reasonable minimum (default: 16384)")
     ap.add_argument("--k", type=int, default=32,
                     help="TopK sparsity — active features per sample (default: 32)")
-    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--output", default=None)

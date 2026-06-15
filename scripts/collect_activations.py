@@ -141,7 +141,7 @@ def main():
                     choices=["beauty_contest", "gbs"])
     ap.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
     ap.add_argument("--layer", default="model.layers.18")
-    ap.add_argument("--num-episodes", type=int, default=200)
+    ap.add_argument("--num-episodes", type=int, default=500)
     ap.add_argument("--max-rounds", type=int, default=4)
     ap.add_argument("--num-players", type=int, default=4)
     ap.add_argument("--output-dir", default="activations")
