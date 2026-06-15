@@ -233,7 +233,7 @@ def main():
         # stream to memmap
         for h in (h_base_all, h_tom_all):
             t = h.shape[0]
-            combined_mm[row:row + t] = h.cpu().numpy()
+            combined_mm[row:row + t] = (h.cpu() if h.is_cuda else h).numpy()
             row += t
 
         base_last_list.append(h_base_all[-1].cpu())
