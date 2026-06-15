@@ -196,7 +196,7 @@ def main():
         args.output = f"{sae_dir}/{stem}_d{args.d_sae}_k{args.k}.pt"
 
     print(f"Loading activations from {args.activations} ...")
-    acts = np.load(args.activations)
+    acts = np.load(args.activations, mmap_mode="r")   # memory-mapped: reads from disk per batch
     print(f"  shape: {acts.shape}  dtype: {acts.dtype}")
 
     mean = acts.mean(axis=0)
