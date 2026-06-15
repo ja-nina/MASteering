@@ -203,25 +203,29 @@ def main():
     layer_module = _resolve_submodule(model, args.layer)
     print(f"Hooked: {args.layer}")
 
-    # ── 3. extract activations (stream to disk to avoid OOM) ────────────────
+    # ── 3. count tokens first so memmap is allocated at the exact right size ─
     tom_suffix = TOM_SUFFIX_BY_GAME[args.game]
+    d_model    = model.config.hidden_size
+
+    print("Counting tokens (no GPU)...", flush=True)
+    total_tokens = 0
+    for system, user in all_prompts:
+        for text in (user, user + tom_suffix):
+            msgs = [{"role": "system", "content": system},
+                    {"role": "user",   "content": text}]
+            ids = tokenizer.apply_chat_template(
+                msgs, tokenize=True, add_generation_prompt=True)
+            total_tokens += len(ids)
+    print(f"  total tokens: {total_tokens}  "
+          f"(~{total_tokens * d_model * 4 / 1e9:.1f} GB on disk)", flush=True)
+
+    # ── 4. allocate exact-size memmap — no rewrite needed ───────────────────
+    combined_mm = np.lib.format.open_memmap(
+        out_combined, mode="w+", dtype="float32",
+        shape=(total_tokens, d_model))
 
     base_last_list = []
     tom_last_list  = []
-
-    # open memmap files for all-token activations — written row by row so
-    # we never hold more than one prompt's activations in RAM at once
-    sample_base = _extract_all_tokens(model, tokenizer,
-                                      all_prompts[0][0], all_prompts[0][1],
-                                      layer_module, device)
-    d_model = sample_base.shape[1]
-
-    # rough upper bound on total tokens (seq_len varies; 300 is conservative)
-    max_tokens = len(all_prompts) * 300 * 2   # ×2 for base + ToM
-
-    combined_mm = np.lib.format.open_memmap(
-        out_combined, mode="w+", dtype="float32",
-        shape=(max_tokens, d_model))
     row = 0
 
     for i, (system, user) in enumerate(all_prompts):
@@ -230,7 +234,6 @@ def main():
         h_tom_all  = _extract_all_tokens(model, tokenizer, system,
                                          user + tom_suffix, layer_module, device)
 
-        # stream to memmap
         for h in (h_base_all, h_tom_all):
             t = h.shape[0]
             combined_mm[row:row + t] = (h.cpu() if h.is_cuda else h).numpy()
@@ -241,24 +244,19 @@ def main():
 
         if (i + 1) % 50 == 0:
             print(f"  {i + 1}/{len(all_prompts)} prompts processed  "
-                  f"({row} activation rows written)", flush=True)
+                  f"({row}/{total_tokens} rows)", flush=True)
 
-    # truncate memmap to actual number of rows written
     combined_mm.flush()
     del combined_mm
-    # reload, truncate, re-save as a proper npy
-    data = np.load(out_combined, mmap_mode="r")[:row]
-    np.save(out_combined, data)
-    del data
 
-    # ── 4. save paired last-token arrays ────────────────────────────────────
+    # ── 5. save paired last-token arrays ────────────────────────────────────
     base_last = torch.stack(base_last_list).numpy()
     tom_last  = torch.stack(tom_last_list).numpy()
     np.save(out_base_last, base_last)
     np.save(out_tom_last,  tom_last)
 
     print(f"\nSaved:", flush=True)
-    print(f"  {out_combined}   [{row}, {d_model}]  (SAE training: base + ToM tokens)")
+    print(f"  {out_combined}   [{total_tokens}, {d_model}]  (SAE training: base + ToM tokens)")
     print(f"  {out_base_last}  {base_last.shape}  (paired base last-token)")
     print(f"  {out_tom_last}   {tom_last.shape}  (paired ToM last-token)")
 
