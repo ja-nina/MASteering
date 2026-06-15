@@ -20,9 +20,13 @@ from testbed.types import Action, RawObs, StepResult
 class GBSAdapter(SymbolicAdapter):
     def __init__(self, num_players: int = 4, num_rounds: int = 10,
                  target: Optional[int] = None,
-                 low: int = 20, high: int = 200, seed: int = 0,
-                 feedback: str = "exact") -> None:
+                 low: Optional[int] = None, high: Optional[int] = None,
+                 seed: int = 0, feedback: str = "exact") -> None:
         """
+        low / high  — absolute target range.  Defaults to 5*num_players and
+                      50*num_players so each player's fair share is always in
+                      [5, 50] regardless of group size.
+
         feedback:
           "exact"       — agents learn the signed error magnitude each round
                           (e.g. "too HIGH by 23").  Easier to coordinate;
@@ -33,13 +37,13 @@ class GBSAdapter(SymbolicAdapter):
                           alone, leaving more room for ToM to help.
         """
         super().__init__(num_players=num_players, num_rounds=num_rounds)
-        self.low = low
-        self.high = high
+        self.low  = low  if low  is not None else 5  * num_players
+        self.high = high if high is not None else 50 * num_players
         if feedback not in ("exact", "directional"):
             raise ValueError(f"feedback must be 'exact' or 'directional', got {feedback!r}")
         self.feedback = feedback
         if target is None:
-            target = random.Random(seed).randint(low, high)
+            target = random.Random(seed).randint(self.low, self.high)
         self.target = target
 
     def _observation(self, agent_id: str) -> RawObs:
