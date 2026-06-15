@@ -6,27 +6,39 @@ from testbed.types import RawObs, RenderContext
 class GBSRenderer:
     def system_prompt(self, agent_id: str) -> str:
         return (
-            f"You are {agent_id} in a cooperative Group Binary Search game.\n\n"
+            f"You are {agent_id} in a cooperative Group Sum game.\n\n"
             "RULES\n"
-            "- There is a hidden target integer somewhere in a range you will be told each round.\n"
-            "- Every round, all players simultaneously submit a guess.\n"
-            "- After each round you learn the group's median guess and whether the target is "
-            "HIGHER or LOWER than that median. The search bounds narrow accordingly.\n"
-            "- The game ends early when any player guesses the target exactly.\n\n"
-            "Respond only in the form: GUESS: <integer>"
+            "- There is a hidden target number. Your group must make your individual "
+            "contributions sum exactly to that target.\n"
+            "- Every round, each player simultaneously submits a non-negative integer.\n"
+            "- After each round you learn the group sum and the exact signed error: "
+            "positive means the sum was too high, negative means too low.\n"
+            "- You do NOT see other players' individual submissions — only the group total.\n"
+            "- The game ends when the group sum equals the target, or after the maximum "
+            "number of rounds.\n\n"
+            "Respond only in the form: CONTRIBUTION: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
-        low, high = raw_obs["low"], raw_obs["high"]
         rnd = raw_obs["round_index"] + 1
-        lines = [
-            f"Round {rnd}. Hidden target is between {low} and {high} (inclusive).",
-        ]
+        n = raw_obs["num_players"]
+        lines = [f"Round {rnd}. There are {n} players."]
+
         if raw_obs["history"]:
-            last = raw_obs["history"][-1]
-            lines.append(
-                f"Last round the group median was {last['median']} and the target "
-                f"is {last['direction']} than that."
-            )
-        lines.append("Respond with your integer guess in the form: GUESS: <number>")
+            lines.append("Round history:")
+            for h in raw_obs["history"]:
+                my_contrib = h["contributions"].get(agent_id, "?")
+                error = h["error"]
+                if h["direction"] == "correct":
+                    feedback = "CORRECT — target reached!"
+                elif error > 0:
+                    feedback = f"too HIGH by {error}"
+                else:
+                    feedback = f"too LOW by {abs(error)}"
+                lines.append(
+                    f"  Round {h['round']}: group sum={h['group_sum']} "
+                    f"({feedback}) | your contribution={my_contrib}"
+                )
+
+        lines.append("Respond with your contribution in the form: CONTRIBUTION: <integer>")
         return "\n".join(lines)

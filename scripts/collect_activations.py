@@ -36,10 +36,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from testbed.registry import build_game  # noqa: E402
 
-TOM_SUFFIX = (
+TOM_SUFFIX_BEAUTY_CONTEST = (
     "\n\nBefore you answer, think carefully about what the other players "
     "are likely to do. Model their reasoning and best-respond to it."
 )
+
+TOM_SUFFIX_GBS = (
+    "\n\nBefore you answer, think carefully about what the other players "
+    "are likely to contribute. Coordinate with them so your contributions "
+    "sum to the target as quickly as possible."
+)
+
+TOM_SUFFIX_BY_GAME = {
+    "beauty_contest": TOM_SUFFIX_BEAUTY_CONTEST,
+    "gbs": TOM_SUFFIX_GBS,
+}
 
 
 # ── random policy ─────────────────────────────────────────────────────────────
@@ -48,8 +59,11 @@ class _RandomPolicy:
     """Generates random valid actions without loading any model."""
 
     def act(self, system: str, user: str, agent_id: str, steering) -> str:
+        # Goldstone GBS: submit a random non-negative contribution
+        if "CONTRIBUTION:" in user:
+            return f"CONTRIBUTION: {random.randint(0, 50)}"
+        # beauty_contest: parse allowed range from the rendered user prompt
         low, high = 0, 100
-        # parse range hint from the rendered user prompt
         for line in user.splitlines():
             if "between" in line and "and" in line:
                 parts = line.replace("(inclusive)", "").split()
@@ -60,10 +74,7 @@ class _RandomPolicy:
                 except (ValueError, IndexError):
                     pass
                 break
-        n = random.randint(low, high)
-        if "GUESS:" in user:
-            return f"GUESS: {n}"
-        return f"CHOICE: {n}"
+        return f"CHOICE: {random.randint(low, high)}"
 
 
 # ── episode runner (no model) ─────────────────────────────────────────────────
@@ -197,12 +208,14 @@ def main():
     base_last_list  = []   # last token, base prompt
     tom_last_list   = []   # last token, tom-suffix prompt
 
+    tom_suffix = TOM_SUFFIX_BY_GAME[args.game]
+
     for i, (system, user) in enumerate(all_prompts):
         h_all  = _extract_all_tokens(model, tokenizer, system, user,
                                      layer_module, device)
         h_last = h_all[-1]
         h_tom  = _extract_last_token(model, tokenizer, system,
-                                     user + TOM_SUFFIX, layer_module, device)
+                                     user + tom_suffix, layer_module, device)
         base_all_list.append(h_all.cpu())
         base_last_list.append(h_last.cpu())
         tom_last_list.append(h_tom.cpu())

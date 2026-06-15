@@ -7,15 +7,15 @@ from testbed.types import ParsedAction, ParseError, ParseResult, RawObs, RenderC
 class GBSParser:
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
-        low, high = raw_obs["low"], raw_obs["high"]
-        n = extract_int(completion, keyword="GUESS")
+        n = extract_int(completion, keyword="CONTRIBUTION")
         if n is None:
             return ParseError(
-                feedback="I could not find a number. Respond with 'GUESS: <number>'."
+                feedback="I could not find a number. "
+                         "Respond with 'CONTRIBUTION: <integer>'."
             )
-        if n < low or n > high:
+        if n < 0:
             return ParseError(
-                feedback=(f"Your guess {n} is out of range. Pick an integer between "
-                          f"{low} and {high}. Respond with 'GUESS: <number>'.")
+                feedback=f"Contributions must be non-negative, got {n}. "
+                         "Respond with 'CONTRIBUTION: <integer>'."
             )
         return ParsedAction(value=n)
