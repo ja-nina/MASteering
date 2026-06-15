@@ -84,7 +84,7 @@ def main():
                     help="tom_*.npy from collect_activations.py")
     ap.add_argument("--top-n",  type=int, default=16,
                     help="Number of top features to include in steering vector")
-    ap.add_argument("--output-dir", default="vectors")
+    ap.add_argument("--output-dir", default="/scratch/inf0/user/nzukowsk/vectors")
     args = ap.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

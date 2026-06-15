@@ -191,8 +191,9 @@ def main():
     if args.output is None:
         stem = os.path.splitext(os.path.basename(args.activations))[0]
         stem = stem.removeprefix("base_")
-        os.makedirs("sae", exist_ok=True)
-        args.output = f"sae/{stem}_d{args.d_sae}_k{args.k}.pt"
+        sae_dir = "/scratch/inf0/user/nzukowsk/sae"
+        os.makedirs(sae_dir, exist_ok=True)
+        args.output = f"{sae_dir}/{stem}_d{args.d_sae}_k{args.k}.pt"
 
     print(f"Loading activations from {args.activations} ...")
     acts = np.load(args.activations)

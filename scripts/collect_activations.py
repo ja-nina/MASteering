@@ -155,7 +155,7 @@ def main():
     ap.add_argument("--num-episodes", type=int, default=500)
     ap.add_argument("--max-rounds", type=int, default=4)
     ap.add_argument("--num-players", type=int, default=4)
-    ap.add_argument("--output-dir", default="activations")
+    ap.add_argument("--output-dir", default="/scratch/inf0/user/nzukowsk/activations")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
