@@ -1,0 +1,38 @@
+run_id: exp_prompt_one
+
+game:
+  family: symbolic
+  id: beauty_contest
+  env_kwargs:
+    num_rounds: 5
+episodes: 50
+
+model:
+  backend: transformers
+  model_id: Qwen/Qwen2.5-3B-Instruct
+  temperature: 0.7
+
+agents:
+  count: 4
+  concurrency: sequential
+  max_parse_retries: 5
+
+steering:
+  default: prompt_injection
+  per_agent:
+    player_0:
+      user_prefix: >-
+        Before answering, think carefully about what the other players are
+        likely to do. Model their reasoning and best-respond to it.
+
+
+  # no default_config -> only player_0 is steered
+
+logging:
+  dir: logs/
+
+wandb:
+  enabled: false
+  project: ma-steering
+  name: exp_prompt_one
+  tags: [beauty_contest, prompt_injection, one_agent]
