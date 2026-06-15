@@ -1,0 +1,229 @@
+"""Collect residual-stream activations from real multi-round game traces.
+
+Runs game episodes with a random policy to build realistic multi-round
+histories, then passes each agent's prompt through the model (with and
+without the ToM suffix) and captures activations at a chosen layer.
+
+Two output files per run:
+  activations/base_{game}_l{N}.npy   — [T, d_model]  all token positions,
+                                        base prompts (used to train SAE)
+  activations/tom_{game}_l{N}.npy    — [P, d_model]  last token only,
+                                        ToM-suffix prompts (used to find
+                                        differential features)
+  activations/base_last_{game}_l{N}.npy — [P, d_model] last token of base
+                                          (paired with tom for differential)
+
+Usage
+-----
+python scripts/collect_activations.py \\
+    --game beauty_contest \\
+    --num-episodes 200 \\
+    --max-rounds 4 \\
+    --layer model.layers.18 \\
+    --model Qwen/Qwen2.5-3B-Instruct
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import random
+import sys
+
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from testbed.registry import build_game  # noqa: E402
+
+TOM_SUFFIX = (
+    "\n\nBefore you answer, think carefully about what the other players "
+    "are likely to do. Model their reasoning and best-respond to it."
+)
+
+
+# ── random policy ─────────────────────────────────────────────────────────────
+
+class _RandomPolicy:
+    """Generates random valid actions without loading any model."""
+
+    def act(self, system: str, user: str, agent_id: str, steering) -> str:
+        low, high = 0, 100
+        # parse range hint from the rendered user prompt
+        for line in user.splitlines():
+            if "between" in line and "and" in line:
+                parts = line.replace("(inclusive)", "").split()
+                try:
+                    idx = parts.index("between")
+                    low = int(parts[idx + 1].strip(".,"))
+                    high = int(parts[idx + 3].strip(".,"))
+                except (ValueError, IndexError):
+                    pass
+                break
+        n = random.randint(low, high)
+        if "GUESS:" in user:
+            return f"GUESS: {n}"
+        return f"CHOICE: {n}"
+
+
+# ── episode runner (no model) ─────────────────────────────────────────────────
+
+def run_episode_collect(env, renderer, parser, policy, max_rounds: int):
+    """Run one episode and return list of (system, user) prompt pairs."""
+    env.reset()
+    prompts = []
+    done = False
+    round_idx = 0
+
+    while not done and round_idx < max_rounds:
+        pending = env.pending()
+        actions = {}
+        for agent_id, raw_obs in pending:
+            system = renderer.system_prompt(agent_id)
+            user = renderer.render(raw_obs, agent_id, None)
+            prompts.append((system, user))
+            completion = policy.act(system, user, agent_id, None)
+            result = parser.parse(completion, raw_obs, agent_id, None)
+            from testbed.types import ParsedAction
+            actions[agent_id] = result.value if isinstance(result, ParsedAction) else 0
+        result = env.submit(actions)
+        done = result.done
+        round_idx += 1
+
+    return prompts
+
+
+# ── activation extraction ─────────────────────────────────────────────────────
+
+def _resolve_submodule(model, dotted_name: str):
+    obj = model
+    for part in dotted_name.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _extract_all_tokens(model, tokenizer, system: str, user: str,
+                        layer_module, device: str) -> torch.Tensor:
+    """Return all token hidden states at layer: [seq_len, d_model]."""
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(text, return_tensors="pt").to(device)
+
+    captured = {}
+
+    def hook(module, inp, output):
+        h = output[0] if isinstance(output, tuple) else output
+        captured["h"] = h[0].detach().float()  # [seq_len, d_model]
+
+    handle = layer_module.register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            model(**inputs)
+    finally:
+        handle.remove()
+    return captured["h"]
+
+
+def _extract_last_token(model, tokenizer, system: str, user: str,
+                        layer_module, device: str) -> torch.Tensor:
+    """Return last-token hidden state: [d_model]."""
+    return _extract_all_tokens(
+        model, tokenizer, system, user, layer_module, device)[-1]
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="beauty_contest",
+                    choices=["beauty_contest", "gbs"])
+    ap.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
+    ap.add_argument("--layer", default="model.layers.18")
+    ap.add_argument("--num-episodes", type=int, default=200)
+    ap.add_argument("--max-rounds", type=int, default=4)
+    ap.add_argument("--num-players", type=int, default=4)
+    ap.add_argument("--output-dir", default="activations")
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    random.seed(args.seed)
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    layer_tag = args.layer.replace(".", "_")
+    out_base_all  = os.path.join(args.output_dir,
+                                 f"base_{args.game}_{layer_tag}.npy")
+    out_base_last = os.path.join(args.output_dir,
+                                 f"base_last_{args.game}_{layer_tag}.npy")
+    out_tom_last  = os.path.join(args.output_dir,
+                                 f"tom_{args.game}_{layer_tag}.npy")
+
+    # ── 1. generate game traces (no model needed) ────────────────────────────
+    print(f"Generating {args.num_episodes} episodes "
+          f"(game={args.game}, players={args.num_players}, "
+          f"max_rounds={args.max_rounds}) ...")
+    policy = _RandomPolicy()
+    all_prompts: list[tuple[str, str]] = []
+
+    for ep in range(args.num_episodes):
+        env, renderer, parser = build_game(
+            family="symbolic", game_id=args.game,
+            num_players=args.num_players, env_kwargs={})
+        prompts = run_episode_collect(
+            env, renderer, parser, policy, args.max_rounds)
+        all_prompts.extend(prompts)
+        if (ep + 1) % 50 == 0:
+            print(f"  {ep + 1}/{args.num_episodes} episodes "
+                  f"({len(all_prompts)} prompts so far)")
+
+    print(f"Total prompts: {len(all_prompts)}")
+
+    # ── 2. load model ────────────────────────────────────────────────────────
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"\nDevice: {device}")
+    print(f"Loading {args.model} ...")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, torch_dtype=dtype).to(device)
+    model.eval()
+    layer_module = _resolve_submodule(model, args.layer)
+    print(f"Hooked: {args.layer}")
+
+    # ── 3. extract activations ───────────────────────────────────────────────
+    base_all_list   = []   # all token positions, base prompt
+    base_last_list  = []   # last token, base prompt
+    tom_last_list   = []   # last token, tom-suffix prompt
+
+    for i, (system, user) in enumerate(all_prompts):
+        h_all  = _extract_all_tokens(model, tokenizer, system, user,
+                                     layer_module, device)
+        h_last = h_all[-1]
+        h_tom  = _extract_last_token(model, tokenizer, system,
+                                     user + TOM_SUFFIX, layer_module, device)
+        base_all_list.append(h_all.cpu())
+        base_last_list.append(h_last.cpu())
+        tom_last_list.append(h_tom.cpu())
+
+        if (i + 1) % 50 == 0:
+            print(f"  {i + 1}/{len(all_prompts)} prompts processed")
+
+    # ── 4. save ──────────────────────────────────────────────────────────────
+    base_all  = torch.cat(base_all_list, dim=0).numpy()   # [T, d_model]
+    base_last = torch.stack(base_last_list).numpy()        # [P, d_model]
+    tom_last  = torch.stack(tom_last_list).numpy()         # [P, d_model]
+
+    np.save(out_base_all,  base_all)
+    np.save(out_base_last, base_last)
+    np.save(out_tom_last,  tom_last)
+
+    print(f"\nSaved:")
+    print(f"  {out_base_all}   {base_all.shape}  (SAE training)")
+    print(f"  {out_base_last}  {base_last.shape}  (paired base)")
+    print(f"  {out_tom_last}   {tom_last.shape}  (paired ToM)")
+
+
+if __name__ == "__main__":
+    main()
