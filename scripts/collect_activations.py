@@ -163,8 +163,8 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     layer_tag = args.layer.replace(".", "_")
-    out_base_all  = os.path.join(args.output_dir,
-                                 f"base_{args.game}_{layer_tag}.npy")
+    out_combined  = os.path.join(args.output_dir,
+                                 f"base_{args.game}_{layer_tag}.npy")  # base_ prefix for train_sae.py
     out_base_last = os.path.join(args.output_dir,
                                  f"base_last_{args.game}_{layer_tag}.npy")
     out_tom_last  = os.path.join(args.output_dir,
@@ -204,38 +204,42 @@ def main():
     print(f"Hooked: {args.layer}")
 
     # ── 3. extract activations ───────────────────────────────────────────────
-    base_all_list   = []   # all token positions, base prompt
-    base_last_list  = []   # last token, base prompt
-    tom_last_list   = []   # last token, tom-suffix prompt
+    base_all_list   = []   # all token positions, base prompt       → SAE training
+    tom_all_list    = []   # all token positions, ToM prompt        → SAE training
+    base_last_list  = []   # last token, base prompt                → differential
+    tom_last_list   = []   # last token, ToM prompt                 → differential
 
     tom_suffix = TOM_SUFFIX_BY_GAME[args.game]
 
     for i, (system, user) in enumerate(all_prompts):
-        h_all  = _extract_all_tokens(model, tokenizer, system, user,
-                                     layer_module, device)
-        h_last = h_all[-1]
-        h_tom  = _extract_last_token(model, tokenizer, system,
-                                     user + tom_suffix, layer_module, device)
-        base_all_list.append(h_all.cpu())
-        base_last_list.append(h_last.cpu())
-        tom_last_list.append(h_tom.cpu())
+        h_base_all = _extract_all_tokens(model, tokenizer, system, user,
+                                         layer_module, device)
+        h_tom_all  = _extract_all_tokens(model, tokenizer, system,
+                                         user + tom_suffix, layer_module, device)
+        base_all_list.append(h_base_all.cpu())
+        tom_all_list.append(h_tom_all.cpu())
+        base_last_list.append(h_base_all[-1].cpu())
+        tom_last_list.append(h_tom_all[-1].cpu())
 
         if (i + 1) % 50 == 0:
             print(f"  {i + 1}/{len(all_prompts)} prompts processed")
 
     # ── 4. save ──────────────────────────────────────────────────────────────
-    base_all  = torch.cat(base_all_list, dim=0).numpy()   # [T, d_model]
+    base_all  = torch.cat(base_all_list, dim=0).numpy()   # [T_base, d_model]
+    tom_all   = torch.cat(tom_all_list,  dim=0).numpy()   # [T_tom,  d_model]
+    # concatenate for SAE training — SAE sees both distributions
+    combined  = np.concatenate([base_all, tom_all], axis=0)
     base_last = torch.stack(base_last_list).numpy()        # [P, d_model]
     tom_last  = torch.stack(tom_last_list).numpy()         # [P, d_model]
 
-    np.save(out_base_all,  base_all)
+    np.save(out_combined,  combined)
     np.save(out_base_last, base_last)
     np.save(out_tom_last,  tom_last)
 
     print(f"\nSaved:")
-    print(f"  {out_base_all}   {base_all.shape}  (SAE training)")
-    print(f"  {out_base_last}  {base_last.shape}  (paired base)")
-    print(f"  {out_tom_last}   {tom_last.shape}  (paired ToM)")
+    print(f"  {out_combined}   {combined.shape}  (SAE training: base + ToM tokens)")
+    print(f"  {out_base_last}  {base_last.shape}  (paired base last-token)")
+    print(f"  {out_tom_last}   {tom_last.shape}  (paired ToM last-token)")
 
 
 if __name__ == "__main__":
