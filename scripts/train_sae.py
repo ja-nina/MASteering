@@ -114,7 +114,14 @@ class _ActivationDataset(torch.utils.data.Dataset):
 
 def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
           epochs: int, lr: float, device: str,
-          resample_interval: int = 5, resample_samples: int = 8192):
+          resample_interval: int = 5, resample_until: int = 25,
+          resample_samples: int = 8192):
+    """
+    resample_interval  — resample dead features every N epochs
+    resample_until     — stop resampling after this epoch so the second half
+                         of training converges without disruption (default: 25,
+                         i.e. first half of the default 50-epoch run)
+    """
     sae = sae.to(device)
     opt = torch.optim.Adam(sae.parameters(), lr=lr)
 
@@ -142,7 +149,8 @@ def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
         avg_loss = total_loss / len(loader)
 
         resample_note = ""
-        if (ep + 1) % resample_interval == 0 and ep < epochs - 1:
+        can_resample = (ep + 1) % resample_interval == 0 and (ep + 1) <= resample_until
+        if can_resample:
             n = sae.resample_dead(never_activated, resample_data)
             if n:
                 resample_note = f"  [resampled {n} dead features]"
@@ -169,6 +177,9 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--resample-interval", type=int, default=5,
                     help="Resample dead features every N epochs (default: 5)")
+    ap.add_argument("--resample-until", type=int, default=25,
+                    help="Stop resampling after this epoch so the second half "
+                         "of training converges cleanly (default: 25)")
     ap.add_argument("--output", default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -198,13 +209,15 @@ def main():
 
     print(f"\nTraining TopK-SAE  d_in={d_in}  d_sae={args.d_sae}  k={args.k}")
     print(f"  samples={len(dataset)}  batch={args.batch_size}  "
-          f"epochs={args.epochs}  lr={args.lr}  "
-          f"resample_every={args.resample_interval} epochs\n")
+          f"epochs={args.epochs}  lr={args.lr}")
+    print(f"  resample every {args.resample_interval} epochs "
+          f"(epochs 1-{args.resample_until}), then converge cleanly\n")
 
     sae = TopKSAE(d_in=d_in, d_sae=args.d_sae, k=args.k)
     sae = train(sae, dataset, loader,
                 epochs=args.epochs, lr=args.lr, device=device,
-                resample_interval=args.resample_interval)
+                resample_interval=args.resample_interval,
+                resample_until=args.resample_until)
 
     torch.save({
         "state_dict": sae.cpu().state_dict(),
