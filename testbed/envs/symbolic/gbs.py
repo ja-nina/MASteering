@@ -20,10 +20,24 @@ from testbed.types import Action, RawObs, StepResult
 class GBSAdapter(SymbolicAdapter):
     def __init__(self, num_players: int = 4, num_rounds: int = 10,
                  target: Optional[int] = None,
-                 low: int = 20, high: int = 200, seed: int = 0) -> None:
+                 low: int = 20, high: int = 200, seed: int = 0,
+                 feedback: str = "exact") -> None:
+        """
+        feedback:
+          "exact"       — agents learn the signed error magnitude each round
+                          (e.g. "too HIGH by 23").  Easier to coordinate;
+                          rational strategy is to divide error by num_players.
+          "directional" — agents only learn the direction, not the magnitude
+                          (e.g. "too HIGH").  Harder coordination task; agents
+                          must estimate how far off they are from the direction
+                          alone, leaving more room for ToM to help.
+        """
         super().__init__(num_players=num_players, num_rounds=num_rounds)
         self.low = low
         self.high = high
+        if feedback not in ("exact", "directional"):
+            raise ValueError(f"feedback must be 'exact' or 'directional', got {feedback!r}")
+        self.feedback = feedback
         if target is None:
             target = random.Random(seed).randint(low, high)
         self.target = target
@@ -33,6 +47,7 @@ class GBSAdapter(SymbolicAdapter):
             "agent_id": agent_id,
             "round_index": self.context.round_index,
             "num_players": self.num_players,
+            "feedback": self.feedback,
             # history entries expose contributions so the renderer can show
             # each agent its own past submission; other agents' values are
             # filtered out in the renderer (imperfect monitoring).

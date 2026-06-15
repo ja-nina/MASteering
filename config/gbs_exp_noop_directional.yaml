@@ -1,0 +1,40 @@
+run_id: gbs_exp_noop_directional
+
+# Directional feedback condition (Goldstone baseline B):
+# Agents only learn "too HIGH" or "too LOW" — not the magnitude.
+# This is a harder coordination problem because agents must estimate
+# how much to adjust from the direction alone, with no numeric signal.
+# Compare against gbs_exp_noop.yaml (exact feedback) to isolate the
+# effect of feedback richness on group convergence speed.
+
+game:
+  family: symbolic
+  id: gbs
+  env_kwargs:
+    num_rounds: 10
+    feedback: directional
+
+episodes: 50
+
+model:
+  backend: transformers
+  model_id: Qwen/Qwen2.5-3B-Instruct
+  temperature: 0.7
+
+agents:
+  count: 4
+  concurrency: sequential
+  max_parse_retries: 5
+
+steering:
+  default: noop
+  per_agent: {}
+
+logging:
+  dir: logs/
+
+wandb:
+  enabled: false
+  project: ma-steering
+  name: gbs_exp_noop_directional
+  tags: [gbs, noop, control, directional]
