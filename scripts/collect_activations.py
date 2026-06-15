@@ -213,9 +213,9 @@ def main():
         for text in (user, user + tom_suffix):
             msgs = [{"role": "system", "content": system},
                     {"role": "user",   "content": text}]
-            ids = tokenizer.apply_chat_template(
-                msgs, tokenize=True, add_generation_prompt=True)
-            total_tokens += len(ids)
+            formatted = tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True)
+            total_tokens += tokenizer(formatted, return_tensors="pt")["input_ids"].shape[1]
     print(f"  total tokens: {total_tokens}  "
           f"(~{total_tokens * d_model * 4 / 1e9:.1f} GB on disk)", flush=True)
 
