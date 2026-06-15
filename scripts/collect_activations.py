@@ -203,41 +203,62 @@ def main():
     layer_module = _resolve_submodule(model, args.layer)
     print(f"Hooked: {args.layer}")
 
-    # ── 3. extract activations ───────────────────────────────────────────────
-    base_all_list   = []   # all token positions, base prompt       → SAE training
-    tom_all_list    = []   # all token positions, ToM prompt        → SAE training
-    base_last_list  = []   # last token, base prompt                → differential
-    tom_last_list   = []   # last token, ToM prompt                 → differential
-
+    # ── 3. extract activations (stream to disk to avoid OOM) ────────────────
     tom_suffix = TOM_SUFFIX_BY_GAME[args.game]
+
+    base_last_list = []
+    tom_last_list  = []
+
+    # open memmap files for all-token activations — written row by row so
+    # we never hold more than one prompt's activations in RAM at once
+    sample_base = _extract_all_tokens(model, tokenizer,
+                                      all_prompts[0][0], all_prompts[0][1],
+                                      layer_module, device)
+    d_model = sample_base.shape[1]
+
+    # rough upper bound on total tokens (seq_len varies; 300 is conservative)
+    max_tokens = len(all_prompts) * 300 * 2   # ×2 for base + ToM
+
+    combined_mm = np.lib.format.open_memmap(
+        out_combined, mode="w+", dtype="float32",
+        shape=(max_tokens, d_model))
+    row = 0
 
     for i, (system, user) in enumerate(all_prompts):
         h_base_all = _extract_all_tokens(model, tokenizer, system, user,
                                          layer_module, device)
         h_tom_all  = _extract_all_tokens(model, tokenizer, system,
                                          user + tom_suffix, layer_module, device)
-        base_all_list.append(h_base_all.cpu())
-        tom_all_list.append(h_tom_all.cpu())
+
+        # stream to memmap
+        for h in (h_base_all, h_tom_all):
+            t = h.shape[0]
+            combined_mm[row:row + t] = h.numpy()
+            row += t
+
         base_last_list.append(h_base_all[-1].cpu())
         tom_last_list.append(h_tom_all[-1].cpu())
 
         if (i + 1) % 50 == 0:
-            print(f"  {i + 1}/{len(all_prompts)} prompts processed")
+            print(f"  {i + 1}/{len(all_prompts)} prompts processed  "
+                  f"({row} activation rows written)", flush=True)
 
-    # ── 4. save ──────────────────────────────────────────────────────────────
-    base_all  = torch.cat(base_all_list, dim=0).numpy()   # [T_base, d_model]
-    tom_all   = torch.cat(tom_all_list,  dim=0).numpy()   # [T_tom,  d_model]
-    # concatenate for SAE training — SAE sees both distributions
-    combined  = np.concatenate([base_all, tom_all], axis=0)
-    base_last = torch.stack(base_last_list).numpy()        # [P, d_model]
-    tom_last  = torch.stack(tom_last_list).numpy()         # [P, d_model]
+    # truncate memmap to actual number of rows written
+    combined_mm.flush()
+    del combined_mm
+    # reload, truncate, re-save as a proper npy
+    data = np.load(out_combined, mmap_mode="r")[:row]
+    np.save(out_combined, data)
+    del data
 
-    np.save(out_combined,  combined)
+    # ── 4. save paired last-token arrays ────────────────────────────────────
+    base_last = torch.stack(base_last_list).numpy()
+    tom_last  = torch.stack(tom_last_list).numpy()
     np.save(out_base_last, base_last)
     np.save(out_tom_last,  tom_last)
 
-    print(f"\nSaved:")
-    print(f"  {out_combined}   {combined.shape}  (SAE training: base + ToM tokens)")
+    print(f"\nSaved:", flush=True)
+    print(f"  {out_combined}   [{row}, {d_model}]  (SAE training: base + ToM tokens)")
     print(f"  {out_base_last}  {base_last.shape}  (paired base last-token)")
     print(f"  {out_tom_last}   {tom_last.shape}  (paired ToM last-token)")
 
