@@ -117,15 +117,15 @@ class _ActivationDataset(torch.utils.data.Dataset):
 
 # ── training ──────────────────────────────────────────────────────────────────
 
-def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
+def train(sae: TopKSAE, dataset, train_loader, val_loader,
           epochs: int, lr: float, device: str,
-          resample_interval: int = 5, resample_until: int = 25,
+          resample_interval: int = 5, resample_until: int = 10,
           resample_samples: int = 8192):
     """
     resample_interval  — resample dead features every N epochs
-    resample_until     — stop resampling after this epoch so the second half
-                         of training converges without disruption (default: 25,
-                         i.e. first half of the default 50-epoch run)
+    resample_until     — stop resampling after this epoch (default: 10,
+                         i.e. first half of the default 20-epoch run)
+    Resampling only fires when >1% of features were dead that epoch.
     """
     sae = sae.to(device)
     opt = torch.optim.Adam(sae.parameters(), lr=lr)
@@ -139,7 +139,8 @@ def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
         total_loss = 0.0
         never_activated = torch.ones(sae.d_sae, dtype=torch.bool, device=device)
 
-        for batch in loader:
+        sae.train()
+        for batch in train_loader:
             batch = batch.to(device)
             recon, acts = sae(batch)
             loss = F.mse_loss(recon, batch)
@@ -150,17 +151,32 @@ def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
             total_loss += loss.item()
             never_activated &= (acts.sum(0) == 0)
 
-        dead_pct = never_activated.float().mean().item() * 100
-        avg_loss = total_loss / len(loader)
+        train_loss = total_loss / len(train_loader)
+        dead_pct   = never_activated.float().mean().item() * 100
+
+        # validation loss
+        sae.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(device)
+                recon, _ = sae(batch)
+                val_loss += F.mse_loss(recon, batch).item()
+        val_loss /= len(val_loader)
 
         resample_note = ""
-        can_resample = (ep + 1) % resample_interval == 0 and (ep + 1) <= resample_until
+        can_resample = (
+            (ep + 1) % resample_interval == 0
+            and (ep + 1) <= resample_until
+            and dead_pct > 1.0          # only resample when meaningfully dead
+        )
         if can_resample:
             n = sae.resample_dead(never_activated, resample_data)
             if n:
-                resample_note = f"  [resampled {n} dead features]"
+                resample_note = f"  [resampled {n}]"
 
-        print(f"  epoch {ep+1:3d}/{epochs}  loss={avg_loss:.6f}  "
+        print(f"  epoch {ep+1:3d}/{epochs}  "
+              f"train={train_loss:.6f}  val={val_loss:.6f}  "
               f"dead={dead_pct:.1f}%  "
               f"({time.time()-t0:.1f}s){resample_note}")
 
@@ -177,14 +193,14 @@ def main():
                     help="SAE dictionary size; 8x d_model is a reasonable minimum (default: 16384)")
     ap.add_argument("--k", type=int, default=32,
                     help="TopK sparsity — active features per sample (default: 32)")
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--resample-interval", type=int, default=5,
                     help="Resample dead features every N epochs (default: 5)")
-    ap.add_argument("--resample-until", type=int, default=25,
+    ap.add_argument("--resample-until", type=int, default=10,
                     help="Stop resampling after this epoch so the second half "
-                         "of training converges cleanly (default: 25)")
+                         "of training converges cleanly (default: 10)")
     ap.add_argument("--output", default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -225,18 +241,29 @@ def main():
     print(f"  done.", flush=True)
 
     dataset = _ActivationDataset(acts, mean, std)
-    loader  = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=0, pin_memory=(device == "cuda"))
+
+    val_n   = max(1, int(len(dataset) * 0.1))
+    train_n = len(dataset) - val_n
+    train_ds, val_ds = torch.utils.data.random_split(
+        dataset, [train_n, val_n],
+        generator=torch.Generator().manual_seed(args.seed))
+
+    pin = device == "cuda"
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=0, pin_memory=pin)
+    val_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=0, pin_memory=pin)
 
     print(f"\nTraining TopK-SAE  d_in={d_in}  d_sae={args.d_sae}  k={args.k}")
-    print(f"  samples={len(dataset)}  batch={args.batch_size}  "
+    print(f"  train={train_n}  val={val_n}  batch={args.batch_size}  "
           f"epochs={args.epochs}  lr={args.lr}")
     print(f"  resample every {args.resample_interval} epochs "
-          f"(epochs 1-{args.resample_until}), then converge cleanly\n")
+          f"(epochs 1-{args.resample_until}, only if dead>1%)\n")
 
     sae = TopKSAE(d_in=d_in, d_sae=args.d_sae, k=args.k)
-    sae = train(sae, dataset, loader,
+    sae = train(sae, dataset, train_loader, val_loader,
                 epochs=args.epochs, lr=args.lr, device=device,
                 resample_interval=args.resample_interval,
                 resample_until=args.resample_until)
