@@ -4,6 +4,11 @@ TopK SAEs enforce sparsity by keeping only the k largest pre-activations
 per sample — no L1 penalty needed. The decoder columns are normalised to
 unit norm after each gradient step so feature magnitudes stay comparable.
 
+Dead-feature resampling: every `resample_interval` epochs, features that
+never activated during that epoch have their encoder/decoder weights reset
+to normalised directions of high-residual samples. This breaks the
+rich-get-richer dynamic that otherwise leaves most features permanently dead.
+
 Output: sae/<stem>.pt  containing the model state dict + config metadata.
 
 Usage
@@ -37,7 +42,6 @@ class TopKSAE(nn.Module):
         self.k     = k
         self.encoder = nn.Linear(d_in, d_sae, bias=True)
         self.decoder = nn.Linear(d_sae, d_in, bias=False)
-        # initialise decoder columns to unit norm
         nn.init.kaiming_uniform_(self.decoder.weight)
         self._normalise_decoder()
 
@@ -49,7 +53,7 @@ class TopKSAE(nn.Module):
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """x: [B, d_in] -> sparse feature activations [B, d_sae]."""
-        pre = self.encoder(x)                         # [B, d_sae]
+        pre = self.encoder(x)
         topk_vals, topk_idx = torch.topk(pre, self.k, dim=-1)
         acts = torch.zeros_like(pre)
         acts.scatter_(-1, topk_idx, F.relu(topk_vals))
@@ -59,6 +63,40 @@ class TopKSAE(nn.Module):
         acts = self.encode(x)
         recon = self.decoder(acts)
         return recon, acts
+
+    @torch.no_grad()
+    def resample_dead(self, dead_mask: torch.Tensor,
+                      data: torch.Tensor, noise: float = 0.01) -> int:
+        """Reset dead feature weights to directions of high-residual samples.
+
+        dead_mask: [d_sae] bool, True = never activated this epoch
+        data:      [N, d_in] sample of training data (normalised), on same device
+        Returns number of features resampled.
+        """
+        n_dead = dead_mask.sum().item()
+        if n_dead == 0:
+            return 0
+
+        # find the samples the current SAE explains worst
+        recon, _ = self.forward(data)
+        residuals = (data - recon).norm(dim=-1)   # [N]
+        # sample proportional to squared residual (high-error samples get priority)
+        probs = (residuals ** 2)
+        probs = probs / probs.sum()
+        chosen = torch.multinomial(probs, int(n_dead), replacement=True)
+        new_dirs = data[chosen]                    # [n_dead, d_in]
+        new_dirs = F.normalize(new_dirs, dim=-1)
+
+        dead_idx = dead_mask.nonzero(as_tuple=False).squeeze(1)
+
+        # reset encoder rows: direction of the sample + small noise
+        self.encoder.weight[dead_idx] = new_dirs + noise * torch.randn_like(new_dirs)
+        self.encoder.bias[dead_idx]   = 0.0
+
+        # reset decoder columns to same direction (unit norm by construction)
+        self.decoder.weight[:, dead_idx] = new_dirs.T
+
+        return int(n_dead)
 
 
 # ── dataset ───────────────────────────────────────────────────────────────────
@@ -74,13 +112,21 @@ class _ActivationDataset(torch.utils.data.Dataset):
 
 # ── training ──────────────────────────────────────────────────────────────────
 
-def train(sae: TopKSAE, loader, epochs: int, lr: float, device: str):
+def train(sae: TopKSAE, dataset: _ActivationDataset, loader,
+          epochs: int, lr: float, device: str,
+          resample_interval: int = 5, resample_samples: int = 8192):
     sae = sae.to(device)
     opt = torch.optim.Adam(sae.parameters(), lr=lr)
+
+    # cache a fixed sample of data for residual-based resampling
+    idx = torch.randperm(len(dataset))[:resample_samples]
+    resample_data = torch.stack([dataset[i] for i in idx]).to(device)
+
     for ep in range(epochs):
         t0 = time.time()
         total_loss = 0.0
-        total_dead = torch.zeros(sae.d_sae, device=device)
+        never_activated = torch.ones(sae.d_sae, dtype=torch.bool, device=device)
+
         for batch in loader:
             batch = batch.to(device)
             recon, acts = sae(batch)
@@ -90,13 +136,21 @@ def train(sae: TopKSAE, loader, epochs: int, lr: float, device: str):
             opt.step()
             sae._normalise_decoder()
             total_loss += loss.item()
-            total_dead += (acts.sum(0) == 0).float()
+            never_activated &= (acts.sum(0) == 0)
 
-        dead_pct = (total_dead > 0).float().mean().item() * 100
+        dead_pct = never_activated.float().mean().item() * 100
         avg_loss = total_loss / len(loader)
+
+        resample_note = ""
+        if (ep + 1) % resample_interval == 0 and ep < epochs - 1:
+            n = sae.resample_dead(never_activated, resample_data)
+            if n:
+                resample_note = f"  [resampled {n} dead features]"
+
         print(f"  epoch {ep+1:3d}/{epochs}  loss={avg_loss:.6f}  "
-              f"dead_features={dead_pct:.1f}%  "
-              f"({time.time()-t0:.1f}s)")
+              f"dead={dead_pct:.1f}%  "
+              f"({time.time()-t0:.1f}s){resample_note}")
+
     return sae
 
 
@@ -113,6 +167,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--resample-interval", type=int, default=5,
+                    help="Resample dead features every N epochs (default: 5)")
     ap.add_argument("--output", default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -121,10 +177,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # derive output path from input filename if not given
     if args.output is None:
         stem = os.path.splitext(os.path.basename(args.activations))[0]
-        # strip leading "base_"
         stem = stem.removeprefix("base_")
         os.makedirs("sae", exist_ok=True)
         args.output = f"sae/{stem}_d{args.d_sae}_k{args.k}.pt"
@@ -133,7 +187,6 @@ def main():
     acts = np.load(args.activations)
     print(f"  shape: {acts.shape}  dtype: {acts.dtype}")
 
-    # normalise
     mean = acts.mean(axis=0)
     std  = acts.std(axis=0)
     d_in = acts.shape[1]
@@ -145,12 +198,14 @@ def main():
 
     print(f"\nTraining TopK-SAE  d_in={d_in}  d_sae={args.d_sae}  k={args.k}")
     print(f"  samples={len(dataset)}  batch={args.batch_size}  "
-          f"epochs={args.epochs}  lr={args.lr}\n")
+          f"epochs={args.epochs}  lr={args.lr}  "
+          f"resample_every={args.resample_interval} epochs\n")
 
     sae = TopKSAE(d_in=d_in, d_sae=args.d_sae, k=args.k)
-    sae = train(sae, loader, epochs=args.epochs, lr=args.lr, device=device)
+    sae = train(sae, dataset, loader,
+                epochs=args.epochs, lr=args.lr, device=device,
+                resample_interval=args.resample_interval)
 
-    # save model + normalisation stats
     torch.save({
         "state_dict": sae.cpu().state_dict(),
         "config": {"d_in": d_in, "d_sae": args.d_sae, "k": args.k},
