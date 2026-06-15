@@ -61,7 +61,12 @@ def _beauty_contest_prompts(renderer, num_samples: int):
             guesses = {f"player_{p}": random.randint(0, 100) for p in range(n_players)}
             mean = sum(guesses.values()) / n_players
             target = mean * 2 / 3
-            history.append({"mean": round(mean, 1), "target": round(target, 1)})
+            best = min(abs(v - target) for v in guesses.values())
+            winners = [p for p, v in guesses.items() if abs(v - target) == best]
+            history.append({
+                "mean": round(mean, 1), "target": round(target, 1),
+                "choices": guesses, "winners": winners,
+            })
         obs = {
             "round_index": round_idx,
             "num_players": n_players,

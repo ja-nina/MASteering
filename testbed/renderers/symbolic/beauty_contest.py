@@ -21,10 +21,24 @@ class BeautyContestRenderer:
             f"Choose an integer between {low} and {high} (inclusive).",
         ]
         if raw_obs["history"]:
-            last = raw_obs["history"][-1]
-            lines.append(
-                f"Last round the average was {last['mean']:.2f} and the winning "
-                f"target (2/3 of average) was {last['target']:.2f}."
-            )
+            lines.append("Round history:")
+            for i, h in enumerate(raw_obs["history"]):
+                my_guess = h["choices"].get(agent_id)
+                target = h["target"]
+                won = agent_id in h["winners"]
+                rnd_num = h.get("round", i + 1)
+                summary = (
+                    f"  Round {rnd_num}: group avg={h['mean']:.1f}, "
+                    f"target={target:.1f}"
+                )
+                if my_guess is not None:
+                    if won:
+                        verdict = "WIN"
+                    elif my_guess > target:
+                        verdict = "too HIGH"
+                    else:
+                        verdict = "too LOW"
+                    summary += f" | you guessed {my_guess:.0f} ({verdict})"
+                lines.append(summary)
         lines.append("Respond with your integer choice in the form: CHOICE: <number>")
         return "\n".join(lines)
