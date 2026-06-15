@@ -102,12 +102,17 @@ class TopKSAE(nn.Module):
 # ── dataset ───────────────────────────────────────────────────────────────────
 
 class _ActivationDataset(torch.utils.data.Dataset):
+    """Reads activations row-by-row from a memmap — never loads full array."""
     def __init__(self, acts: np.ndarray, mean: np.ndarray, std: np.ndarray):
-        self.data = torch.from_numpy(
-            (acts - mean) / (std + 1e-8)).float()
+        self.acts = acts
+        self.mean = mean.astype(np.float32)
+        self.std  = (std + 1e-8).astype(np.float32)
 
-    def __len__(self): return len(self.data)
-    def __getitem__(self, i): return self.data[i]
+    def __len__(self): return len(self.acts)
+
+    def __getitem__(self, i):
+        x = self.acts[i].astype(np.float32)
+        return torch.from_numpy((x - self.mean) / self.std)
 
 
 # ── training ──────────────────────────────────────────────────────────────────
@@ -199,9 +204,25 @@ def main():
     acts = np.load(args.activations, mmap_mode="r")   # memory-mapped: reads from disk per batch
     print(f"  shape: {acts.shape}  dtype: {acts.dtype}")
 
-    mean = acts.mean(axis=0)
-    std  = acts.std(axis=0)
     d_in = acts.shape[1]
+    n    = len(acts)
+
+    # compute mean and std in chunks to avoid loading 34GB into RAM
+    print("Computing activation statistics (chunked)...", flush=True)
+    chunk = 50_000
+    mean = np.zeros(d_in, dtype=np.float64)
+    for i in range(0, n, chunk):
+        mean += acts[i:i + chunk].sum(axis=0)
+    mean /= n
+
+    var = np.zeros(d_in, dtype=np.float64)
+    for i in range(0, n, chunk):
+        diff = acts[i:i + chunk].astype(np.float64) - mean
+        var += (diff ** 2).sum(axis=0)
+    std = np.sqrt(var / n)
+    mean = mean.astype(np.float32)
+    std  = std.astype(np.float32)
+    print(f"  done.", flush=True)
 
     dataset = _ActivationDataset(acts, mean, std)
     loader  = torch.utils.data.DataLoader(
