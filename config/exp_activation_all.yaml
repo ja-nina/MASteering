@@ -1,0 +1,40 @@
+run_id: exp_activation_all
+
+game:
+  family: symbolic
+  id: beauty_contest
+  env_kwargs:
+    num_rounds: 5
+episodes: 50
+
+model:
+  backend: transformers
+  model_id: Qwen/Qwen2.5-3B-Instruct
+  temperature: 0.7
+
+agents:
+  count: 4
+  concurrency: sequential
+  max_parse_retries: 5
+
+steering:
+  default: activation
+  # default_config steers ALL agents with the same vector
+  default_config:
+    layer: model.layers.18
+    vector_path: vectors/tom_sae_top16_beauty_contest_l18_4096k32.npy
+    coefficient: 20.0   # tune: 10 (subtle) / 20 (moderate) / 40 (strong)
+
+  per_agent: {}   # leave empty to steer all players uniformly
+                  # or override individuals here, e.g.:
+                  # player_0:
+                  #   coefficient: 40.0   # steer player_0 harder
+
+logging:
+  dir: logs/
+
+wandb:
+  enabled: false
+  project: ma-steering
+  name: exp_activation_all
+  tags: [beauty_contest, activation, sae, all_agents]

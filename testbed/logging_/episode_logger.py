@@ -9,6 +9,9 @@ import os
 from typing import Any, Dict, Optional
 
 
+_SEP = "=" * 72
+
+
 class EpisodeLogger:
     def __init__(self, run_dir: str, run_id: str, episode: int,
                  wandb_run=None) -> None:
@@ -17,7 +20,9 @@ class EpisodeLogger:
         self.run_id = run_id
         self.episode = episode
         self.path = os.path.join(self.dir, f"episode_{episode}.jsonl")
+        self.trace_path = os.path.join(self.dir, f"episode_{episode}.trace.txt")
         self._fh = open(self.path, "w", encoding="utf-8")
+        self._trace = open(self.trace_path, "w", encoding="utf-8")
         self._wandb = wandb_run
         self._global_step = 0
 
@@ -35,6 +40,20 @@ class EpisodeLogger:
         self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self._fh.flush()
 
+        # human-readable trace
+        self._trace.write(
+            f"{_SEP}\n"
+            f"Turn {turn:>3} | {agent_id} | game={game} | "
+            f"steering={steering_spec_id}\n"
+            f"{_SEP}\n"
+            f"[SYSTEM]\n{system_prompt}\n\n"
+            f"[USER]\n{user_prompt}\n\n"
+            f"[COMPLETION]\n{completion}\n\n"
+            f"[ACTION={parsed_action}  REWARD={reward:.3f}"
+            f"  RETRIES={parse_retries}]\n\n"
+        )
+        self._trace.flush()
+
         if self._wandb is not None:
             self._wandb.log({
                 f"{agent_id}/reward": reward,
@@ -48,6 +67,8 @@ class EpisodeLogger:
     def close(self, summary: Optional[Dict[str, Any]] = None) -> None:
         if not self._fh.closed:
             self._fh.close()
+        if not self._trace.closed:
+            self._trace.close()
         if summary is not None:
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
             with open(spath, "w", encoding="utf-8") as f:

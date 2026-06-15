@@ -33,18 +33,27 @@ def make_steering_hook(vector, coefficient: float) -> Callable:
 
 
 class ActivationSteering:
-    """Per-agent activation steering config: {agent_id: {layer, vector_path, coefficient}}."""
+    """Per-agent activation steering.
 
-    def __init__(self, per_agent: Dict[str, Dict]) -> None:
+    per_agent overrides individual agents; default_config applies to every
+    agent not explicitly listed (set it to steer all players uniformly).
+    """
+
+    def __init__(self, per_agent: Dict[str, Dict],
+                 default_config: Optional[Dict] = None) -> None:
         self.per_agent = per_agent
+        self.default_config = default_config
         self._cache: Dict[str, object] = {}
+
+    def _cfg_for(self, agent_id: str) -> Optional[Dict]:
+        return self.per_agent.get(agent_id) or self.default_config
 
     def apply_to_prompt(self, system_prompt: str, user_prompt: str,
                         agent_id: str) -> Tuple[str, str]:
         return system_prompt, user_prompt  # activation steering does not touch text
 
     def steering_spec(self, agent_id: str) -> Optional[SteeringSpec]:
-        cfg = self.per_agent.get(agent_id)
+        cfg = self._cfg_for(agent_id)
         if cfg is None:
             return None
         return SteeringSpec(

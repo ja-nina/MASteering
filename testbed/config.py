@@ -12,12 +12,15 @@ from testbed.steering.prompt_injection import PromptInjectionSteering
 def build_steering(cfg: Dict[str, Any]):
     method = cfg.get("default", "noop")
     per_agent = cfg.get("per_agent", {}) or {}
+    default_config = cfg.get("default_config") or None
     if method == "noop":
         return NoOpSteering()
     if method == "prompt_injection":
-        return PromptInjectionSteering(per_agent=per_agent)
+        return PromptInjectionSteering(per_agent=per_agent,
+                                       default_config=default_config)
     if method == "activation":
-        return ActivationSteering(per_agent=per_agent)
+        return ActivationSteering(per_agent=per_agent,
+                                  default_config=default_config)
     raise ValueError(f"Unknown steering method: {method}")
 
 
