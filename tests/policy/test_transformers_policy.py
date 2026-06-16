@@ -92,6 +92,6 @@ def test_generate_passes_top_p_and_top_k_to_model():
 @pytest.mark.gpu
 def test_transformers_policy_generates_with_qwen():
     from testbed.policy.transformers_policy import TransformersPolicy
-    p = TransformersPolicy(model_id="Qwen/Qwen2.5-3B-Instruct")
+    p = TransformersPolicy(model_id="Qwen/Qwen3-4B")
     out = p.act("You are a helpful assistant.", "Say the word 'ok'.", "player_0", None)
     assert isinstance(out, str) and len(out) > 0
