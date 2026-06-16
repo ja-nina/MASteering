@@ -58,7 +58,8 @@ class TransformersPolicy:
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}]
         text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False)
         return self.tokenizer(text, return_tensors="pt").to(self.device)
 
     def _generate(self, inputs) -> str:

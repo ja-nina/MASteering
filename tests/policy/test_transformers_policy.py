@@ -29,6 +29,32 @@ def test_steering_session_adds_and_removes_hook():
     assert len(m.block._forward_hooks) == 0  # removed on exit
 
 
+class _FakeBatch(dict):
+    def to(self, device):
+        return self
+
+
+class _RecordingTokenizer:
+    def __init__(self):
+        self.template_calls = []
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.template_calls.append(kwargs)
+        return "templated-text"
+
+    def __call__(self, text, return_tensors=None):
+        return _FakeBatch({"input_ids": torch.tensor([[1, 2, 3]])})
+
+
+def test_build_inputs_disables_thinking_mode():
+    from testbed.policy.transformers_policy import TransformersPolicy
+    policy = TransformersPolicy.__new__(TransformersPolicy)
+    policy.tokenizer = _RecordingTokenizer()
+    policy.device = "cpu"
+    policy._build_inputs("system prompt", "user prompt")
+    assert policy.tokenizer.template_calls[-1]["enable_thinking"] is False
+
+
 @pytest.mark.gpu
 def test_transformers_policy_generates_with_qwen():
     from testbed.policy.transformers_policy import TransformersPolicy
