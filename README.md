@@ -4,7 +4,7 @@ A research testbed for measuring how **steering vectors** and **prompt injection
 
 ## Overview
 
-Agents powered by small local LLMs (default: `Qwen/Qwen2.5-3B-Instruct`) play coordination and negotiation games. Steering methods are applied per-agent, and every turn is logged for behavioral analysis.
+Agents powered by small local LLMs (default: `Qwen/Qwen3-4B`, non-thinking mode) play coordination and negotiation games. Steering methods are applied per-agent, and every turn is logged for behavioral analysis.
 
 **Games supported**
 
@@ -53,9 +53,11 @@ episodes: 1
 
 model:
   backend: transformers     # transformers (steering-capable) | vllm (fast baseline)
-  model_id: Qwen/Qwen2.5-3B-Instruct
+  model_id: Qwen/Qwen3-4B
   endpoint: http://localhost:8000   # used only by vllm backend
   temperature: 0.7
+  top_p: 0.8
+  top_k: 20
 
 agents:
   count: 4
@@ -132,29 +134,32 @@ The steering vectors in `config/*_exp_activation_*.yaml` are extracted via a thr
 
 Large intermediate artifacts (raw activations, SAE checkpoints) default to a scratch path; steering vectors are small and stay in the local repo under `vectors/`.
 
-### Stage 1 — Collect residual-stream activations
+### Stage 1 — Collect residual-stream and MLP activations
 
-Plays real multi-round episodes with a random policy, then runs each agent prompt through the model twice — once as-is, once with a ToM suffix appended — and captures the residual stream at the chosen layer:
+Plays real multi-round episodes with a random policy, then runs each agent prompt through the model twice — once as-is, once with a ToM suffix appended — and captures one or more streams at the chosen layer in a single forward pass:
 
 ```bash
-# Beauty contest
+# Beauty contest — both streams (default)
 python scripts/collect_activations.py \
-  --game beauty_contest --layer model.layers.18 \
+  --game beauty_contest --layer model.layers.18 --streams resid,mlp \
   --num-episodes 200 --max-rounds 4 --num-players 4
 
 # GBS
 python scripts/collect_activations.py \
-  --game gbs --layer model.layers.18 \
+  --game gbs --layer model.layers.18 --streams resid,mlp \
   --num-episodes 200 --max-rounds 4 --num-players 4
 ```
 
-Outputs saved to `--output-dir` (default `/scratch/inf0/user/nzukowsk/activations/`):
+`--streams` accepts `resid` (the decoder block's full output — the residual stream after layer N) and/or `mlp` (the block's MLP submodule's raw output, before it's summed into the residual stream).
+
+Outputs saved to `--output-dir` (default `/scratch/inf0/user/nzukowsk/activations/`), one set per stream:
 
 | File | Contents |
 |------|----------|
-| `base_{game}_model_layers_18.npy` | All token positions, base + ToM prompts combined (SAE training set) |
-| `base_last_{game}_model_layers_18.npy` | Last token only, base prompts (paired with the file below) |
-| `tom_{game}_model_layers_18.npy` | Last token only, ToM-suffix prompts (paired) |
+| `base_{game}_model_layers_18_resid.npy` | All token positions, base + ToM prompts combined (SAE training set) |
+| `base_last_{game}_model_layers_18_resid.npy` | Last token only, base prompts (paired with the file below) |
+| `tom_{game}_model_layers_18_resid.npy` | Last token only, ToM-suffix prompts (paired) |
+| *(same three, with `_mlp` instead of `_resid`)* | MLP stream |
 
 ### Stage 2 — Train a TopK sparse autoencoder
 
@@ -224,6 +229,20 @@ The steering vector is a unit-normalised weighted sum of the top-N SAE decoder c
 > python scripts/extract_steering_vector.py --game gbs --layer model.layers.18 --num-samples 64
 > ```
 > This computes `mean(h_ToM) - mean(h_base)` at the chosen layer and saves it to `vectors/`. The SAE route is preferred because it isolates ToM-specific directions in sparse feature space rather than mixing in unrelated variance.
+
+### Sweeping every layer (both streams) within a disk budget
+
+Running Stages 1-3 by hand for every layer would require keeping every layer's raw activations on disk simultaneously — multiple TB. Instead, run the sweep orchestrator, which processes one (layer, stream) combo fully before moving to the next, deleting the large raw-activation file immediately after its SAE and steering vector are produced:
+
+```bash
+python scripts/run_layer_sweep.py \
+  --game beauty_contest --model Qwen/Qwen3-4B \
+  --start-layer 10 --num-episodes 200 --max-rounds 4
+```
+
+`--end-layer` defaults to the model's last layer (auto-detected). Peak scratch usage stays around one layer's worth of raw activations for both streams (tens of GB) regardless of how many layers are swept — the trade-off is that the model's forward pass is re-run once per swept layer instead of once, since a forward pass always computes every layer regardless of which one is hooked. SAE checkpoints, steering vectors, and the small last-token files persist for every layer; only the large all-token-position files are deleted.
+
+A SLURM submission script is provided at `scripts/run_layer_sweep.slurm` (non-array; submit once per game with `sbatch scripts/run_layer_sweep.slurm <game>`). Partition, GPU type, and walltime are marked `FILL_IN` for your cluster.
 
 ## Experiment configs
 
@@ -295,10 +314,12 @@ testbed/
 config/                     # ready-to-run experiment configs
 scripts/
   run_episode.py            # episode runner CLI
-  collect_activations.py    # Stage 1: residual-stream activation collection
+  collect_activations.py    # Stage 1: resid + MLP activation collection
   train_sae.py              # Stage 2: TopK sparse autoencoder training
   find_tom_features.py      # Stage 3: ToM feature extraction + steering vector
   extract_steering_vector.py  # CAA shortcut (no SAE)
+  run_layer_sweep.py        # disk-bounded Stage 1-3 sweep across every layer
+  run_layer_sweep.slurm     # SLURM submission script wrapping run_layer_sweep.py
 vectors/                    # .npy steering vectors produced by find_tom_features.py / extract_steering_vector.py
 tests/                      # pytest suite (GPU-gated tests skip on CPU-only envs)
 ```
