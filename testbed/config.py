@@ -32,6 +32,8 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
         return TransformersPolicy(
             model_id=model_id,
             temperature=model_cfg.get("temperature", 0.7),
+            top_p=model_cfg.get("top_p", 0.8),
+            top_k=model_cfg.get("top_k", 20),
             steering=steering)
     if backend == "vllm":
         from testbed.policy.vllm_policy import VLLMPolicy

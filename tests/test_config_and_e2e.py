@@ -32,6 +32,24 @@ def test_run_config_parses_dict():
     assert cfg.num_players == 2
 
 
+def test_build_policy_passes_top_p_top_k_for_transformers_backend(monkeypatch):
+    captured = {}
+
+    class _StubPolicy:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "testbed.policy.transformers_policy.TransformersPolicy", _StubPolicy)
+
+    from testbed.config import build_policy
+    build_policy({"backend": "transformers", "model_id": "m",
+                  "temperature": 0.5, "top_p": 0.9, "top_k": 10})
+
+    assert captured["top_p"] == 0.9
+    assert captured["top_k"] == 10
+
+
 def test_end_to_end_symbolic_with_stub(tmp_path):
     env, renderer, parser = build_game(
         family="symbolic", game_id="gbs", num_players=3,
