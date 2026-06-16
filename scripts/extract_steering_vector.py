@@ -142,7 +142,8 @@ def _last_token_hidden(model, tokenizer, system: str, user: str,
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user}]
     text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True)
+        messages, tokenize=False, add_generation_prompt=True,
+        enable_thinking=False)
     inputs = tokenizer(text, return_tensors="pt").to(device)
 
     captured = {}
@@ -167,7 +168,7 @@ def _last_token_hidden(model, tokenizer, system: str, user: str,
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
+    parser.add_argument("--model", default="Qwen/Qwen3-4B")
     parser.add_argument("--layer", default="model.layers.18",
                         help="Dotted submodule path to hook (default: model.layers.18)")
     parser.add_argument("--game", default="beauty_contest",
