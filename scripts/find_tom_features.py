@@ -85,7 +85,26 @@ def main():
     ap.add_argument("--top-n",  type=int, default=16,
                     help="Number of top features to include in steering vector")
     ap.add_argument("--output-dir", default="vectors")
+    ap.add_argument("--wandb", action="store_true",
+                    help="Log top feature scores and steering vector stats to wandb")
+    ap.add_argument("--wandb-project", default="ma-steering-sae")
+    ap.add_argument("--wandb-name", default=None,
+                    help="Defaults to the SAE checkpoint stem")
     args = ap.parse_args()
+
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+        except ImportError:
+            print("wandb not installed — skipping. pip install wandb to enable.")
+        else:
+            sae_stem_for_name = os.path.splitext(os.path.basename(args.sae))[0]
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_name or f"tom_features_{sae_stem_for_name}",
+                config={"sae": args.sae, "base": args.base, "tom": args.tom,
+                        "top_n": args.top_n})
 
     os.makedirs(args.output_dir, exist_ok=True)
     sae_stem = os.path.splitext(os.path.basename(args.sae))[0]
@@ -158,6 +177,23 @@ def main():
                 f"{tom_acts[:, fid].mean().item():.6f}",
             ])
     print(f"Feature scores saved: {csv_path}")
+
+    if wandb_run is not None:
+        table = wandb.Table(columns=["rank", "feature_id", "delta",
+                                     "mean_base_activation", "mean_tom_activation"])
+        for rank in range(min(200, sae.d_sae)):
+            fid = ranked[rank].item()
+            table.add_data(rank + 1, fid, scores[rank].item(),
+                           base_acts[:, fid].mean().item(),
+                           tom_acts[:, fid].mean().item())
+        wandb_run.log({
+            "tom_features": table,
+            "steering_vector_norm": steering_vec.norm().item(),
+            "top1_delta": scores[0].item(),
+            "top_n_mean_delta": scores[:args.top_n].mean().item(),
+        })
+        wandb_run.finish()
+
     print()
     print("To apply in run_config.yaml:")
     print(f"  steering:")

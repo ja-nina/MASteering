@@ -120,7 +120,7 @@ class _ActivationDataset(torch.utils.data.Dataset):
 def train(sae: TopKSAE, dataset, train_loader, val_loader,
           epochs: int, lr: float, device: str,
           resample_interval: int = 5, resample_until: int = 10,
-          resample_samples: int = 8192):
+          resample_samples: int = 8192, wandb_run=None):
     """
     resample_interval  — resample dead features every N epochs
     resample_until     — stop resampling after this epoch (default: 10,
@@ -165,20 +165,31 @@ def train(sae: TopKSAE, dataset, train_loader, val_loader,
         val_loss /= len(val_loader)
 
         resample_note = ""
+        n_resampled = 0
         can_resample = (
             (ep + 1) % resample_interval == 0
             and (ep + 1) <= resample_until
             and dead_pct > 1.0          # only resample when meaningfully dead
         )
         if can_resample:
-            n = sae.resample_dead(never_activated, resample_data)
-            if n:
-                resample_note = f"  [resampled {n}]"
+            n_resampled = sae.resample_dead(never_activated, resample_data)
+            if n_resampled:
+                resample_note = f"  [resampled {n_resampled}]"
 
         print(f"  epoch {ep+1:3d}/{epochs}  "
               f"train={train_loss:.6f}  val={val_loss:.6f}  "
               f"dead={dead_pct:.1f}%  "
               f"({time.time()-t0:.1f}s){resample_note}")
+
+        if wandb_run is not None:
+            wandb_run.log({
+                "epoch": ep + 1,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "dead_pct": dead_pct,
+                "resampled": n_resampled,
+                "epoch_time_s": time.time() - t0,
+            }, step=ep + 1)
 
     return sae
 
@@ -203,6 +214,11 @@ def main():
                          "of training converges cleanly (default: 10)")
     ap.add_argument("--output", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--wandb", action="store_true",
+                    help="Log per-epoch train/val loss and dead-feature %% to wandb")
+    ap.add_argument("--wandb-project", default="ma-steering-sae")
+    ap.add_argument("--wandb-name", default=None,
+                    help="Defaults to the output checkpoint stem")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -215,6 +231,24 @@ def main():
         sae_dir = "/scratch/inf0/user/nzukowsk/sae"
         os.makedirs(sae_dir, exist_ok=True)
         args.output = f"{sae_dir}/{stem}_d{args.d_sae}_k{args.k}.pt"
+
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+        except ImportError:
+            print("wandb not installed — skipping. pip install wandb to enable.")
+        else:
+            run_name = args.wandb_name or os.path.splitext(os.path.basename(args.output))[0]
+            wandb_run = wandb.init(
+                project=args.wandb_project, name=run_name,
+                config={
+                    "activations": args.activations, "d_sae": args.d_sae,
+                    "k": args.k, "epochs": args.epochs,
+                    "batch_size": args.batch_size, "lr": args.lr,
+                    "resample_interval": args.resample_interval,
+                    "resample_until": args.resample_until, "seed": args.seed,
+                })
 
     print(f"Loading activations from {args.activations} ...")
     acts = np.load(args.activations, mmap_mode="r")   # memory-mapped: reads from disk per batch
@@ -266,7 +300,7 @@ def main():
     sae = train(sae, dataset, train_loader, val_loader,
                 epochs=args.epochs, lr=args.lr, device=device,
                 resample_interval=args.resample_interval,
-                resample_until=args.resample_until)
+                resample_until=args.resample_until, wandb_run=wandb_run)
 
     torch.save({
         "state_dict": sae.cpu().state_dict(),
@@ -274,6 +308,9 @@ def main():
         "norm": {"mean": mean, "std": std},
     }, args.output)
     print(f"\nSaved: {args.output}")
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
