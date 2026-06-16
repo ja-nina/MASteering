@@ -55,6 +55,40 @@ def test_build_inputs_disables_thinking_mode():
     assert policy.tokenizer.template_calls[-1]["enable_thinking"] is False
 
 
+class _RecordingModel:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        input_ids = kwargs["input_ids"]
+        extra = torch.zeros((input_ids.shape[0], 1), dtype=torch.long)
+        return torch.cat([input_ids, extra], dim=1)
+
+
+class _DecodingTokenizer:
+    eos_token_id = 0
+
+    def decode(self, ids, skip_special_tokens=True):
+        return "ok"
+
+
+def test_generate_passes_top_p_and_top_k_to_model():
+    from testbed.policy.transformers_policy import TransformersPolicy
+    policy = TransformersPolicy.__new__(TransformersPolicy)
+    policy.model = _RecordingModel()
+    policy.tokenizer = _DecodingTokenizer()
+    policy.temperature = 0.7
+    policy.top_p = 0.8
+    policy.top_k = 20
+    policy.max_new_tokens = 8
+    inputs = {"input_ids": torch.tensor([[1, 2, 3]])}
+    policy._generate(inputs)
+    call_kwargs = policy.model.calls[0]
+    assert call_kwargs["top_p"] == 0.8
+    assert call_kwargs["top_k"] == 20
+
+
 @pytest.mark.gpu
 def test_transformers_policy_generates_with_qwen():
     from testbed.policy.transformers_policy import TransformersPolicy

@@ -34,8 +34,9 @@ class _SteeringSession:
 
 
 class TransformersPolicy:
-    def __init__(self, model_id: str = "Qwen/Qwen2.5-3B-Instruct",
-                 temperature: float = 0.7, max_new_tokens: int = 256,
+    def __init__(self, model_id: str = "Qwen/Qwen3-4B",
+                 temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20,
+                 max_new_tokens: int = 256,
                  device: Optional[str] = None,
                  steering: Optional[object] = None) -> None:
         import torch
@@ -43,6 +44,8 @@ class TransformersPolicy:
 
         self.model_id = model_id
         self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
         self.max_new_tokens = max_new_tokens
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -68,6 +71,7 @@ class TransformersPolicy:
             out = self.model.generate(
                 **inputs, max_new_tokens=self.max_new_tokens,
                 do_sample=self.temperature > 0, temperature=max(self.temperature, 1e-5),
+                top_p=self.top_p, top_k=self.top_k,
                 pad_token_id=self.tokenizer.eos_token_id)
         gen = out[0][inputs["input_ids"].shape[1]:]
         return self.tokenizer.decode(gen, skip_special_tokens=True)
