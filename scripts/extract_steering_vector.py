@@ -14,7 +14,7 @@ The resulting .npy file can be used directly with ActivationSteering.
 Usage
 -----
 python scripts/extract_steering_vector.py \
-    --model Qwen/Qwen2.5-3B-Instruct \
+    --model Qwen/Qwen3-4B \
     --layer model.layers.18 \
     --game beauty_contest \
     --num-samples 64 \
