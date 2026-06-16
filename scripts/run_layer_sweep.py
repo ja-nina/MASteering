@@ -114,6 +114,9 @@ def main():
     ap.add_argument("--game", default="beauty_contest", choices=["beauty_contest", "gbs"])
     ap.add_argument("--model", default="Qwen/Qwen3-4B")
     ap.add_argument("--streams", default="resid,mlp")
+    ap.add_argument("--layer-index", type=int, default=None,
+                    help="Process exactly this one layer index (for SLURM job arrays). "
+                         "Overrides --start-layer / --end-layer when set.")
     ap.add_argument("--start-layer", type=int, default=10)
     ap.add_argument("--end-layer", type=int, default=None,
                     help="Default: auto-detect (model's num_hidden_layers - 1)")
@@ -132,6 +135,9 @@ def main():
                     help="Forward --wandb to train_sae.py / find_tom_features.py")
     args = ap.parse_args()
     args.streams = args.streams.split(",")
+    if args.layer_index is not None:
+        args.start_layer = args.layer_index
+        args.end_layer = args.layer_index
     run_sweep(args)
 
 

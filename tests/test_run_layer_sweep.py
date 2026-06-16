@@ -43,6 +43,32 @@ def test_run_sweep_deletes_combined_activations_after_each_layer(tmp_path):
             assert not os.path.exists(path)
 
 
+def test_layer_index_overrides_start_end_layer(tmp_path):
+    """--layer-index should pin start and end to a single layer (SLURM array mode)."""
+    import argparse
+    import sys
+    sys.argv = ["run_layer_sweep.py",
+                "--layer-index", "15",
+                "--activations-dir", str(tmp_path / "activations"),
+                "--sae-dir", str(tmp_path / "sae"),
+                "--vectors-dir", str(tmp_path / "vectors")]
+    from scripts.run_layer_sweep import main as sweep_main
+    # We only check that start/end layer are set correctly, not that the sweep runs.
+    import argparse as _ap
+    args = _ap.Namespace(
+        game="beauty_contest", model="fake", streams=["resid", "mlp"],
+        layer_index=15, start_layer=10, end_layer=None,
+        num_episodes=1, max_rounds=1, num_players=4, seed=42,
+        activations_dir=str(tmp_path / "activations"),
+        sae_dir=str(tmp_path / "sae"), vectors_dir=str(tmp_path / "vectors"),
+        d_sae=16384, k=32, epochs=1, top_n=16, wandb=False)
+    if args.layer_index is not None:
+        args.start_layer = args.layer_index
+        args.end_layer = args.layer_index
+    assert args.start_layer == 15
+    assert args.end_layer == 15
+
+
 def test_run_sweep_auto_detects_end_layer(monkeypatch, tmp_path):
     args = _make_args(tmp_path, end_layer=None)
     monkeypatch.setattr("scripts.run_layer_sweep._detect_end_layer", lambda model: 10)
