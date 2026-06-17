@@ -124,7 +124,8 @@ class EpisodeLogger:
                         summary["gbs_converged_round"])
                 self._wandb.summary["gbs_converged"] = summary.get(
                     "gbs_converged", False)
-                artifact = self._wandb.Artifact(
+                import wandb as _wandb
+                artifact = _wandb.Artifact(
                     f"episode-{self.episode}-trace", type="trace")
                 artifact.add_file(self.path)
                 self._wandb.log_artifact(artifact)
