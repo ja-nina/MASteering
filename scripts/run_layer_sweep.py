@@ -118,7 +118,7 @@ def main():
                     help="Process exactly this one layer index (for SLURM job arrays). "
                          "Overrides --start-layer / --end-layer when set.")
     ap.add_argument("--start-layer", type=int, default=10)
-    ap.add_argument("--end-layer", type=int, default=None,
+    ap.add_argument("--end-layer", type=int, default=18,
                     help="Default: auto-detect (model's num_hidden_layers - 1)")
     ap.add_argument("--num-episodes", type=int, default=500)
     ap.add_argument("--max-rounds", type=int, default=4)

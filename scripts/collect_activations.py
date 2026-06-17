@@ -43,9 +43,17 @@ TOM_SUFFIX_BEAUTY_CONTEST = (
 )
 
 TOM_SUFFIX_GBS = (
-    "\n\nBefore you answer, think carefully about what the other players "
-    "are likely to contribute. Coordinate with them so your contributions "
-    "sum to the target as quickly as possible."
+    """
+      Assume the other players are rational and are also attempting to model your reasoning.
+
+      Ask:
+
+      * What contribution would another player expect me to choose?
+      * What contribution would they choose in response to that expectation?
+      * What contribution is most likely to emerge if all players reason in this way?
+
+      Select the contribution that is most likely to be part of a mutually consistent set of choices across all players.
+    """
 )
 
 TOM_SUFFIX_BY_GAME = {
