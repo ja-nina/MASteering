@@ -161,6 +161,18 @@ def collect_rows(logs_dir: str) -> list[dict]:
     return rows
 
 
+def _fmt(val, fmt) -> str:
+    """Format a value, showing '-' for nan/None."""
+    if val is None:
+        return "-"
+    try:
+        if val != val:  # nan check
+            return "-"
+        return format(val, fmt)
+    except (TypeError, ValueError):
+        return "-"
+
+
 def print_table(rows: list[dict]) -> None:
     """Print a grouped summary: mean metrics per (game, steering, scope, layer)."""
     from collections import defaultdict
@@ -170,12 +182,17 @@ def print_table(rows: list[dict]) -> None:
         key = (r["game"], r["steering"], r["scope"], r["layer"])
         groups[key].append(r)
 
+    # sort with None layer last (baselines)
+    def sort_key(k):
+        game, steering, scope, layer = k
+        return (game, steering, scope, layer if layer is not None else 9999)
+
     print(f"\n{'game':<18} {'steering':<12} {'scope':<6} {'layer':<7} "
           f"{'n_ep':<6} {'mean_reward':<13} {'mean_guess':<12} "
           f"{'gbs_conv%':<10} {'gbs_conv_rd':<12} {'mean_abs_err'}")
     print("-" * 110)
 
-    for key in sorted(groups):
+    for key in sorted(groups, key=sort_key):
         game, steering, scope, layer = key
         grp = groups[key]
         n = len(grp)
@@ -190,9 +207,11 @@ def print_table(rows: list[dict]) -> None:
 
         layer_str = str(layer) if layer is not None else "-"
         print(f"{game:<18} {steering:<12} {scope:<6} {layer_str:<7} "
-              f"{n:<6} {avg('mean_reward'):<13.3f} {avg('mean_guess'):<12.1f} "
-              f"{pct('gbs_converged'):<10.1f} {avg('gbs_converged_round'):<12.1f} "
-              f"{avg('mean_abs_gbs_error'):.2f}")
+              f"{n:<6} {_fmt(avg('mean_reward'), '.3f'):<13} "
+              f"{_fmt(avg('mean_guess'), '.1f'):<12} "
+              f"{_fmt(pct('gbs_converged'), '.1f'):<10} "
+              f"{_fmt(avg('gbs_converged_round'), '.1f'):<12} "
+              f"{_fmt(avg('mean_abs_gbs_error'), '.2f')}")
 
 
 def main():
