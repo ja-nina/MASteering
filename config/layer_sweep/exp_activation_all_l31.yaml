@@ -1,0 +1,37 @@
+run_id: exp_activation_all_l31
+
+game:
+  family: symbolic
+  id: beauty_contest
+  env_kwargs:
+    num_rounds: 5
+episodes: 50
+
+model:
+  backend: transformers
+  model_id: Qwen/Qwen3-4B
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+
+agents:
+  count: 4
+  concurrency: sequential
+  max_parse_retries: 5
+
+steering:
+  default: activation
+  default_config:
+    layer: model.layers.31
+    vector_path: vectors/tom_sae_top16_beauty_contest_model_layers_31_resid_d16384_k32.npy
+    coefficient: 20.0
+  per_agent: {}
+
+logging:
+  dir: logs/
+
+wandb:
+  enabled: true
+  project: ma-steering
+  name: exp_activation_all_l31
+  tags: [beauty_contest, activation, sae, all_agents, layer_31]
