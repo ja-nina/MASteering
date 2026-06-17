@@ -74,6 +74,7 @@ class Orchestrator:
                     parse_retries=d["retries"],
                     reward=result.rewards.get(agent_id, 0.0),
                     steering_spec_id=d["spec_id"],
+                    info=result.info,
                 )
             turn += 1
             done = result.done
