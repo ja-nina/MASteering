@@ -36,7 +36,7 @@ class _SteeringSession:
 class TransformersPolicy:
     def __init__(self, model_id: str = "Qwen/Qwen3-4B",
                  temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20,
-                 max_new_tokens: int = 256,
+                 max_new_tokens: int = 2048,
                  device: Optional[str] = None,
                  enable_thinking: bool = False,
                  steering: Optional[object] = None) -> None:
@@ -76,6 +76,10 @@ class TransformersPolicy:
                 top_p=self.top_p, top_k=self.top_k,
                 pad_token_id=self.tokenizer.eos_token_id)
         gen = out[0][inputs["input_ids"].shape[1]:]
+        self._last_truncated = (
+            len(gen) >= self.max_new_tokens
+            and gen[-1].item() != self.tokenizer.eos_token_id
+        )
         return self.tokenizer.decode(gen, skip_special_tokens=True)
 
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,

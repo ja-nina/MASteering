@@ -14,12 +14,9 @@ class ActionParser(Protocol):
 
 
 def extract_int(text: str, keyword: Optional[str] = None) -> Optional[int]:
-    """Extract an integer. If keyword given (e.g. 'CHOICE'), prefer 'CHOICE: <n>'."""
+    """Extract an integer. If keyword given, only match 'KEYWORD: <n>' — no fallback."""
     if keyword:
         m = re.search(rf"{keyword}\s*[:=]\s*(-?\d+)", text, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
+        return int(m.group(1)) if m else None
     nums = re.findall(r"-?\d+", text)
-    if nums:
-        return int(nums[-1])  # last number is usually the final answer
-    return None
+    return int(nums[-1]) if nums else None

@@ -34,6 +34,7 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
             temperature=model_cfg.get("temperature", 0.7),
             top_p=model_cfg.get("top_p", 0.8),
             top_k=model_cfg.get("top_k", 20),
+            max_new_tokens=model_cfg.get("max_new_tokens", 1024),
             enable_thinking=model_cfg.get("enable_thinking", False),
             steering=steering)
     if backend == "vllm":

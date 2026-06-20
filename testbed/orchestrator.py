@@ -33,8 +33,10 @@ class Orchestrator:
         user = base_user
         retries = 0
         completion = ""
+        truncated = False
         while True:
             completion = self.policy.act(system, user, agent_id, spec)
+            truncated = getattr(self.policy, "_last_truncated", False)
             result = self.parser.parse(completion, raw_obs, agent_id, self._context())
             if isinstance(result, ParsedAction):
                 action = result.value
@@ -48,6 +50,7 @@ class Orchestrator:
         return {
             "action": action, "system": system, "user": base_user,
             "completion": completion, "retries": retries, "spec_id": spec_id,
+            "truncated": truncated,
         }
 
     def run_episode(self) -> Dict[str, float]:
@@ -75,6 +78,7 @@ class Orchestrator:
                     reward=result.rewards.get(agent_id, 0.0),
                     steering_spec_id=d["spec_id"],
                     info=result.info,
+                    truncated=d.get("truncated", False),
                 )
             turn += 1
             done = result.done

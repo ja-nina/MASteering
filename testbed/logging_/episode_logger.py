@@ -31,13 +31,15 @@ class EpisodeLogger:
                  user_prompt: str, completion: str, parsed_action: Any,
                  parse_retries: int, reward: float,
                  steering_spec_id: Optional[str],
-                 info: Optional[Dict[str, Any]] = None) -> None:
+                 info: Optional[Dict[str, Any]] = None,
+                 truncated: bool = False) -> None:
         rec = {
             "run_id": self.run_id, "episode": self.episode, "game": game,
             "turn": turn, "agent_id": agent_id, "system_prompt": system_prompt,
             "user_prompt": user_prompt, "completion": completion,
             "parsed_action": parsed_action, "parse_retries": parse_retries,
             "reward": reward, "steering_spec_id": steering_spec_id,
+            "truncated": truncated,
             "info": info or {},
         }
         self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -52,7 +54,8 @@ class EpisodeLogger:
             f"[USER]\n{user_prompt}\n\n"
             f"[COMPLETION]\n{completion}\n\n"
             f"[ACTION={parsed_action}  REWARD={reward:.3f}"
-            f"  RETRIES={parse_retries}]\n\n"
+            f"  RETRIES={parse_retries}"
+            f"{'  TRUNCATED' if truncated else ''}]\n\n"
         )
         if info:
             self._trace.write(f"[INFO] {json.dumps(info)}\n\n")
