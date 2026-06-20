@@ -25,7 +25,7 @@ class GBSRenderer:
         return (
             f"You are {agent_id} in a cooperative Group Sum game.\n\n"
             "RULES\n"
-            "- There is a hidden target number. Your group must make your individual "
+            "- There is a hidden, unchanging, target number. Your group must make your individual "
             "contributions sum exactly to that target.\n"
             "- Every round, each player simultaneously submits a non-negative integer.\n"
             "- After each round you receive feedback on how close the group sum was "
