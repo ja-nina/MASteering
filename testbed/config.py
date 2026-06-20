@@ -24,7 +24,7 @@ def build_steering(cfg: Dict[str, Any]):
     raise ValueError(f"Unknown steering method: {method}")
 
 
-_TRANSFORMERS_STRUCTURAL = {"backend", "model_id", "device", "enable_thinking"}
+_TRANSFORMERS_STRUCTURAL = {"backend", "model_id", "device", "enable_thinking", "reasoning_cue"}
 
 
 def build_policy(model_cfg: Dict[str, Any], steering=None):
@@ -38,6 +38,7 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
             model_id=model_id,
             device=model_cfg.get("device"),
             enable_thinking=model_cfg.get("enable_thinking", False),
+            reasoning_cue=model_cfg.get("reasoning_cue", False),
             steering=steering,
             **gen_kwargs,
         )

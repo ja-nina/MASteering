@@ -43,19 +43,24 @@ class TransformersPolicy:
     def __init__(self, model_id: str = "Qwen/Qwen3-4B",
                  device: Optional[str] = None,
                  enable_thinking: bool = False,
+                 reasoning_cue: bool = False,
                  steering: Optional[object] = None,
                  **gen_kwargs) -> None:
         """
-        All keyword args beyond the structural ones (model_id, device,
-        enable_thinking, steering) are forwarded directly to model.generate().
-        Supported examples: temperature, top_p, top_k, max_new_tokens,
-        repetition_penalty, presence_penalty (mapped to repetition_penalty).
+        enable_thinking   — use Qwen3 native thinking mode (<think> tokens).
+        reasoning_cue     — prime the assistant turn with '<think>\\n' so the
+                            model reasons in a closed scope before answering,
+                            without enabling native thinking mode. Ignored when
+                            enable_thinking is True.
+        All remaining kwargs are forwarded directly to model.generate()
+        (e.g. temperature, top_p, top_k, max_new_tokens, repetition_penalty).
         """
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.model_id = model_id
         self.enable_thinking = enable_thinking
+        self.reasoning_cue = reasoning_cue and not enable_thinking
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         dtype = torch.float16 if self.device == "cuda" else torch.float32
@@ -86,7 +91,8 @@ class TransformersPolicy:
             and gen[-1].item() != self.tokenizer.eos_token_id
         )
 
-        if self.enable_thinking:
+        if self.enable_thinking or self.reasoning_cue:
+            # Preserve <think>...</think> structure in the trace.
             text = self.tokenizer.decode(gen, skip_special_tokens=False)
             eos = self.tokenizer.eos_token or ""
             return text.rstrip().removesuffix(eos).rstrip()
@@ -111,4 +117,8 @@ class TransformersPolicy:
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
             enable_thinking=self.enable_thinking)
+        if self.reasoning_cue:
+            # Prime the assistant turn with an open think block so the model
+            # reasons inside it before producing the structured answer.
+            text += "<think>\n"
         return self.tokenizer(text, return_tensors="pt").to(self.device)

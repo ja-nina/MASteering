@@ -33,7 +33,7 @@ class GBSRenderer:
             "- You do NOT see other players' individual submissions — only the group total.\n"
             "- The game ends when the group sum equals the target, or after the maximum number "
             "of rounds. The current round number and rounds remaining are shown each turn.\n\n"
-            "Respond only in the form: CONTRIBUTION: <integer>"
+            "Reason step by step, then respond in the form: CONTRIBUTION: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
@@ -72,5 +72,5 @@ class GBSRenderer:
                     f"({result}) | your contribution={my_contrib}"
                 )
 
-        lines.append("Respond with your contribution in the form: CONTRIBUTION: <integer>")
+        lines.append("Reason step by step, then give your answer in the form: CONTRIBUTION: <integer>")
         return "\n".join(lines)
