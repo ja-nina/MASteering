@@ -50,6 +50,7 @@ class GBSAdapter(SymbolicAdapter):
         return {
             "agent_id": agent_id,
             "round_index": self.context.round_index,
+            "num_rounds": self.num_rounds,
             "num_players": self.num_players,
             "feedback": self.feedback,
             # history entries expose contributions so the renderer can show

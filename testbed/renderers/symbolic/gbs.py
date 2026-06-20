@@ -31,18 +31,28 @@ class GBSRenderer:
             "- After each round you receive feedback on how close the group sum was "
             "to the target (the exact feedback mode is described below).\n"
             "- You do NOT see other players' individual submissions — only the group total.\n"
-            "- The game ends when the group sum equals the target, or after the maximum "
-            "number of rounds.\n\n"
+            "- The game ends when the group sum equals the target, or after the maximum number "
+            "of rounds. The current round number and rounds remaining are shown each turn.\n\n"
             "Respond only in the form: CONTRIBUTION: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
         rnd = raw_obs["round_index"] + 1
+        num_rounds = raw_obs.get("num_rounds")
         n = raw_obs["num_players"]
         feedback_mode = raw_obs.get("feedback", "exact")
 
+        if num_rounds is not None:
+            remaining = num_rounds - rnd
+            round_str = (
+                f"Round {rnd} of {num_rounds} "
+                f"({remaining} round{'s' if remaining != 1 else ''} remaining after this)."
+            )
+        else:
+            round_str = f"Round {rnd}."
+
         lines = [
-            f"Round {rnd}. There are {n} players.",
+            f"{round_str} There are {n} players.",
             f"Feedback mode: {_FEEDBACK_DESC[feedback_mode]}",
         ]
 
