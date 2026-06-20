@@ -36,7 +36,7 @@ class _SteeringSession:
 class TransformersPolicy:
     def __init__(self, model_id: str = "Qwen/Qwen3-4B",
                  temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20,
-                 max_new_tokens: int = 2048,
+                 max_new_tokens: int = 12048,
                  device: Optional[str] = None,
                  enable_thinking: bool = False,
                  steering: Optional[object] = None) -> None:

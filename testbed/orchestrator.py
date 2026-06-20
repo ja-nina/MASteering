@@ -34,6 +34,8 @@ class Orchestrator:
         retries = 0
         completion = ""
         truncated = False
+        print(system)
+        print(user)
         while True:
             completion = self.policy.act(system, user, agent_id, spec)
             truncated = getattr(self.policy, "_last_truncated", False)
@@ -46,7 +48,7 @@ class Orchestrator:
                 break
             retries += 1
             user = base_user + "\n\n" + result.feedback  # re-prompt with feedback
-
+        print(completion)
         return {
             "action": action, "system": system, "user": base_user,
             "completion": completion, "retries": retries, "spec_id": spec_id,
