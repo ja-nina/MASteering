@@ -2,7 +2,7 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0,10-35%8      # task 0 = baselines; tasks 10-35 = per-layer activation
+#SBATCH --array=0      # task 0 = baselines; tasks 10-35 = per-layer activation
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/evals_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/evals_%A_%a.err
 #SBATCH -t 4:00:00

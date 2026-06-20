@@ -43,8 +43,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from testbed.registry import build_game  # noqa: E402
 
 DEFAULT_TOM_SUFFIX = (
-    "\n\nBefore you answer, think carefully about what the other players "
-    "are likely to do. Model their reasoning and best-respond to it."
+      """Assume the other players are rational and are also attempting to model your reasoning.
+
+      Ask:
+
+      * What contribution would another player expect me to choose?
+      * What contribution would they choose in response to that expectation?
+      * What contribution is most likely to emerge if all players reason in this way?
+
+      Select the contribution that is most likely to be part of a mutually consistent set of choices across all players."""
+
 )
 
 # ── prompt generation ──────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@
 set -euo pipefail
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME}"
 
-GAME="${1:-beauty_contest}"               # beauty_contest | gbs
+GAME="${1:-gbs}"               # beauty_contest | gbs
 
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
@@ -35,8 +35,8 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
   --game "${GAME}" \
   --model Qwen/Qwen3-4B \
   --layer-index "${SLURM_ARRAY_TASK_ID}" \
-  --num-episodes 500 \
-  --max-rounds 15 \
+  --num-episodes 400 \
+  --max-rounds 10 \
   --num-players 4 \
   --activations-dir /scratch/inf0/user/nzukowsk/activations \
   --sae-dir /scratch/inf0/user/nzukowsk/sae \
