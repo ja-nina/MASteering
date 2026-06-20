@@ -38,6 +38,7 @@ class TransformersPolicy:
                  temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20,
                  max_new_tokens: int = 256,
                  device: Optional[str] = None,
+                 enable_thinking: bool = False,
                  steering: Optional[object] = None) -> None:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -47,6 +48,7 @@ class TransformersPolicy:
         self.top_p = top_p
         self.top_k = top_k
         self.max_new_tokens = max_new_tokens
+        self.enable_thinking = enable_thinking
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         # GTX 16xx / Turing cards don't support bfloat16; use float16 on CUDA
@@ -62,7 +64,7 @@ class TransformersPolicy:
                     {"role": "user", "content": user_prompt}]
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
-            enable_thinking=False)
+            enable_thinking=self.enable_thinking)
         return self.tokenizer(text, return_tensors="pt").to(self.device)
 
     def _generate(self, inputs) -> str:
