@@ -24,19 +24,23 @@ def build_steering(cfg: Dict[str, Any]):
     raise ValueError(f"Unknown steering method: {method}")
 
 
+_TRANSFORMERS_STRUCTURAL = {"backend", "model_id", "device", "enable_thinking"}
+
+
 def build_policy(model_cfg: Dict[str, Any], steering=None):
     backend = model_cfg.get("backend", "transformers")
     model_id = model_cfg["model_id"]
     if backend == "transformers":
         from testbed.policy.transformers_policy import TransformersPolicy
+        gen_kwargs = {k: v for k, v in model_cfg.items()
+                      if k not in _TRANSFORMERS_STRUCTURAL}
         return TransformersPolicy(
             model_id=model_id,
-            temperature=model_cfg.get("temperature", 0.7),
-            top_p=model_cfg.get("top_p", 0.8),
-            top_k=model_cfg.get("top_k", 20),
-            max_new_tokens=model_cfg.get("max_new_tokens", 1024),
+            device=model_cfg.get("device"),
             enable_thinking=model_cfg.get("enable_thinking", False),
-            steering=steering)
+            steering=steering,
+            **gen_kwargs,
+        )
     if backend == "vllm":
         from testbed.policy.vllm_policy import VLLMPolicy
         return VLLMPolicy(

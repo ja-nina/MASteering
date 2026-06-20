@@ -1,14 +1,20 @@
 """In-process HuggingFace policy with activation-steering forward hooks."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from testbed.steering.activation import make_steering_hook
 from testbed.types import SteeringSpec
 
+_GEN_DEFAULTS: Dict[str, Any] = {
+    "max_new_tokens": 1024,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+}
+
 
 def _resolve_submodule(model, dotted_name: str):
-    """Resolve 'a.b.c' to a submodule of model."""
     obj = model
     for part in dotted_name.split("."):
         obj = getattr(obj, part)
@@ -35,53 +41,52 @@ class _SteeringSession:
 
 class TransformersPolicy:
     def __init__(self, model_id: str = "Qwen/Qwen3-4B",
-                 temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20,
-                 max_new_tokens: int = 12048,
                  device: Optional[str] = None,
                  enable_thinking: bool = False,
-                 steering: Optional[object] = None) -> None:
+                 steering: Optional[object] = None,
+                 **gen_kwargs) -> None:
+        """
+        All keyword args beyond the structural ones (model_id, device,
+        enable_thinking, steering) are forwarded directly to model.generate().
+        Supported examples: temperature, top_p, top_k, max_new_tokens,
+        repetition_penalty, presence_penalty (mapped to repetition_penalty).
+        """
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.model_id = model_id
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.max_new_tokens = max_new_tokens
         self.enable_thinking = enable_thinking
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        # GTX 16xx / Turing cards don't support bfloat16; use float16 on CUDA
         dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, torch_dtype=dtype).to(self.device)
         self.model.eval()
-        # the steering method (ActivationSteering) used to load vectors by agent
         self.steering = steering
-
-    def _build_inputs(self, system_prompt: str, user_prompt: str):
-        messages = [{"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}]
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-            enable_thinking=self.enable_thinking)
-        return self.tokenizer(text, return_tensors="pt").to(self.device)
+        self._gen_kwargs: Dict[str, Any] = {**_GEN_DEFAULTS, **gen_kwargs}
 
     def _generate(self, inputs) -> str:
         import torch
+
+        temperature = self._gen_kwargs.get("temperature", 0.7)
+        max_new_tokens = self._gen_kwargs.get("max_new_tokens", 1024)
+        kwargs = {
+            **self._gen_kwargs,
+            "do_sample": temperature > 0,
+            "temperature": max(temperature, 1e-5),
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+
         with torch.no_grad():
-            out = self.model.generate(
-                **inputs, max_new_tokens=self.max_new_tokens,
-                do_sample=self.temperature > 0, temperature=max(self.temperature, 1e-5),
-                top_p=self.top_p, top_k=self.top_k,
-                pad_token_id=self.tokenizer.eos_token_id)
+            out = self.model.generate(**inputs, **kwargs)
+
         gen = out[0][inputs["input_ids"].shape[1]:]
         self._last_truncated = (
-            len(gen) >= self.max_new_tokens
+            len(gen) >= max_new_tokens
             and gen[-1].item() != self.tokenizer.eos_token_id
         )
+
         if self.enable_thinking:
-            # Preserve <think>...</think> tags in the trace; only strip end-of-seq markers.
             text = self.tokenizer.decode(gen, skip_special_tokens=False)
             eos = self.tokenizer.eos_token or ""
             return text.rstrip().removesuffix(eos).rstrip()
@@ -93,9 +98,17 @@ class TransformersPolicy:
         if steering is not None and steering.method == "activation":
             if self.steering is None:
                 raise ValueError("Activation steering requested but no steering "
-                                 "method bound to the policy to load vectors.")
+                                 "method bound to the policy.")
             vec = self.steering.load_vector(agent_id)
             hook = make_steering_hook(vec, coefficient=steering.coefficient)
             with _SteeringSession(self.model, steering.layer, hook):
                 return self._generate(inputs)
         return self._generate(inputs)
+
+    def _build_inputs(self, system_prompt: str, user_prompt: str):
+        messages = [{"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=self.enable_thinking)
+        return self.tokenizer(text, return_tensors="pt").to(self.device)
