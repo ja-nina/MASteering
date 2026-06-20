@@ -80,6 +80,11 @@ class TransformersPolicy:
             len(gen) >= self.max_new_tokens
             and gen[-1].item() != self.tokenizer.eos_token_id
         )
+        if self.enable_thinking:
+            # Preserve <think>...</think> tags in the trace; only strip end-of-seq markers.
+            text = self.tokenizer.decode(gen, skip_special_tokens=False)
+            eos = self.tokenizer.eos_token or ""
+            return text.rstrip().removesuffix(eos).rstrip()
         return self.tokenizer.decode(gen, skip_special_tokens=True)
 
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,
