@@ -1,0 +1,42 @@
+run_id: gbs_exp_prompt_all_directional_tom
+
+# Explicit ToM prompt under directional feedback.
+# With no numeric error signal, modeling other players' beliefs is the primary
+# lever for estimating the right adjustment magnitude.
+# Compare against gbs_exp_noop_directional.yaml and gbs_exp_prompt_all_directional.yaml.
+
+game:
+  family: symbolic
+  id: gbs
+  env_kwargs:
+    num_rounds: 10
+    feedback: directional
+episodes: 50
+model:
+  backend: transformers
+  model_id: Qwen/Qwen3-4B
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+agents:
+  count: 4
+  concurrency: sequential
+  max_parse_retries: 5
+steering:
+  default: prompt_injection
+  default_config:
+    user_prefix: >-
+      Before answering, reason explicitly about each other player's mental
+      state: given only the directional feedback (too HIGH / too LOW) seen so
+      far, what do they believe the target to be, and how much are they likely
+      to adjust their contribution this round? Use this model of other players'
+      beliefs and intentions to choose a contribution that moves the group sum
+      as close to the target as possible.
+  per_agent: {}
+logging:
+  dir: logs/
+wandb:
+  enabled: false
+  project: ma-steering
+  name: gbs_exp_prompt_all_directional_tom
+  tags: [gbs, prompt_injection, all_agents, directional, tom]
