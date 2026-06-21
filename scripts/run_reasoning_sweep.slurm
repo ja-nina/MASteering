@@ -29,7 +29,7 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
 MODES=(noop non_thinking thinking)
-GAMES=(beauty_contest gbs)
+GAMES=(gbs beauty_contest)
 PLAYERS=(2 3 4)
 
 T=${SLURM_ARRAY_TASK_ID}
