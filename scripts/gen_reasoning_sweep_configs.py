@@ -81,7 +81,6 @@ for game in GAMES:
                     "id": game,
                     "env_kwargs": {
                         "num_rounds": GAME_ROUNDS[game],
-                        "num_players": n,
                     },
                 },
                 "episodes": 10,
