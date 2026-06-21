@@ -7,15 +7,15 @@ from testbed.types import ParsedAction, ParseError, ParseResult, RawObs, RenderC
 class GBSParser:
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
-        n = extract_int(completion, keyword="CONTRIBUTION")
+        n = extract_int(completion, keyword="NUMBER")
         if n is None:
             return ParseError(
                 feedback="I could not find a number. "
-                         "Respond with 'CONTRIBUTION: <integer>'."
+                         "Respond with 'NUMBER: <integer>'."
             )
         if n < 0:
             return ParseError(
-                feedback=f"Contributions must be non-negative, got {n}. "
-                         "Respond with 'CONTRIBUTION: <integer>'."
+                feedback=f"Your number must be non-negative, got {n}. "
+                         "Respond with 'NUMBER: <integer>'."
             )
         return ParsedAction(value=n)

@@ -13,7 +13,7 @@ class BeautyContestRenderer:
             "- The player whose guess is closest to the target wins that round. Ties are shared.\n"
             "- After each round you will see: the group average, the winning target, "
             "your own guess, and whether it was too high, too low, or a win.\n\n"
-            "Reason step by step, then respond in the form: CHOICE: <integer>"
+            "Respond in the form: CHOICE: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
@@ -43,5 +43,5 @@ class BeautyContestRenderer:
                         verdict = "too LOW"
                     summary += f" | you guessed {my_guess:.0f} ({verdict})"
                 lines.append(summary)
-        lines.append("Reason step by step, then give your answer in the form: CHOICE: <integer>")
+        lines.append("Respond in the form: CHOICE: <integer>")
         return "\n".join(lines)

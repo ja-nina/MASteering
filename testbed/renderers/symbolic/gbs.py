@@ -26,14 +26,14 @@ class GBSRenderer:
             f"You are {agent_id} in a cooperative Group Sum game.\n\n"
             "RULES\n"
             "- There is a hidden, unchanging, target number. Your group must make your individual "
-            "contributions sum exactly to that target.\n"
+            "numbers sum exactly to that target.\n"
             "- Every round, each player simultaneously submits a non-negative integer.\n"
             "- After each round you receive feedback on how close the group sum was "
             "to the target (the exact feedback mode is described below).\n"
             "- You do NOT see other players' individual submissions — only the group total.\n"
             "- The game ends when the group sum equals the target, or after the maximum number "
             "of rounds. The current round number and rounds remaining are shown each turn.\n\n"
-            "Reason step by step, then respond in the form: CONTRIBUTION: <integer>"
+            "Respond in the form: NUMBER: <integer>"
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
@@ -69,8 +69,8 @@ class GBSRenderer:
                     result = "too HIGH" if error > 0 else "too LOW"
                 lines.append(
                     f"  Round {h['round']}: group sum={h['group_sum']} "
-                    f"({result}) | your contribution={my_contrib}"
+                    f"({result}) | your number={my_contrib}"
                 )
 
-        lines.append("Reason step by step, then give your answer in the form: CONTRIBUTION: <integer>")
+        lines.append("Respond in the form: NUMBER: <integer>")
         return "\n".join(lines)

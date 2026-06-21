@@ -68,9 +68,9 @@ class _RandomPolicy:
     """Generates random valid actions without loading any model."""
 
     def act(self, system: str, user: str, agent_id: str, steering) -> str:
-        # Goldstone GBS: submit a random non-negative contribution
-        if "CONTRIBUTION:" in user:
-            return f"CONTRIBUTION: {random.randint(0, 50)}"
+        # Goldstone GBS: submit a random number
+        if "NUMBER:" in user:
+            return f"NUMBER: {random.randint(0, 50)}"
         # beauty_contest: parse allowed range from the rendered user prompt
         low, high = 0, 100
         for line in user.splitlines():
