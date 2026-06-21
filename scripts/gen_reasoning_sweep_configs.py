@@ -25,13 +25,13 @@ MODES = ["noop", "non_thinking", "thinking"]
 
 WANDB_PROJECT = "ma-steering-tom-effectiveness"
 
-GAME_ROUNDS = {"beauty_contest": 5, "gbs": 10}
+GAME_ROUNDS = {"beauty_contest": 10, "gbs": 20}
 
 REASONING_PREFIX = (
+    "Assume the other players are rational and are also attempting to model your reasoning."
     "Before answering, think step by step: "
-    "what does the history tell you about the best move? "
-    "What are other players likely to do? "
-    "What action maximises your chance of success? "
+    "what does the history tell you about the next best move? "
+    "What are other players likely to do? What do they think I am likely to do, judging from their perspective?"
 )
 
 for game in GAMES:
