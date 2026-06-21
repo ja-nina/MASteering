@@ -34,14 +34,14 @@ T=${SLURM_ARRAY_TASK_ID}
 
 if [ "${T}" -lt 18 ]; then
   # ── Qwen3-4B: 3 modes x 2 games x 3 players (tasks 0-17) ──────────────────
-  MODES=(noop non_thinking thinking)
-  GAMES=(gbs beauty_contest)
-  PLAYERS=(2 3 4)
-  MODE=${MODES[$((T / 6))]}
-  GAME=${GAMES[$(( (T / 3) % 2 ))]}
-  N=${PLAYERS[$((T % 3))]}
-  CONFIG="config/reasoning_sweep/${GAME}_${MODE}_${N}p.yaml"
-else
+#   MODES=(noop non_thinking thinking)
+#   GAMES=(gbs beauty_contest)
+#   PLAYERS=(2 3 4)
+#   MODE=${MODES[$((T / 6))]}
+#   GAME=${GAMES[$(( (T / 3) % 2 ))]}
+#   N=${PLAYERS[$((T % 3))]}
+#   CONFIG="config/reasoning_sweep/${GAME}_${MODE}_${N}p.yaml"
+# else
   # ── gpt-oss-20b: 2 modes x 2 games x 3 players (tasks 18-29) ──────────────
   S=$(( T - 18 ))
   MODES=(thinking non_thinking)
