@@ -64,8 +64,10 @@ class TransformersPolicy:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         dtype = torch.float16 if self.device == "cuda" else torch.float32
+        disable_quantization = gen_kwargs.pop("disable_quantization", False)
+        load_kwargs = {"quantization_config": None} if disable_quantization else {}
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=dtype).to(self.device)
+            model_id, dtype=dtype, **load_kwargs).to(self.device)
         self.model.eval()
         self.steering = steering
         self._gen_kwargs: Dict[str, Any] = {**_GEN_DEFAULTS, **gen_kwargs}

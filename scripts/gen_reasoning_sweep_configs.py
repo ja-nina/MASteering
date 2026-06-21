@@ -55,9 +55,11 @@ def model_cfg(model_id: str, mode: str) -> dict:
                     "temperature": 0.7, "top_p": 0.8, "top_k": 20,
                     "repetition_penalty": 1.05}
     else:
-        # gpt-oss-20b: reasoning level is set via system_suffix, not model flags
+        # gpt-oss-20b: reasoning level via system_suffix; disable built-in MXFP4
+        # quantization (requires torch>=2.4) and load in float16 instead
         return {**base, "enable_thinking": False,
-                "temperature": 0.7, "top_p": 0.9, "top_k": 20}
+                "temperature": 0.7, "top_p": 0.9, "top_k": 20,
+                "disable_quantization": True}
 
 
 def steering_cfg(model_id: str, mode: str) -> dict:
