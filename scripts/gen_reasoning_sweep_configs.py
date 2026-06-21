@@ -43,21 +43,48 @@ REASONING_PREFIX = (
 
 def model_cfg(model_id: str, mode: str) -> dict:
     base = {"backend": "transformers", "model_id": model_id}
-    if mode == "thinking":
-        return {**base, "enable_thinking": True,
-                "temperature": 0.6, "top_p": 0.95, "top_k": 20}
-    else:  # noop / non_thinking
+    is_qwen3 = "Qwen3" in model_id
+    if is_qwen3:
+        if mode == "thinking":
+            # Qwen3 recommended thinking params
+            return {**base, "enable_thinking": True,
+                    "temperature": 0.6, "top_p": 0.95, "top_k": 20}
+        else:
+            # Qwen3 recommended non-thinking params
+            return {**base, "enable_thinking": False,
+                    "temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                    "repetition_penalty": 1.05}
+    else:
+        # gpt-oss-20b: reasoning level is set via system_suffix, not model flags
         return {**base, "enable_thinking": False,
-                "temperature": 0.7, "top_p": 0.8, "top_k": 20,
-                "repetition_penalty": 1.05}
+                "temperature": 0.7, "top_p": 0.9, "top_k": 20}
 
 
-def steering_cfg(mode: str) -> dict:
-    if mode == "non_thinking":
-        return {"default": "prompt_injection",
-                "default_config": {"user_prefix": REASONING_PREFIX},
-                "per_agent": {}}
-    return {"default": "noop", "per_agent": {}}
+def steering_cfg(model_id: str, mode: str) -> dict:
+    is_qwen3 = "Qwen3" in model_id
+    if is_qwen3:
+        if mode == "non_thinking":
+            return {"default": "prompt_injection",
+                    "default_config": {"user_prefix": REASONING_PREFIX},
+                    "per_agent": {}}
+        return {"default": "noop", "per_agent": {}}
+    else:
+        # gpt-oss-20b: steer reasoning depth via system_suffix
+        if mode == "thinking":
+            return {"default": "prompt_injection",
+                    "default_config": {
+                        "system_suffix": "\nReasoning: high",
+                        "user_prefix": REASONING_PREFIX,
+                    },
+                    "per_agent": {}}
+        elif mode == "non_thinking":
+            return {"default": "prompt_injection",
+                    "default_config": {
+                        "system_suffix": "\nReasoning: medium",
+                        "user_prefix": REASONING_PREFIX,
+                    },
+                    "per_agent": {}}
+        return {"default": "noop", "per_agent": {}}
 
 
 def write_config(model_id: str, model_tag: str, mode: str, game: str, n: int) -> None:
@@ -73,7 +100,7 @@ def write_config(model_id: str, model_tag: str, mode: str, game: str, n: int) ->
         "episodes": 10,
         "model": model_cfg(model_id, mode),
         "agents": {"count": n, "concurrency": "sequential", "max_parse_retries": 5},
-        "steering": steering_cfg(mode),
+        "steering": steering_cfg(model_id, mode),
         "logging": {"dir": "logs/reasoning_sweep/"},
         "wandb": {
             "enabled": True,
@@ -98,7 +125,7 @@ for game in GAMES:
 for mode in ["thinking", "non_thinking"]:
     for game in GAMES:
         for n in PLAYERS:
-            write_config("gpt-oss-20b", "20b", mode, game, n)
+            write_config("openai/gpt-oss-20b", "20b", mode, game, n)
 
 total = len(GAMES) * len(PLAYERS) * len(MODES) + 2 * len(GAMES) * len(PLAYERS)
 print(f"\nGenerated {total} configs → {OUT}/")
