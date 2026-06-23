@@ -122,7 +122,7 @@ for game in GAMES:
             write_config("Qwen/Qwen3-4B", "", mode, game, n)
 
 # ── tasks 18-29: gpt-oss-20b, thinking + non_thinking only ───────────────────
-for mode in ["thinking", "non_thinking"]:
+for mode in ["thinking", "noop", "non_thinking"]:
     for game in GAMES:
         for n in PLAYERS:
             write_config("openai/gpt-oss-20b", "20b", mode, game, n)
