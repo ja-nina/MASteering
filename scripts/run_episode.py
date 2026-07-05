@@ -18,7 +18,7 @@ from testbed.orchestrator import Orchestrator  # noqa: E402
 from testbed.registry import build_game  # noqa: E402
 
 
-def _init_wandb(cfg: RunConfig, raw: dict):
+def _init_wandb(cfg: RunConfig, raw: dict, shard: int, num_shards: int):
     """Return a wandb run if wandb is configured, else None."""
     wcfg = raw.get("wandb", {})
     if not wcfg.get("enabled", False):
@@ -28,9 +28,13 @@ def _init_wandb(cfg: RunConfig, raw: dict):
     except ImportError:
         print("wandb not installed — skipping. pip install wandb to enable.")
         return None
+    name = wcfg.get("name", cfg.run_id)
+    if num_shards > 1:
+        # distinguish concurrent shards of the same run_id in the wandb UI
+        name = f"{name}-shard{shard}"
     return wandb.init(
         project=wcfg.get("project", "ma-steering"),
-        name=wcfg.get("name", cfg.run_id),
+        name=name,
         tags=wcfg.get("tags", []),
         config={
             "run_id": cfg.run_id,
@@ -81,25 +85,39 @@ def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--shard", type=int, default=0,
+                        help="This process's shard index (0-based). "
+                             "Combined with --num-shards to split one "
+                             "run_id's episodes across concurrent processes.")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Total number of concurrent shards for this "
+                             "run_id. Episode ep is handled by shard "
+                             "ep %% num_shards. Default 1 = no sharding.")
     args = parser.parse_args(argv)
+
+    if not (0 <= args.shard < args.num_shards):
+        parser.error(f"--shard must be in [0, {args.num_shards}), got {args.shard}")
 
     with open(args.config, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     cfg = RunConfig.from_dict(raw)
 
+    my_episodes = [ep for ep in range(cfg.episodes) if ep % args.num_shards == args.shard]
     completed = _completed_episodes(cfg.logging_dir, cfg.run_id)
-    if completed:
+    remaining = [ep for ep in my_episodes if ep not in completed]
+    if args.num_shards > 1:
+        print(f"Shard {args.shard}/{args.num_shards} of {cfg.run_id}: "
+              f"{len(my_episodes)} assigned, {len(remaining)} remaining.")
+    elif completed:
         print(f"Resuming {cfg.run_id}: {len(completed)}/{cfg.episodes} "
               f"episode(s) already complete, skipping those.")
 
-    wandb_run = _init_wandb(cfg, raw)
+    wandb_run = _init_wandb(cfg, raw, args.shard, args.num_shards)
     steering = build_steering(cfg.steering)
     policy = build_policy(cfg.model, steering=steering)
 
     try:
-        for ep in range(cfg.episodes):
-            if ep in completed:
-                continue
+        for ep in remaining:
             env, renderer, parser_ = build_game(
                 family=cfg.game_family, game_id=cfg.game_id,
                 num_players=cfg.num_players or 3,
