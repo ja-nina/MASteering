@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
+import re
 import sys
+import zlib
 
 import yaml
 
@@ -42,6 +45,39 @@ def _init_wandb(cfg: RunConfig, raw: dict):
     )
 
 
+def _completed_episodes(logging_dir: str, run_id: str) -> set[int]:
+    """Episode indices that already have a summary.json — i.e. fully logged.
+
+    Used to resume a run across separate job submissions (e.g. a SLURM job
+    that hit its walltime) without re-running or overwriting episodes that
+    already completed successfully.
+    """
+    run_dir = os.path.join(logging_dir, run_id)
+    done = set()
+    for path in glob.glob(os.path.join(run_dir, "episode_*.summary.json")):
+        m = re.search(r"episode_(\d+)\.summary\.json$", os.path.basename(path))
+        if m:
+            done.add(int(m.group(1)))
+    return done
+
+
+def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
+    """Per-episode env kwargs, with a per-episode GBS seed injected.
+
+    GBSAdapter defaults to seed=0 when not given one, so without this every
+    episode (and every run_id/task sharing a player count) would draw the
+    identical hidden target. Deriving the seed from (run_id, episode) instead
+    gives each episode its own target, and different tasks (e.g. different
+    reasoning-sweep modes) their own independent sequence of targets, while
+    staying deterministic across resumed/rerun chunks of the same episode.
+    A config that already pins its own `seed` or `target` is left alone.
+    """
+    kwargs = dict(cfg.env_kwargs)
+    if cfg.game_id == "gbs" and "seed" not in kwargs and "target" not in kwargs:
+        kwargs["seed"] = zlib.crc32(f"{cfg.run_id}:{ep}".encode()) & 0xFFFFFFFF
+    return kwargs
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -51,15 +87,23 @@ def main(argv=None):
         raw = yaml.safe_load(f)
     cfg = RunConfig.from_dict(raw)
 
+    completed = _completed_episodes(cfg.logging_dir, cfg.run_id)
+    if completed:
+        print(f"Resuming {cfg.run_id}: {len(completed)}/{cfg.episodes} "
+              f"episode(s) already complete, skipping those.")
+
     wandb_run = _init_wandb(cfg, raw)
     steering = build_steering(cfg.steering)
     policy = build_policy(cfg.model, steering=steering)
 
     try:
         for ep in range(cfg.episodes):
+            if ep in completed:
+                continue
             env, renderer, parser_ = build_game(
                 family=cfg.game_family, game_id=cfg.game_id,
-                num_players=cfg.num_players or 3, env_kwargs=cfg.env_kwargs)
+                num_players=cfg.num_players or 3,
+                env_kwargs=_episode_env_kwargs(cfg, ep))
             logger = EpisodeLogger(
                 run_dir=cfg.logging_dir, run_id=cfg.run_id,
                 episode=ep, wandb_run=wandb_run)
