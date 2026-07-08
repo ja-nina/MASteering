@@ -269,6 +269,37 @@ def plot_response_length(rows: list[dict]):
     plt.close(fig)
 
 
+def plot_non_convergence(rows: list[dict]):
+    gbs_rows = [r for r in rows if r["game"] == "gbs"]
+    groups = group_rows(gbs_rows, ("model", "mode", "players"))
+
+    fig, axes = plt.subplots(1, len(MODEL_ORDER), figsize=(11, 4.2), sharey=True)
+    fig.suptitle("GBS — fraction of episodes without convergence",
+                 fontsize=12, color="#0b0b0b")
+
+    def value_fn(grp):
+        if not grp:
+            return None, 0.0, ""
+        non_conv = sum(1 for r in grp if not r.get("gbs_converged"))
+        return non_conv / len(grp), 0.0, f"{non_conv}/{len(grp)}"
+
+    for ax, model in zip(axes, MODEL_ORDER):
+        modes = MODEL_MODES[model]
+        bar_group(ax, groups, (model,), modes, value_fn, label_fmt=True)
+        add_reference_lines(ax, groups, (model,), modes, value_fn)
+        style_axis(ax, model,
+                   "fraction non-converged" if model == MODEL_ORDER[0] else "", modes)
+        ax.set_ylim(0, 1.1)
+
+    add_combined_legend(fig)
+    fig.text(0.5, 0.01, "Bar labels: non-converged / total episodes.",
+             ha="center", fontsize=8, color=MUTED)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.94))
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(FIG_DIR / "non_convergence.png", dpi=160)
+    plt.close(fig)
+
+
 def plot_n_datapoints(rows: list[dict]):
     gbs_rows = [r for r in rows if r["game"] == "gbs"]
     groups = group_rows(gbs_rows, ("model", "mode", "players"))
@@ -310,6 +341,7 @@ def main():
     print(f"Wrote {len(rows)} episode rows -> {OUT_CSV}")
 
     plot_rounds_to_success(rows)
+    plot_non_convergence(rows)
     plot_response_length(rows)
     plot_n_datapoints(rows)
     print(f"Wrote figures -> {FIG_DIR}/")
