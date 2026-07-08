@@ -26,6 +26,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 LOGS_DIR = Path("logs/reasoning_sweep")
@@ -34,14 +35,23 @@ FIG_DIR = Path("figures/reasoning_sweep")
 
 RUN_ID_RE = re.compile(r"^(?P<game>beauty_contest|gbs)_(?P<mode>non_thinking|noop_thinking|tom_thinking|noop|thinking|tom)_(?P<players>\d+)p(?P<model>_20b)?$")
 
-MODE_ORDER = ["noop", "noop_thinking", "non_thinking", "thinking", "tom", "tom_thinking"]
+# Modes plotted per model — Qwen3 only runs the 2x2 ToM ablation
+# (noop/noop_thinking × no-ToM/ToM); step-by-step and thinking are 20b-only.
+MODEL_MODES: dict[str, list[str]] = {
+    "Qwen3-4B":   ["noop", "noop_thinking", "tom", "tom_thinking"],
+    "gpt-oss-20b": ["noop", "noop_thinking", "non_thinking", "thinking", "tom", "tom_thinking"],
+}
 MODE_LABEL = {"noop": "noop", "noop_thinking": "noop+think",
-              "non_thinking": "non-thinking", "thinking": "thinking",
+              "non_thinking": "step-by-step", "thinking": "thinking",
               "tom": "tom", "tom_thinking": "tom+think"}
+
+# Modes drawn as horizontal reference lines so tom/tom_thinking can be compared
+# against the no-prompt baselines.
+REFERENCE_MODES = {"noop": "--", "noop_thinking": ":"}
 PLAYERS_ORDER = [2, 3, 4]
 MODEL_ORDER = ["Qwen3-4B", "gpt-oss-20b"]
-GAME_ORDER = ["beauty_contest", "gbs"]
-GAME_LABEL = {"beauty_contest": "Beauty Contest", "gbs": "GBS"}
+GAME_ORDER = ["gbs"]
+GAME_LABEL = {"gbs": "GBS"}
 
 # dataviz reference palette — fixed categorical slots, one per player count
 PLAYER_COLOR = {2: "#2a78d6", 3: "#1baf7a", 4: "#eda100"}
@@ -128,11 +138,11 @@ def group_rows(rows: list[dict], keys: tuple[str, ...]) -> dict:
 
 # ── plotting ─────────────────────────────────────────────────────────────────
 
-def style_axis(ax, title: str, ylabel: str):
+def style_axis(ax, title: str, ylabel: str, modes: list[str]):
     ax.set_title(title, fontsize=10, color="#0b0b0b")
     ax.set_ylabel(ylabel, fontsize=9, color="#52514e")
-    ax.set_xticks(range(len(MODE_ORDER)))
-    ax.set_xticklabels([MODE_LABEL[m] for m in MODE_ORDER], fontsize=9)
+    ax.set_xticks(range(len(modes)))
+    ax.set_xticklabels([MODE_LABEL[m] for m in modes], fontsize=9)
     ax.tick_params(axis="y", labelsize=8, colors="#52514e")
     ax.spines[["top", "right"]].set_visible(False)
     ax.spines[["left", "bottom"]].set_color(MUTED)
@@ -140,13 +150,13 @@ def style_axis(ax, title: str, ylabel: str):
     ax.set_axisbelow(True)
 
 
-def bar_group(ax, groups: dict, base_key: tuple, value_fn, label_fmt=None):
+def bar_group(ax, groups: dict, base_key: tuple, modes: list[str], value_fn, label_fmt=None):
     """Draw one cluster of bars (one per player count) at each mode position."""
     n_players = len(PLAYERS_ORDER)
     width = 0.8 / n_players
     for i, n in enumerate(PLAYERS_ORDER):
         xs, ys, errs, labels = [], [], [], []
-        for j, mode in enumerate(MODE_ORDER):
+        for j, mode in enumerate(modes):
             key = base_key + (mode, n)
             grp = groups.get(key, [])
             val, err, lab = value_fn(grp)
@@ -172,6 +182,39 @@ def add_player_legend(fig, loc="upper right"):
                frameon=False, loc=loc, bbox_to_anchor=(0.99, 0.97) if loc == "upper right" else None)
 
 
+def add_combined_legend(fig):
+    """Player-count patches + reference-line style guide in one figure legend."""
+    player_handles = [Patch(facecolor=PLAYER_COLOR[n], label=f"{n}p") for n in PLAYERS_ORDER]
+    ref_handles = [
+        Line2D([0], [0], color=MUTED, linewidth=1.3, linestyle="--",
+               label="noop baseline"),
+        Line2D([0], [0], color=MUTED, linewidth=1.3, linestyle=":",
+               label="noop+think baseline"),
+    ]
+    fig.legend(handles=player_handles + ref_handles,
+               title="players / baselines", fontsize=8, title_fontsize=8,
+               frameon=False, loc="upper right", bbox_to_anchor=(0.99, 0.97))
+
+
+def add_reference_lines(ax, groups: dict, base_key: tuple, modes: list[str], value_fn):
+    """Horizontal dashed/dotted lines at noop and noop_thinking means per player.
+
+    Only draws a line if the reference mode is actually in this model's mode list
+    (so Qwen3 still gets noop/noop_thinking lines since both are in its grid).
+    """
+    for mode, ls in REFERENCE_MODES.items():
+        if mode not in modes:
+            continue
+        for n in PLAYERS_ORDER:
+            key = base_key + (mode, n)
+            grp = groups.get(key, [])
+            val, _, _ = value_fn(grp)
+            if val is None or val == 0:
+                continue
+            ax.axhline(val, color=PLAYER_COLOR[n], linewidth=1.1,
+                       linestyle=ls, alpha=0.5, zorder=1)
+
+
 def plot_rounds_to_success(rows: list[dict]):
     gbs_rows = [r for r in rows if r["game"] == "gbs"]
     groups = group_rows(gbs_rows, ("model", "mode", "players"))
@@ -187,14 +230,14 @@ def plot_rounds_to_success(rows: list[dict]):
         return val, err, label
 
     for ax, model in zip(axes, MODEL_ORDER):
-        bar_group(ax, groups, (model,), value_fn, label_fmt=True)
-        style_axis(ax, model, "rounds to convergence" if model == MODEL_ORDER[0] else "")
+        modes = MODEL_MODES[model]
+        bar_group(ax, groups, (model,), modes, value_fn, label_fmt=True)
+        add_reference_lines(ax, groups, (model,), modes, value_fn)
+        style_axis(ax, model, "rounds to convergence" if model == MODEL_ORDER[0] else "", modes)
 
-    add_player_legend(fig)
-    fig.text(0.5, 0.01,
-              "Bar labels: converged / total episodes. Beauty Contest has no "
-              "convergence criterion (fixed-length game), so it has no analogue here.",
-              ha="center", fontsize=8, color=MUTED)
+    add_combined_legend(fig)
+    fig.text(0.5, 0.01, "Bar labels: converged / total episodes.",
+             ha="center", fontsize=8, color=MUTED)
     fig.tight_layout(rect=(0, 0.05, 1, 0.94))
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIG_DIR / "rounds_to_success_gbs.png", dpi=160)
@@ -202,22 +245,24 @@ def plot_rounds_to_success(rows: list[dict]):
 
 
 def plot_response_length(rows: list[dict]):
-    groups = group_rows(rows, ("model", "game", "mode", "players"))
+    gbs_rows = [r for r in rows if r["game"] == "gbs"]
+    groups = group_rows(gbs_rows, ("model", "mode", "players"))
 
-    fig, axes = plt.subplots(len(MODEL_ORDER), len(GAME_ORDER), figsize=(11, 8), sharey=False)
-    fig.suptitle("Mean response length (words per completion)", fontsize=12, color="#0b0b0b")
+    fig, axes = plt.subplots(1, len(MODEL_ORDER), figsize=(11, 4.2), sharey=False)
+    fig.suptitle("GBS — mean response length (words per completion)",
+                 fontsize=12, color="#0b0b0b")
 
     def value_fn(grp):
         val, err = mean_sem([r["mean_response_len_words"] for r in grp])
         return val, err, ""
 
-    for i, model in enumerate(MODEL_ORDER):
-        for j, game in enumerate(GAME_ORDER):
-            ax = axes[i][j]
-            bar_group(ax, groups, (model, game), value_fn)
-            style_axis(ax, f"{model} — {GAME_LABEL[game]}",
-                       "words / completion" if j == 0 else "")
-    add_player_legend(fig)
+    for ax, model in zip(axes, MODEL_ORDER):
+        modes = MODEL_MODES[model]
+        bar_group(ax, groups, (model,), modes, value_fn)
+        add_reference_lines(ax, groups, (model,), modes, value_fn)
+        style_axis(ax, model, "words / completion" if model == MODEL_ORDER[0] else "", modes)
+
+    add_combined_legend(fig)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIG_DIR / "response_length.png", dpi=160)
@@ -225,20 +270,21 @@ def plot_response_length(rows: list[dict]):
 
 
 def plot_n_datapoints(rows: list[dict]):
-    groups = group_rows(rows, ("model", "game", "mode", "players"))
+    gbs_rows = [r for r in rows if r["game"] == "gbs"]
+    groups = group_rows(gbs_rows, ("model", "mode", "players"))
 
-    fig, axes = plt.subplots(len(MODEL_ORDER), len(GAME_ORDER), figsize=(11, 8), sharey=True)
-    fig.suptitle("Episodes collected so far (sweep in progress)", fontsize=12, color="#0b0b0b")
+    fig, axes = plt.subplots(1, len(MODEL_ORDER), figsize=(11, 4.2), sharey=False)
+    fig.suptitle("GBS — episodes collected so far (sweep in progress)",
+                 fontsize=12, color="#0b0b0b")
 
     def value_fn(grp):
         return (len(grp), 0.0, str(len(grp))) if grp else (0, 0.0, "0")
 
-    for i, model in enumerate(MODEL_ORDER):
-        for j, game in enumerate(GAME_ORDER):
-            ax = axes[i][j]
-            bar_group(ax, groups, (model, game), value_fn, label_fmt=True)
-            style_axis(ax, f"{model} — {GAME_LABEL[game]}",
-                       "n episodes" if j == 0 else "")
+    for ax, model in zip(axes, MODEL_ORDER):
+        modes = MODEL_MODES[model]
+        bar_group(ax, groups, (model,), modes, value_fn, label_fmt=True)
+        style_axis(ax, model, "n episodes" if model == MODEL_ORDER[0] else "", modes)
+
     add_player_legend(fig)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     FIG_DIR.mkdir(parents=True, exist_ok=True)
