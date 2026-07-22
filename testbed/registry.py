@@ -16,6 +16,10 @@ from testbed.renderers.textarena import TextArenaRenderer
 _SYMBOLIC = {
     "beauty_contest": (BeautyContestAdapter, BeautyContestRenderer, BeautyContestParser),
     "gbs": (GBSAdapter, GBSRenderer, GBSParser),
+    # Faithful replication of Riedl (2025, arXiv 2510.05174) — mechanically
+    # identical to gbs, distinguished only by env_kwargs (hide_group_size=True,
+    # feedback="directional", persona_mode, personas list).
+    "gbs_exact_replication": (GBSAdapter, GBSRenderer, GBSParser),
 }
 
 

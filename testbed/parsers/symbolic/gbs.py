@@ -7,15 +7,16 @@ from testbed.types import ParsedAction, ParseError, ParseResult, RawObs, RenderC
 class GBSParser:
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
-        n = extract_int(completion, keyword="NUMBER")
+        keyword = raw_obs.get("response_keyword", "NUMBER")
+        n = extract_int(completion, keyword=keyword)
         if n is None:
             return ParseError(
-                feedback="I could not find a number. "
-                         "Respond with 'NUMBER: <integer>'."
+                feedback=f"I could not find a number. "
+                         f"Respond with '{keyword}: <integer>'."
             )
         if n < 0:
             return ParseError(
                 feedback=f"Your number must be non-negative, got {n}. "
-                         "Respond with 'NUMBER: <integer>'."
+                         f"Respond with '{keyword}: <integer>'."
             )
         return ParsedAction(value=n)

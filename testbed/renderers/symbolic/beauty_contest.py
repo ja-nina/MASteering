@@ -4,7 +4,7 @@ from testbed.types import RawObs, RenderContext
 
 
 class BeautyContestRenderer:
-    def system_prompt(self, agent_id: str) -> str:
+    def system_prompt(self, agent_id: str, raw_obs=None) -> str:
         return (
             f"You are {agent_id} playing a multi-player Keynesian beauty contest.\n\n"
             "RULES\n"

@@ -77,7 +77,7 @@ def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
     A config that already pins its own `seed` or `target` is left alone.
     """
     kwargs = dict(cfg.env_kwargs)
-    if cfg.game_id == "gbs" and "seed" not in kwargs and "target" not in kwargs:
+    if cfg.game_id in ("gbs", "gbs_exact_replication") and "seed" not in kwargs and "target" not in kwargs:
         kwargs["seed"] = zlib.crc32(f"{cfg.run_id}:{ep}".encode()) & 0xFFFFFFFF
     return kwargs
 

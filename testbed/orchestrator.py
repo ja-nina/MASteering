@@ -24,7 +24,7 @@ class Orchestrator:
         return getattr(self.env, "context", None)
 
     def _act_one(self, agent_id: str, raw_obs):
-        system = self.renderer.system_prompt(agent_id)
+        system = self.renderer.system_prompt(agent_id, raw_obs)
         base_user = self.renderer.render(raw_obs, agent_id, self._context())
         system, base_user = self.steering.apply_to_prompt(system, base_user, agent_id)
         spec = self.steering.steering_spec(agent_id)

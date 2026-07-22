@@ -86,19 +86,19 @@ class EpisodeLogger:
                         metrics[f"{agent_id}/won"] = int(
                             agent_id in info["winners"])
 
-                elif game == "gbs":
+                elif game in ("gbs", "gbs_exact_replication"):
                     metrics[f"{agent_id}/contribution"] = parsed_action
                     if "group_sum" in info:
-                        metrics["gbs/group_sum"] = info["group_sum"]
+                        metrics[f"{game}/group_sum"] = info["group_sum"]
                     if "error" in info:
-                        metrics["gbs/error"] = info["error"]
-                        metrics["gbs/abs_error"] = abs(info["error"])
+                        metrics[f"{game}/error"] = info["error"]
+                        metrics[f"{game}/abs_error"] = abs(info["error"])
                     if info.get("direction") == "correct":
-                        metrics["gbs/converged"] = 1
+                        metrics[f"{game}/converged"] = 1
                         if self._gbs_converged_round is None:
                             self._gbs_converged_round = turn
                     else:
-                        metrics["gbs/converged"] = 0
+                        metrics[f"{game}/converged"] = 0
 
             self._wandb.log(metrics, step=self._global_step)
         self._global_step += 1

@@ -15,13 +15,44 @@ _FEEDBACK_DESC = {
     ),
 }
 
+# Verbatim from Riedl (2025, arXiv 2510.05174) — paper's three prompt conditions.
+_PICKING_RULES = (
+    "You are playing a sum guessing game. "
+    "Your goal is to help your group sum to the mystery number.\n"
+    "Your guess range is 0 to 50.\n"
+    "Always start with the efficient strategy in guessing games which is to use a "
+    "binary search approach: guessing the midpoint of the current range.\n"
+    "Always anchor your guess on the group feedback from previous rounds (too HIGH / too LOW).\n"
+    "End your answer with: FINAL GUESS: [0-50]"
+)
+
+_TOM_INSTRUCTION = (
+    "\nOnly as a secondary approach, carefully think through step-by-step what "
+    "others might guess and how the contributions of others contribute to the sum "
+    "of the group guesses for the mystery number. "
+    "Consider what roles other agents might be playing (e.g., guessing higher or lower) "
+    "and adapt your own adjustment to complement the group."
+)
+
 
 class GBSRenderer:
-    def system_prompt(self, agent_id: str) -> str:
-        # feedback description is injected at render time because we don't
-        # know the feedback mode until we have an observation; use the exact
-        # description as a safe default for the static system prompt slot.
-        # The actual mode is described again in the first user prompt.
+    def system_prompt(self, agent_id: str, raw_obs: RawObs | None = None) -> str:
+        obs = raw_obs or {}
+        persona_mode = obs.get("persona_mode", "plain")
+        persona = obs.get("persona")
+
+        # ── Picking / Persona variant (Riedl 2025) ──────────────────────────
+        if obs.get("hide_group_size"):
+            parts = []
+            if persona and persona_mode in ("persona", "tom"):
+                parts.append(persona)
+                parts.append("")          # blank line between persona and rules
+            parts.append(_PICKING_RULES)
+            if persona_mode == "tom":
+                parts.append(_TOM_INSTRUCTION)
+            return "\n".join(parts)
+
+        # ── Standard GBS ────────────────────────────────────────────────────
         return (
             f"You are {agent_id} in a cooperative Group Sum game.\n\n"
             "RULES\n"
@@ -41,9 +72,10 @@ class GBSRenderer:
         num_rounds = raw_obs.get("num_rounds")
         n = raw_obs["num_players"]
         feedback_mode = raw_obs.get("feedback", "exact")
+        hide_group_size = raw_obs.get("hide_group_size", False)
 
-        if num_rounds is not None:
-            remaining = num_rounds - rnd
+        remaining = (num_rounds - rnd) if num_rounds is not None else None
+        if remaining is not None:
             round_str = (
                 f"Round {rnd} of {num_rounds} "
                 f"({remaining} round{'s' if remaining != 1 else ''} remaining after this)."
@@ -51,6 +83,26 @@ class GBSRenderer:
         else:
             round_str = f"Round {rnd}."
 
+        # ── Picking / Persona variant — compact paper format ─────────────────
+        if hide_group_size:
+            lines = [round_str, "", "Game History:"]
+            if raw_obs["history"]:
+                for h in raw_obs["history"]:
+                    my_contrib = h["contributions"].get(agent_id, "?")
+                    if h["direction"] == "correct":
+                        result = "CORRECT — target reached!"
+                    elif h["direction"] == "too_high":
+                        result = "too HIGH"
+                    else:
+                        result = "too LOW"
+                    lines.append(f"Round {h['round']}: Your guess: {my_contrib} / Result: {result}")
+            else:
+                lines.append("No guesses yet.")
+            lines.append("")
+            lines.append("What is your guess this round? End your answer with: FINAL GUESS: [0-50]")
+            return "\n".join(lines)
+
+        # ── Standard GBS format ──────────────────────────────────────────────
         lines = [
             f"{round_str} There are {n} players.",
             f"Feedback mode: {_FEEDBACK_DESC[feedback_mode]}",
