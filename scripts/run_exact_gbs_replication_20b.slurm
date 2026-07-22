@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -p gpu17
+#SBATCH -p gpu22
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-53%10
