@@ -69,15 +69,10 @@ def write_config(model_id: str, model_tag: str, condition: str,
     if condition != "plain":
         env_kwargs["personas"] = personas   # full list; adapter samples N at runtime
 
-    # gpt-oss-20b: pin reasoning effort to low via system_suffix so we isolate
-    # the persona/ToM effect rather than confounding it with reasoning depth.
-    # Qwen3: enable_thinking=False already handles this.
-    if "gpt-oss" in model_id:
-        steering = {"default": "prompt_injection",
-                    "default_config": {"system_suffix": "\nReasoning: low"},
-                    "per_agent": {}}
-    else:
-        steering = {"default": "noop", "per_agent": {}}
+    # Use noop steering for all models: the paper (Riedl 2025) did not control
+    # reasoning effort, so we don't either. "Reasoning: low" caused gpt-oss-20b
+    # to collapse into degenerate separator-token loops with zero coherent output.
+    steering = {"default": "noop", "per_agent": {}}
 
     cfg = {
         "run_id": run_id,
