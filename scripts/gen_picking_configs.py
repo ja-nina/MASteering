@@ -50,8 +50,7 @@ def model_cfg(model_id: str) -> dict:
     # Reasoning effort is controlled via system_suffix in the steering config, not here.
 
     return {**base, "enable_thinking": False,
-            "temperature": 0.7, "top_p": 0.9, "top_k": 20,
-            "disable_quantization": True}
+            "temperature": 0.7, "top_p": 0.9, "top_k": 20}
 
 
 def write_config(model_id: str, model_tag: str, condition: str,
