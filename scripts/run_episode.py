@@ -93,7 +93,11 @@ def main(argv=None):
                         help="Total number of concurrent shards for this "
                              "run_id. Episode ep is handled by shard "
                              "ep %% num_shards. Default 1 = no sharding.")
+    parser.add_argument("--episodes", type=int, default=None,
+                        help="Override episode count from config. "
+                             "Useful for single-episode debugging (--episodes 1).")
     args = parser.parse_args(argv)
+
 
     if not (0 <= args.shard < args.num_shards):
         parser.error(f"--shard must be in [0, {args.num_shards}), got {args.shard}")
@@ -101,6 +105,8 @@ def main(argv=None):
     with open(args.config, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     cfg = RunConfig.from_dict(raw)
+    if args.episodes is not None:
+        cfg.episodes = args.episodes
 
     my_episodes = [ep for ep in range(cfg.episodes) if ep % args.num_shards == args.shard]
     completed = _completed_episodes(cfg.logging_dir, cfg.run_id)

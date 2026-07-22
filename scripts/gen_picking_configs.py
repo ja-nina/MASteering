@@ -45,11 +45,13 @@ def model_cfg(model_id: str) -> dict:
         return {**base, "enable_thinking": False,
                 "temperature": 0.7, "top_p": 0.8, "top_k": 20,
                 "min_p": 0.0, "presence_penalty": 1.5}
-    # gpt-oss-20b — OpenAI recommended: temperature=1.0, top_p=1.0, top_k disabled (0).
-    # top_k defaults to 50 in transformers if unset; explicitly set 0 to disable.
-    # Reasoning effort is controlled via system_suffix in the steering config, not here.
+    # gpt-oss-20b — use the same generation params that produced coherent output
+    # in the reasoning sweep (temp=0.7, top_p=0.9, top_k=20). The "authoritative"
+    # recommendation of temp=1.0/top_p=1.0/top_k=0 removes all token filtering;
+    # with local model.generate() this causes cascading garbage output.
+    # Reasoning effort is controlled via system_suffix in the steering config.
     return {**base, "enable_thinking": False,
-            "temperature": 1.0, "top_p": 1.0, "top_k": 0,
+            "temperature": 0.7, "top_p": 0.9, "top_k": 20,
             "disable_quantization": True}
 
 
