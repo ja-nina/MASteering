@@ -39,12 +39,17 @@ def load_personas() -> list[str]:
 def model_cfg(model_id: str) -> dict:
     base = {"backend": "transformers", "model_id": model_id}
     if "Qwen3" in model_id:
+        # Qwen3-14B non-thinking official recommendations (model card + tech report):
+        # temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5
+        # (presence_penalty is additive; repetition_penalty is multiplicative — different)
         return {**base, "enable_thinking": False,
-                "temperature": 1.0, "top_p": 0.8, "top_k": 20,
-                "repetition_penalty": 1.05}
-    # gpt-oss-20b — temperature=1.0 matches the paper
+                "temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                "min_p": 0.0, "presence_penalty": 1.5}
+    # gpt-oss-20b — OpenAI recommended: temperature=1.0, top_p=1.0, top_k disabled (0).
+    # top_k defaults to 50 in transformers if unset; explicitly set 0 to disable.
+    # Reasoning effort is controlled via system_suffix in the steering config, not here.
     return {**base, "enable_thinking": False,
-            "temperature": 1.0, "top_p": 0.9, "top_k": 20,
+            "temperature": 1.0, "top_p": 1.0, "top_k": 0,
             "disable_quantization": True}
 
 
@@ -63,6 +68,16 @@ def write_config(model_id: str, model_tag: str, condition: str,
     if condition != "plain":
         env_kwargs["personas"] = personas   # full list; adapter samples N at runtime
 
+    # gpt-oss-20b: pin reasoning effort to low via system_suffix so we isolate
+    # the persona/ToM effect rather than confounding it with reasoning depth.
+    # Qwen3: enable_thinking=False already handles this.
+    if "gpt-oss" in model_id:
+        steering = {"default": "prompt_injection",
+                    "default_config": {"system_suffix": "\nReasoning: low"},
+                    "per_agent": {}}
+    else:
+        steering = {"default": "noop", "per_agent": {}}
+
     cfg = {
         "run_id": run_id,
         "game": {
@@ -73,7 +88,7 @@ def write_config(model_id: str, model_tag: str, condition: str,
         "episodes": 200,
         "model": model_cfg(model_id),
         "agents": {"count": n, "concurrency": "sequential", "max_parse_retries": 5},
-        "steering": {"default": "noop", "per_agent": {}},
+        "steering": steering,
         "logging": {"dir": "logs/picking_sweep/"},
         "wandb": {
             "enabled": True,
