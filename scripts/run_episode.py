@@ -36,6 +36,7 @@ def _init_wandb(cfg: RunConfig, raw: dict, shard: int, num_shards: int):
         project=wcfg.get("project", "ma-steering"),
         name=name,
         tags=wcfg.get("tags", []),
+        dir="wandb_logs",
         config={
             "run_id": cfg.run_id,
             "game_family": cfg.game_family,
