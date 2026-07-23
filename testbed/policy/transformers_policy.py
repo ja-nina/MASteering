@@ -7,7 +7,7 @@ from testbed.steering.activation import make_steering_hook
 from testbed.types import SteeringSpec
 
 _GEN_DEFAULTS: Dict[str, Any] = {
-    "max_new_tokens": 1024,
+    "max_new_tokens": 4096,
     "temperature": 0.7,
     "top_p": 0.8,
     "top_k": 20,

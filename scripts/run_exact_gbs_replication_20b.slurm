@@ -1,11 +1,12 @@
 #!/bin/bash
-#SBATCH -p gpu22
+#SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-53%10
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.err
 #SBATCH -t 9:45:00
+#SBATCH --exclude=gpu22-a40-05,gpu22-a40-06
 #
 # Picking / Persona sweep — gpt-oss-20b, 3 conditions x 3 player counts x 6 shards
 # = 54 array tasks. Replicates Riedl (2025, arXiv 2510.05174) main experiments.
