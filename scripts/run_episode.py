@@ -79,7 +79,12 @@ def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
     """
     kwargs = dict(cfg.env_kwargs)
     if cfg.game_id in ("gbs", "gbs_exact_replication") and "seed" not in kwargs and "target" not in kwargs:
-        kwargs["seed"] = zlib.crc32(f"{cfg.run_id}:{ep}".encode()) & 0xFFFFFFFF
+        # seed_base lets multiple runs share the same random scenario sequence so
+        # that per-episode results are directly comparable across conditions.
+        seed_base = kwargs.pop("seed_base", cfg.run_id)
+        kwargs["seed"] = zlib.crc32(f"{seed_base}:{ep}".encode()) & 0xFFFFFFFF
+    else:
+        kwargs.pop("seed_base", None)   # harmless cleanup if seed/target was explicit
     return kwargs
 
 
