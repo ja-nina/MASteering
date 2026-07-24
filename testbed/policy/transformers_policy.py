@@ -72,7 +72,7 @@ class TransformersPolicy:
         self.steering = steering
         self._gen_kwargs: Dict[str, Any] = {**_GEN_DEFAULTS, **gen_kwargs}
 
-    def _generate(self, inputs) -> str:
+    def _generate(self, inputs) -> tuple[str, bool]:
         import torch
 
         temperature = self._gen_kwargs.get("temperature", 0.7)
@@ -88,7 +88,7 @@ class TransformersPolicy:
             out = self.model.generate(**inputs, **kwargs)
 
         gen = out[0][inputs["input_ids"].shape[1]:]
-        self._last_truncated = (
+        truncated = (
             len(gen) >= max_new_tokens
             and gen[-1].item() != self.tokenizer.eos_token_id
         )
@@ -97,11 +97,11 @@ class TransformersPolicy:
             # Preserve <think>...</think> structure in the trace.
             text = self.tokenizer.decode(gen, skip_special_tokens=False)
             eos = self.tokenizer.eos_token or ""
-            return text.rstrip().removesuffix(eos).rstrip()
-        return self.tokenizer.decode(gen, skip_special_tokens=True)
+            return text.rstrip().removesuffix(eos).rstrip(), truncated
+        return self.tokenizer.decode(gen, skip_special_tokens=True), truncated
 
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,
-            steering: Optional[SteeringSpec]) -> str:
+            steering: Optional[SteeringSpec]) -> tuple[str, bool]:
         inputs = self._build_inputs(system_prompt, user_prompt)
         if steering is not None and steering.method == "activation":
             if self.steering is None:

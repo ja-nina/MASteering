@@ -20,7 +20,7 @@ class VLLMPolicy:
             self.client = OpenAI(base_url=endpoint, api_key=api_key)
 
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,
-            steering: Optional[SteeringSpec]) -> str:
+            steering: Optional[SteeringSpec]) -> tuple[str, bool]:
         if steering is not None and steering.method == "activation":
             raise ValueError("VLLMPolicy cannot apply activation steering; use "
                              "TransformersPolicy for activation runs.")
@@ -29,4 +29,5 @@ class VLLMPolicy:
             messages=[{"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt}],
             temperature=self.temperature, max_tokens=self.max_new_tokens)
-        return resp.choices[0].message.content
+        truncated = resp.choices[0].finish_reason == "length"
+        return resp.choices[0].message.content, truncated

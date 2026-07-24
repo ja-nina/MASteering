@@ -1,6 +1,7 @@
 """The single, game-agnostic episode loop."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict
 
 from testbed.types import ParseError, ParsedAction
@@ -37,8 +38,9 @@ class Orchestrator:
         print(system)
         print(user)
         while True:
-            completion = self.policy.act(system, user, agent_id, spec)
-            truncated = getattr(self.policy, "_last_truncated", False)
+            act_result = self.policy.act(system, user, agent_id, spec)
+            completion, truncated = act_result if isinstance(act_result, tuple) \
+                else (act_result, getattr(self.policy, "_last_truncated", False))
             result = self.parser.parse(completion, raw_obs, agent_id, self._context())
             if isinstance(result, ParsedAction):
                 action = result.value
@@ -64,10 +66,22 @@ class Orchestrator:
             pending = self.env.pending()
             actions: Dict[str, Any] = {}
             decided: Dict[str, Dict[str, Any]] = {}
-            for agent_id, raw_obs in pending:
-                d = self._act_one(agent_id, raw_obs)
-                actions[agent_id] = d["action"]
-                decided[agent_id] = d
+            if len(pending) > 1:
+                with ThreadPoolExecutor(max_workers=len(pending)) as pool:
+                    fut_to_id = {
+                        pool.submit(self._act_one, aid, obs): aid
+                        for aid, obs in pending
+                    }
+                    for fut in as_completed(fut_to_id):
+                        aid = fut_to_id[fut]
+                        d = fut.result()
+                        actions[aid] = d["action"]
+                        decided[aid] = d
+            else:
+                for agent_id, raw_obs in pending:
+                    d = self._act_one(agent_id, raw_obs)
+                    actions[agent_id] = d["action"]
+                    decided[agent_id] = d
 
             result = self.env.submit(actions)
             last_rewards = result.rewards
