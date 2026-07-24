@@ -290,6 +290,59 @@ python scripts/run_episode.py --config config/gbs_exp_prompt_all_directional.yam
 
 Each run writes `logs/<run_id>/episode_N.jsonl`, `episode_N.summary.json`, and a human-readable `episode_N.trace.txt` showing the full prompt/completion/action for every player every turn.
 
+## Picking sweep (GBS exact-replication)
+
+A systematic sweep over steering conditions (plain / persona / Theory-of-Mind) × player counts (2 / 3 / 10) using the `gbs_exact_replication` game alias (`hide_group_size=True`, `feedback=directional`).
+
+### Generate configs
+
+```bash
+python scripts/gen_picking_configs.py
+```
+
+Writes one YAML per condition × player-count × model to `config/picking_sweep/`.
+
+### Run on a SLURM cluster
+
+```bash
+sbatch scripts/run_picking_sweep_qwen.slurm   # Qwen3-14B
+sbatch scripts/run_picking_sweep_20b.slurm    # gpt-oss-20b
+```
+
+Each array job maps one SLURM task to one config file. Jobs self-requeue on walltime and skip already-completed episodes via `.summary.json` detection.
+
+### Run locally (single config, 1 episode for debugging)
+
+```bash
+python scripts/run_episode.py \
+  --config config/picking_sweep/gbs_exact_replication_plain_2p_14b.yaml \
+  --episodes 1
+```
+
+Episode logs land in `logs/picking_sweep/<run_id>/`.
+
+### Plot results
+
+```bash
+python scripts/plot_picking_sweep.py
+```
+
+Reads every `*.summary.json` under `logs/picking_sweep/` and writes separate figure sets per model:
+
+```
+figures/picking_sweep/
+  qwen3_14b/
+    convergence_line.png      — convergence rate vs group size (line chart, 95% Wilson CI)
+    box_10p.png               — round distributions at 10 players (box plots)
+    success_rate.png          — convergence rate per condition × player count (bars)
+    rounds_to_success.png     — mean rounds to convergence (bars)
+    n_datapoints.png          — episode counts per condition
+  gpt_oss_20b/
+    (same set; conditions with N < 10 are skipped)
+```
+
+Also writes `picking_sweep_summary.csv` with one row per episode.
+
 ## Project structure
 
 ```
