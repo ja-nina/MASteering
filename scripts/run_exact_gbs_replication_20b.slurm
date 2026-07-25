@@ -2,13 +2,13 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-53%10
+#SBATCH --array=0-431%20
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.err
-#SBATCH -t 23:00:00
+#SBATCH -t 23:45:00
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06
 #
-# Picking / Persona sweep — gpt-oss-20b, 3 conditions x 3 player counts x 6 shards
+# Picking / Persona sweep — gpt-oss-20b, 3 conditions x 3 player counts x 48 shards
 # = 54 array tasks. Replicates Riedl (2025, arXiv 2510.05174) main experiments.
 #
 #   Flavour 0: plain   2p    Flavour 3: persona 2p    Flavour  6: tom 2p
@@ -25,8 +25,8 @@
 # exits non-zero (killed at walltime, OOM, etc.)
 set -uo pipefail
 
-NUM_SHARDS=6
-RESUME_HOP_LIMIT=20
+NUM_SHARDS=48
+RESUME_HOP_LIMIT=20   # N=10 episodes are slow; allow more hops
 
 HOP=${RESUME_HOP:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"

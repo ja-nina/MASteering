@@ -2,10 +2,10 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-53%10
+#SBATCH --array=0-107%10
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/picking_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/picking_qwen_%A_%a.err
-#SBATCH -t 9:45:00
+#SBATCH -t 12:45:00
 #
 # Picking / Persona sweep — Qwen3-4B, 3 conditions x 3 player counts x 6 shards
 # = 54 array tasks. Sibling of run_picking_20b.slurm; identical sharding and
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-NUM_SHARDS=6
+NUM_SHARDS=12
 RESUME_HOP_LIMIT=20
 
 HOP=${RESUME_HOP:-0}
@@ -25,8 +25,8 @@ echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HO
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
-CONDITIONS=(plain persona tom)
-PLAYERS=(2 3 10)
+CONDITIONS=(tom)
+PLAYERS=(10)
 
 T=${SLURM_ARRAY_TASK_ID}
 FLAVOUR=$((T / NUM_SHARDS))
