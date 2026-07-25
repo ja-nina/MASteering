@@ -31,6 +31,7 @@ import matplotlib
 import matplotlib.ticker
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 LOGS_DIR = Path("logs/picking_sweep")
@@ -55,6 +56,13 @@ GRID  = "#e1e0d9"
 MIN_N = 10
 # non-converged episodes are treated as having taken this many rounds
 CAP_ROUNDS = 30
+# intended number of episodes per condition × player-count cell
+TARGET_EPISODES = 200
+
+# stacked-bar segment colors (status palette — independent of series colors)
+COLOR_CONV    = "#0ca30c"   # converged   — green
+COLOR_NONCONV = "#ec835a"   # non-converged — orange-red
+COLOR_MISSING = "#c3c2b7"   # not yet run — muted gray
 
 MODELS = [
     ("Qwen3-14B",   "qwen3_14b"),
@@ -235,19 +243,58 @@ def plot_rounds_to_success(rows: list[dict], model: str, out_dir: Path):
 
 
 def plot_n_datapoints(rows: list[dict], model: str, out_dir: Path):
+    """Stacked bar: converged / non-converged / missing vs target per cell."""
     groups = group_rows(rows, ("model", "condition", "players"))
 
-    fig, ax = plt.subplots(figsize=(5.5, 4.2))
-    fig.suptitle(f"Picking — episodes collected\n{model}",
-                 fontsize=11, color="#0b0b0b")
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    fig.suptitle(
+        f"Episode breakdown (target = {TARGET_EPISODES} per cell)\n{model}",
+        fontsize=11, color="#0b0b0b",
+    )
 
-    def value_fn(grp):
-        return (len(grp), 0.0, str(len(grp))) if grp else (None, 0.0, "")
+    n_pl  = len(PLAYERS_ORDER)
+    width = 0.72 / n_pl
 
-    bar_group(ax, groups, (model,), value_fn, label_fmt=True)
-    style_axis(ax, model, "n episodes")
-    add_player_legend(fig)
-    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    for i, n in enumerate(PLAYERS_ORDER):
+        for j, cond in enumerate(CONDITION_ORDER):
+            grp       = groups.get((model, cond, n), [])
+            n_conv    = sum(1 for r in grp if r["converged"])
+            n_nonconv = len(grp) - n_conv
+            n_missing = max(0, TARGET_EPISODES - len(grp))
+            x = j - 0.36 + width * (i + 0.5)
+            w = width * 0.88
+
+            ax.bar(x, n_conv,    width=w, color=COLOR_CONV,    zorder=3)
+            ax.bar(x, n_nonconv, width=w, color=COLOR_NONCONV, zorder=3,
+                   bottom=n_conv)
+            ax.bar(x, n_missing, width=w, color=COLOR_MISSING, zorder=3,
+                   bottom=n_conv + n_nonconv,
+                   hatch="//", edgecolor="white", linewidth=0.4)
+
+            # player-count label below each bar
+            ax.text(x, -9, f"{n}p", ha="center", va="top",
+                    fontsize=6.5, color=MUTED)
+
+    ax.axhline(TARGET_EPISODES, color=MUTED, linewidth=1,
+               linestyle="--", zorder=2)
+
+    style_axis(ax, model, "episodes")
+    ax.set_ylim(-16, TARGET_EPISODES * 1.2)
+    ax.set_yticks([0, 50, 100, 150, 200])
+    ax.tick_params(axis="x", pad=14)
+
+    legend_handles = [
+        Patch(facecolor=COLOR_CONV,    label="converged"),
+        Patch(facecolor=COLOR_NONCONV, label="non-converged"),
+        Patch(facecolor=COLOR_MISSING, hatch="//", edgecolor=MUTED,
+              label="missing"),
+        Line2D([0], [0], color=MUTED, linewidth=1, linestyle="--",
+               label=f"target ({TARGET_EPISODES})"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, frameon=False,
+              loc="upper right")
+
+    fig.tight_layout(rect=(0, 0.02, 1, 0.92))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_dir / "n_datapoints.png", dpi=160)
     plt.close(fig)
