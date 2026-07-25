@@ -45,6 +45,9 @@ class EpisodeLogger:
         self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self._fh.flush()
 
+        if info and info.get("direction") == "correct" and self._gbs_converged_round is None:
+            self._gbs_converged_round = turn
+
         self._trace.write(
             f"{_SEP}\n"
             f"Turn {turn:>3} | {agent_id} | game={game} | "

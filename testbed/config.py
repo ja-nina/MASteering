@@ -43,11 +43,14 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
             **gen_kwargs,
         )
     if backend == "vllm":
+        import os
         from testbed.policy.vllm_policy import VLLMPolicy
+        api_key = model_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "EMPTY")
         return VLLMPolicy(
             model_id=model_id,
             endpoint=model_cfg.get("endpoint", "http://localhost:8000") + "/v1",
-            temperature=model_cfg.get("temperature", 0.7))
+            temperature=model_cfg.get("temperature", 0.7),
+            api_key=api_key)
     raise ValueError(f"Unknown backend: {backend}")
 
 
