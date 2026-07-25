@@ -156,7 +156,10 @@ class TransformersPolicy:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         # GTX 16xx / Turing cards don't support bfloat16; use float16 on CUDA
-        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        if self.device == "cuda":
+            dtype = torch.bfloat16 if "H100" in torch.cuda.get_device_name() else torch.float16
+        else:
+            dtype = torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, torch_dtype=dtype).to(self.device)
         self.model.eval()
