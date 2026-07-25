@@ -2,10 +2,10 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-53%10
+#SBATCH --array=0-215%15
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/picking_20b_%A_%a.err
-#SBATCH -t 9:45:00
+#SBATCH -t 23:45:00
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06
 #
 # Picking / Persona sweep — gpt-oss-20b, 3 conditions x 3 player counts x 6 shards
@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-NUM_SHARDS=6
+NUM_SHARDS=24
 RESUME_HOP_LIMIT=20   # N=10 episodes are slow; allow more hops
 
 HOP=${RESUME_HOP:-0}
