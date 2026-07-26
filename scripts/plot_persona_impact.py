@@ -72,7 +72,18 @@ def load(results_path: Path) -> pd.DataFrame:
     df = pd.DataFrame(records)
     df = df[df["action"].notna()].copy()
     df["action"] = df["action"].astype(float)
-    df["delta"]  = df["action"] - df["original_action"].astype(float)
+
+    # Use per-case mean of the plain condition (20 reps) as baseline instead of
+    # original_action (single game observation — too noisy).
+    plain_baseline = (df[df["condition"] == "plain"]
+                        .groupby("case_id")["action"]
+                        .mean()
+                        .rename("plain_baseline"))
+    df = df.join(plain_baseline, on="case_id")
+
+    # Fall back to original_action for any case where plain is missing
+    df["plain_baseline"] = df["plain_baseline"].fillna(df["original_action"].astype(float))
+    df["delta"] = df["action"] - df["plain_baseline"]
     return df
 
 
