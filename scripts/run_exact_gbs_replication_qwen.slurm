@@ -25,8 +25,8 @@ echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HO
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
-CONDITIONS=(tom)
-PLAYERS=(10)
+CONDITIONS=(plain persona tom)
+PLAYERS=(2 3 10)
 
 T=${SLURM_ARRAY_TASK_ID}
 FLAVOUR=$((T / NUM_SHARDS))
