@@ -2,7 +2,7 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-177%15
+#SBATCH --array=0-629%30
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/persona_logs/persona_cases_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/persona_logs/persona_cases_%A_%a.err
 #SBATCH -t 1:55:00
@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-N_CONDITIONS=42
+N_CONDITIONS=70
 N_CHUNKS=9          # ceil(50 cases / 6 cases-per-chunk)
 CASES_PER_CHUNK=6
 
