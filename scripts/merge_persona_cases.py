@@ -14,7 +14,7 @@ from pathlib import Path
 OUT_DIR     = Path("logs/persona_impact")
 MERGED_PATH = OUT_DIR / "case_results.jsonl"
 
-N_CONDITIONS    = 42
+N_CONDITIONS    = 70
 N_CHUNKS        = 9
 REPS_PER_CASE   = 20
 CASES_PER_CHUNK = 6   # last chunk may have fewer
