@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-107%10
-#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/picking_qwen_%A_%a.out
+#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/persona_logs/picking_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/picking_qwen_%A_%a.err
 #SBATCH -t 12:45:00
 #
