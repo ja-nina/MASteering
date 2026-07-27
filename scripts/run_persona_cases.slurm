@@ -7,6 +7,7 @@
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/persona_logs/persona_cases_%A_%a.err
 #SBATCH -t 1:55:00
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07
+
 # Persona-impact counterfactual experiment.
 #
 # 70 conditions x 9 case-chunks = 630 array tasks.
