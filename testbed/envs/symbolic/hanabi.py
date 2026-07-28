@@ -1,33 +1,31 @@
 """Hanabi — cooperative card game with imperfect self-information.
 
-Each player holds 4–5 cards that they can see for other players but NOT for
-themselves.  On each turn the active player does one of:
-  - PLAY <pos>     — attempt to play one of their own cards onto the fireworks pile
-  - DISCARD <pos>  — discard one card to gain a clue token
-  - HINT <player> COLOR <color>   — tell a player which of their cards share a color
-  - HINT <player> RANK <rank>     — tell a player which of their cards share a rank
+Each player holds 4–5 cards visible to others but NOT to themselves.
+On each turn the active player does one of:
+  PLAY <pos>                       — attempt to extend a fireworks pile
+  DISCARD <pos>                    — discard to gain a clue token
+  HINT <player> COLOR <color>      — tell a player which cards share a color
+  HINT <player> RANK  <rank>       — tell a player which cards share a rank
 
-Clue tokens: start at 8, spend 1 per hint, gain 1 per discard (max 8).
-Fuse tokens:  start at 3, lose 1 per illegal play; reach 0 → game over (score = 0).
-Score: number of cards successfully played (max 25 across 5 colors × ranks 1–5).
+Clue tokens: start at 8, spend 1 per hint, gain 1 per successful rank-5 play or discard.
+Fuse tokens: start at 3, lose 1 per illegal play; reach 0 → game ends (score 0 effective).
+Score: sum of highest cards successfully played across all 5 colors (max 25).
 
 Reference: Bard et al. (2019). The Hanabi Challenge: A New Frontier for AI Research.
 """
 from __future__ import annotations
 
 import random
-from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from testbed.envs.symbolic.base import SymbolicAdapter
 from testbed.types import Action, RawObs, RenderContext, StepResult
 
-COLORS   = ["red", "yellow", "green", "blue", "white"]
-RANKS    = [1, 2, 3, 4, 5]
-# Count of each rank in the full deck
+COLORS     = ["red", "yellow", "green", "blue", "white"]
+RANKS      = [1, 2, 3, 4, 5]
 RANK_COUNTS = {1: 3, 2: 2, 3: 2, 4: 2, 5: 1}
 
-HAND_SIZE = {2: 5, 3: 5, 4: 4, 5: 4}  # cards per player by player count
+HAND_SIZE = {2: 5, 3: 5, 4: 4, 5: 4}
 MAX_CLUES = 8
 MAX_FUSE  = 3
 
@@ -41,23 +39,17 @@ def _build_deck() -> List[Dict[str, Any]]:
     return deck
 
 
+def _fresh_clue_slot() -> Dict[str, Any]:
+    return {"colors": set(), "ranks": set(), "not_colors": set(), "not_ranks": set()}
+
+
 class HanabiAdapter(SymbolicAdapter):
-    """Turn-based Hanabi.  pending() returns only the current player.
-
-    Observation for the active player includes:
-      - Full hands of all OTHER players (color + rank visible)
-      - Own hand as a list of "??" entries with accumulated clues
-      - Fireworks piles (top rank per color)
-      - Discard pile
-      - Clue tokens remaining, fuse tokens remaining
-
-    TODO: Implement _observation() and submit() game logic.
-    """
+    """Turn-based Hanabi.  pending() always returns exactly the current player."""
 
     def __init__(self, num_players: int = 3, seed: int = 0) -> None:
         if num_players not in HAND_SIZE:
             raise ValueError(f"num_players must be in {list(HAND_SIZE)}; got {num_players}")
-        super().__init__(num_players=num_players, num_rounds=100)  # bounded by deck size
+        super().__init__(num_players=num_players, num_rounds=100)
         self._hand_size = HAND_SIZE[num_players]
         self._seed      = seed
 
@@ -65,62 +57,42 @@ class HanabiAdapter(SymbolicAdapter):
 
     def reset(self, seed: Optional[int] = None) -> None:
         super().reset()
-        rng = random.Random(seed if seed is not None else self._seed)
+        rng  = random.Random(seed if seed is not None else self._seed)
         deck = _build_deck()
         rng.shuffle(deck)
 
-        # Deal hands
         hands: Dict[str, List[Dict[str, Any]]] = {}
         for pid in self._ids:
             hands[pid] = [deck.pop() for _ in range(self._hand_size)]
 
-        # Clue knowledge: for each player, for each card slot, accumulated hints
-        # clue_knowledge[pid][slot] = {"colors": set, "ranks": set, "not_colors": set, "not_ranks": set}
-        clue_knowledge: Dict[str, List[Dict[str, Any]]] = {}
-        for pid in self._ids:
-            clue_knowledge[pid] = [
-                {"colors": set(), "ranks": set(), "not_colors": set(), "not_ranks": set()}
-                for _ in range(self._hand_size)
-            ]
-
-        # Fireworks: color → highest rank played so far (0 = none played)
-        fireworks = {c: 0 for c in COLORS}
+        clue_knowledge: Dict[str, List[Dict[str, Any]]] = {
+            pid: [_fresh_clue_slot() for _ in range(self._hand_size)]
+            for pid in self._ids
+        }
 
         self.context.extra.update({
-            "deck":          deck,
-            "hands":         hands,
-            "clue_knowledge": clue_knowledge,
-            "fireworks":     fireworks,
-            "discard_pile":  [],
-            "clue_tokens":   MAX_CLUES,
-            "fuse_tokens":   MAX_FUSE,
-            "current_player_idx": 0,
-            "turns_after_deck_empty": 0,  # once deck runs out: each player gets 1 more turn
-            "score":         0,
+            "deck":                   deck,
+            "hands":                  hands,
+            "clue_knowledge":         clue_knowledge,
+            "fireworks":              {c: 0 for c in COLORS},
+            "discard_pile":           [],
+            "clue_tokens":            MAX_CLUES,
+            "fuse_tokens":            MAX_FUSE,
+            "current_player_idx":     0,
+            "turns_after_deck_empty": 0,
+            "score":                  0,
         })
 
     # ── observation / pending ──────────────────────────────────────────────────
 
     def _observation(self, agent_id: str) -> RawObs:
-        """Return the Hanabi observation for agent_id.
-
-        Key rule: a player can see all hands EXCEPT their own.
-
-        TODO: complete the clue_knowledge representation so that
-        the renderer can display accumulated hints clearly.
-        """
         extra = self.context.extra
-        pid_idx = self._ids.index(agent_id)
 
-        # Other players' hands (fully visible)
         others_hands: Dict[str, List[Dict]] = {
             pid: list(hand)
             for pid, hand in extra["hands"].items()
             if pid != agent_id
         }
-
-        # Own hand: slots with accumulated clue knowledge (not the actual cards)
-        own_clues = extra["clue_knowledge"][agent_id]
 
         return {
             "agent_id":        agent_id,
@@ -128,8 +100,8 @@ class HanabiAdapter(SymbolicAdapter):
             "is_my_turn":      self._ids[extra["current_player_idx"]] == agent_id,
             "hand_size":       self._hand_size,
             "own_hand_size":   len(extra["hands"][agent_id]),
-            "own_clues":       own_clues,     # [{colors, ranks, not_colors, not_ranks}]
-            "others_hands":    others_hands,  # {player_id: [{color, rank}]}
+            "own_clues":       extra["clue_knowledge"][agent_id],
+            "others_hands":    others_hands,
             "fireworks":       dict(extra["fireworks"]),
             "discard_pile":    list(extra["discard_pile"]),
             "clue_tokens":     extra["clue_tokens"],
@@ -140,70 +112,120 @@ class HanabiAdapter(SymbolicAdapter):
         }
 
     def pending(self) -> List[Tuple[str, RawObs]]:
-        """Return only the current player."""
         extra = self.context.extra
-        pid = self._ids[extra["current_player_idx"]]
+        pid   = self._ids[extra["current_player_idx"]]
         return [(pid, self._observation(pid))]
 
     # ── submit ─────────────────────────────────────────────────────────────────
 
     def submit(self, actions: Dict[str, Action]) -> StepResult:
-        """Process the current player's action.
-
-        Expected action formats (see HanabiParser):
-          PLAY <pos>                        → e.g. "PLAY 2"  (1-indexed)
-          DISCARD <pos>                     → e.g. "DISCARD 3"
-          HINT <player_id> COLOR <color>    → e.g. "HINT player_1 COLOR red"
-          HINT <player_id> RANK <rank>      → e.g. "HINT player_1 RANK 3"
-
-        TODO: implement each branch.
-        Pseudocode:
-          PLAY:
-            card = hands[pid].pop(pos - 1)
-            if fireworks[card.color] == card.rank - 1:
-                fireworks[card.color] += 1
-                score += 1
-                if card.rank == 5: clue_tokens = min(clue_tokens + 1, MAX_CLUES)
-            else:
-                discard_pile.append(card)
-                fuse_tokens -= 1
-            draw_new_card(pid) if deck else pass
-            remove slot from clue_knowledge; append fresh slot
-
-          DISCARD:
-            card = hands[pid].pop(pos - 1)
-            discard_pile.append(card)
-            clue_tokens = min(clue_tokens + 1, MAX_CLUES)
-            draw_new_card(pid) if deck else pass
-
-          HINT COLOR/RANK:
-            validate clue_tokens > 0 and target != self
-            clue_tokens -= 1
-            update clue_knowledge[target] for matching / non-matching slots
-
-          After action: advance current_player_idx; check done:
-            done if fuse_tokens == 0 or score == 25 or
-                   (deck empty and all players have taken a turn since then)
-        """
         extra = self.context.extra
         pid   = self._ids[extra["current_player_idx"]]
-        action = actions[pid]
+        action = actions.get(pid) or {"type": "discard", "pos": 1}
 
         rewards = {p: 0.0 for p in self._ids}
 
-        # TODO: parse and execute action
-        raise NotImplementedError(
-            f"HanabiAdapter.submit() not implemented. "
-            f"Current player: {pid}, action: {action!r}. "
-            "See docstring above for the expected logic."
-        )
+        def _draw() -> None:
+            if extra["deck"]:
+                card = extra["deck"].pop()
+                extra["hands"][pid].append(card)
+                extra["clue_knowledge"][pid].append(_fresh_clue_slot())
 
-        # After implementing: advance turn
-        # extra["current_player_idx"] = (extra["current_player_idx"] + 1) % self.num_players
-        # self.context.round_index += 1
-        # done = extra["fuse_tokens"] <= 0 or extra["score"] >= 25 or <deck_condition>
-        # rewards = {pid: extra["score"] for pid in self._ids}  # shared score
-        # return StepResult(rewards=rewards, done=done, info={...})
+        act_type = action.get("type", "discard") if isinstance(action, dict) else "discard"
+
+        # ── PLAY ──────────────────────────────────────────────────────────────
+        if act_type == "play":
+            pos = int(action.get("pos", 1)) - 1  # 0-indexed
+            pos = max(0, min(pos, len(extra["hands"][pid]) - 1))
+            card = extra["hands"][pid].pop(pos)
+            extra["clue_knowledge"][pid].pop(pos)
+
+            if extra["fireworks"][card["color"]] == card["rank"] - 1:
+                extra["fireworks"][card["color"]] += 1
+                extra["score"] += 1
+                if card["rank"] == 5:
+                    extra["clue_tokens"] = min(extra["clue_tokens"] + 1, MAX_CLUES)
+                self.context.history.append({
+                    "turn": self.context.round_index,
+                    "player": pid, "action": "play",
+                    "card": card, "result": "success",
+                })
+            else:
+                extra["discard_pile"].append(card)
+                extra["fuse_tokens"] -= 1
+                self.context.history.append({
+                    "turn": self.context.round_index,
+                    "player": pid, "action": "play",
+                    "card": card, "result": "misplay",
+                })
+            _draw()
+
+        # ── DISCARD ───────────────────────────────────────────────────────────
+        elif act_type == "discard":
+            pos = int(action.get("pos", 1)) - 1
+            pos = max(0, min(pos, len(extra["hands"][pid]) - 1))
+            card = extra["hands"][pid].pop(pos)
+            extra["clue_knowledge"][pid].pop(pos)
+            extra["discard_pile"].append(card)
+            extra["clue_tokens"] = min(extra["clue_tokens"] + 1, MAX_CLUES)
+            self.context.history.append({
+                "turn": self.context.round_index,
+                "player": pid, "action": "discard", "card": card,
+            })
+            _draw()
+
+        # ── HINT ──────────────────────────────────────────────────────────────
+        elif act_type == "hint":
+            target    = action.get("target", "")
+            hint_type = action.get("hint_type", "color")
+            value     = action.get("value")
+
+            if extra["clue_tokens"] > 0 and target in extra["hands"] and target != pid:
+                extra["clue_tokens"] -= 1
+                for slot_idx, card in enumerate(extra["hands"][target]):
+                    slot = extra["clue_knowledge"][target][slot_idx]
+                    if hint_type == "color":
+                        if card["color"] == value:
+                            slot["colors"].add(value)
+                        else:
+                            slot["not_colors"].add(value)
+                    else:
+                        if card["rank"] == value:
+                            slot["ranks"].add(value)
+                        else:
+                            slot["not_ranks"].add(value)
+                self.context.history.append({
+                    "turn": self.context.round_index,
+                    "player": pid, "action": "hint",
+                    "target": target, "hint_type": hint_type, "value": value,
+                })
+
+        # ── advance turn ──────────────────────────────────────────────────────
+        if len(extra["deck"]) == 0:
+            extra["turns_after_deck_empty"] += 1
+
+        extra["current_player_idx"] = (extra["current_player_idx"] + 1) % self.num_players
+        self.context.round_index   += 1
+
+        done = (
+            extra["fuse_tokens"] <= 0
+            or extra["score"] >= 25
+            or (len(extra["deck"]) == 0
+                and extra["turns_after_deck_empty"] >= self.num_players)
+        )
+        if done:
+            rewards = {p: float(extra["score"]) for p in self._ids}
+
+        return StepResult(
+            rewards=rewards,
+            done=done,
+            info={
+                "score":          extra["score"],
+                "fuse_tokens":    extra["fuse_tokens"],
+                "clue_tokens":    extra["clue_tokens"],
+                "deck_remaining": len(extra["deck"]),
+            },
+        )
 
     def close(self) -> Dict[str, float]:
         return dict(self.context.last_rewards)

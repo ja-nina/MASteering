@@ -1,179 +1,149 @@
 """Overcooked — cooperative multi-agent kitchen coordination (text-based).
 
 Players work together to prepare and deliver dishes within a time limit.
-The environment is a grid kitchen where players can move, pick up ingredients,
-interact with stations (chopping board, pot, delivery window), and pass items.
-
-Reference game: Carroll et al. (2019). On the Utility of Learning about Humans
-for Human-AI Coordination. NeurIPS 2019.
-
-This is a TEXT-BASED adaptation of the Overcooked kitchen domain, rendering
-grid state as structured natural language for LLM agents.
+The environment is a grid kitchen; players move, pick up ingredients,
+interact with stations (pot, delivery window), and pass items.
 
 Action space per player (simultaneous):
   MOVE <N|S|E|W>   — move one cell in the given direction
-  PICK_UP           — pick up the item at the current cell or in front
-  DROP              — drop held item at current cell
-  INTERACT          — use the station at current cell (chop, add to pot, serve)
-  STAY              — do nothing this step
+  PICK_UP           — pick up item lying on the floor at current cell
+  DROP              — drop held item on current cell
+  INTERACT          — use the nearest adjacent station
+  STAY              — do nothing
 
-Kitchen layouts (select via env_kwargs["layout"]):
-  "cramped_room"    — 2 players, 5×4 grid, classic Overcooked layout
-  "asymmetric_adv"  — 2 players, 5×4, asymmetric ingredient placement
-  "coordination_ring" — 2 players, ring layout requiring item passing
+Grid cell types:
+  " " = walkable floor   "W" = wall (impassable)
+  "O" = onion dispenser  "T" = tomato dispenser
+  "P" = pot              "D" = delivery window
+  "C" = chop board       "S" = dish source
 
-Reward: +1 per dish successfully delivered to the serving window.
+Recipe implemented: 3 onions in a pot → cook cook_time steps → onion_soup.
+Pick soup from pot, walk to delivery, INTERACT to score +1.
 
-TODO: Implement the grid simulation.
-The kitchen state should be stored in context.extra and rendered to text.
+Reference: Carroll et al. (2019). On the Utility of Learning about Humans
+for Human-AI Coordination. NeurIPS 2019.
 """
 from __future__ import annotations
 
-import random
+import copy
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from testbed.envs.symbolic.base import SymbolicAdapter
 from testbed.types import Action, RawObs, RenderContext, StepResult
 
-# ── Kitchen layout definitions ─────────────────────────────────────────────────
-# Each cell is one of:
-#   " " = floor, "W" = wall, "O" = onion source, "T" = tomato source,
-#   "P" = pot station, "C" = chop board, "D" = delivery window, "S" = serving dish source
-#
-# Players start at marked positions; grid is (row, col) indexed.
+# ── Layout definitions (all rows must have equal length) ──────────────────────
 
 LAYOUTS: Dict[str, Dict[str, Any]] = {
     "cramped_room": {
+        # 5 cols × 5 rows — onion north-west, pot centre, delivery south
         "grid": [
             list("WWWWW"),
             list("WO  W"),
-            list("W P DW"),  # note: pad to same width in real impl
+            list("W P W"),
             list("W   W"),
-            list("WWWWW"),
+            list("WWDWW"),
         ],
-        "player_starts": [(1, 1), (3, 1)],
-        "description": "Small 5x5 room with one pot, one onion source, and delivery on the east wall.",
+        "player_starts": [(1, 2), (3, 2)],
+        "description": "Cramped 5×5 kitchen. Onion dispenser north-west, pot centre, delivery south.",
     },
     "asymmetric_adv": {
+        # 6 cols × 6 rows — ingredients north, pot mid, delivery south
         "grid": [
             list("WWWWWW"),
             list("WO   W"),
+            list("W    W"),
             list("W  P W"),
-            list("WC   W"),
             list("W    W"),
             list("WWDWWW"),
         ],
-        "player_starts": [(1, 1), (4, 4)],
-        "description": "Asymmetric layout: one player near ingredients, one near serving.",
+        "player_starts": [(1, 2), (4, 2)],
+        "description": "Asymmetric: one player near ingredients (north), one near serving (south).",
     },
     "coordination_ring": {
+        # 5 cols × 5 rows — onion north-west, delivery north-east, pot south
         "grid": [
             list("WWWWW"),
             list("WO DW"),
             list("W   W"),
-            list("WC PW"),
+            list("W P W"),
             list("WWWWW"),
         ],
-        "player_starts": [(1, 1), (3, 3)],
-        "description": "Ring layout: players must coordinate to pass items across the counter.",
+        "player_starts": [(1, 2), (2, 1)],
+        "description": "Ring layout: players must pass items across the kitchen to coordinate.",
     },
-}
-
-# Valid item types
-ITEMS = {"onion", "tomato", "dish", "onion_soup", "tomato_soup", None}
-
-# Recipes: {frozenset_of_ingredients → dish_name}
-RECIPES: Dict[frozenset, str] = {
-    frozenset(["onion", "onion", "onion"]): "onion_soup",
-    frozenset(["tomato", "tomato", "tomato"]): "tomato_soup",
 }
 
 
 class OvercookedAdapter(SymbolicAdapter):
-    """Text-based Overcooked environment.
+    """Text-based Overcooked.  All players act every step (simultaneous)."""
 
-    Simultaneous: all players act every step (pending() returns all players).
-
-    State stored in context.extra:
-      "grid"          : 2D list of cell types (mutable: items placed on floor)
-      "player_pos"    : {player_id: (row, col)}
-      "player_held"   : {player_id: item_name or None}
-      "pot_contents"  : {(row, col): [item_name, ...]}  — items in each pot
-      "pot_cooking"   : {(row, col): int}               — remaining cook steps (0 = done)
-      "items_on_floor": {(row, col): item_name}
-      "score"         : int — dishes delivered
-      "step"          : int
-
-    TODO: Implement _observation() and submit() with the grid simulation.
-    """
-
-    DIRECTIONS = {
-        "N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1),
-    }
+    DIRECTIONS = {"N": (-1, 0), "S": (1, 0), "E": (0, 1), "W": (0, -1)}
 
     def __init__(
         self,
         num_players: int = 2,
         layout: str = "cramped_room",
         max_steps: int = 400,
-        cook_time: int = 4,   # steps in pot before dish is ready
+        cook_time: int = 4,
         seed: int = 0,
     ) -> None:
         if layout not in LAYOUTS:
-            raise ValueError(f"Unknown layout {layout!r}. Choose from: {list(LAYOUTS)}")
+            raise ValueError(f"Unknown layout {layout!r}; choose from {list(LAYOUTS)}")
         super().__init__(num_players=num_players, num_rounds=max_steps)
         self._layout_name = layout
         self._layout      = LAYOUTS[layout]
         self._cook_time   = cook_time
-        self._seed        = seed
         self._max_steps   = max_steps
+        self._seed        = seed
 
     # ── reset ──────────────────────────────────────────────────────────────────
 
     def reset(self, seed: Optional[int] = None) -> None:
         super().reset()
-        import copy
-        grid  = copy.deepcopy(self._layout["grid"])
+        grid   = copy.deepcopy(self._layout["grid"])
         starts = self._layout["player_starts"]
 
-        player_pos  = {pid: tuple(starts[i]) for i, pid in enumerate(self._ids)}
+        player_pos  = {pid: tuple(starts[i % len(starts)]) for i, pid in enumerate(self._ids)}
         player_held = {pid: None for pid in self._ids}
 
-        # Find pot positions in grid
-        pots: List[Tuple[int, int]] = []
-        for r, row in enumerate(grid):
-            for c, cell in enumerate(row):
-                if cell == "P":
-                    pots.append((r, c))
+        pots: List[Tuple[int, int]] = [
+            (r, c)
+            for r, row in enumerate(grid)
+            for c, cell in enumerate(row)
+            if cell == "P"
+        ]
 
         self.context.extra.update({
             "grid":           grid,
             "layout_desc":    self._layout["description"],
             "player_pos":     player_pos,
             "player_held":    player_held,
-            "pot_contents":   {pos: [] for pos in pots},
-            "pot_cooking":    {pos: 0  for pos in pots},
+            "pot_contents":   {pos: []      for pos in pots},
+            "pot_cooking":    {pos: 0       for pos in pots},
+            "pot_status":     {pos: "idle"  for pos in pots},
             "items_on_floor": {},
             "score":          0,
             "step":           0,
         })
 
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _find_adjacent_station(
+        self, grid: List[List[str]], r: int, c: int
+    ) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
+        """Return (pos, cell_type) of the first adjacent non-floor, non-wall cell."""
+        for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < len(grid) and 0 <= nc < len(grid[nr]):
+                cell = grid[nr][nc]
+                if cell not in (" ", "W"):
+                    return (nr, nc), cell
+        return None, None
+
     # ── observation ───────────────────────────────────────────────────────────
 
     def _observation(self, agent_id: str) -> RawObs:
-        """Return a text-ready kitchen snapshot for agent_id.
-
-        TODO: Render the grid state as a structured text description
-        that the LLM can understand and reason over.
-
-        Suggested format:
-          Kitchen (cramped_room): Small 5x5 room...
-          Your position: (2, 3). Holding: onion.
-          Other players: player_1 at (1, 1), holding: nothing.
-          Pot at (2,2): [onion, onion] — needs 1 more ingredient; not cooking.
-          Onion source at (1,1). Delivery window at (2,4).
-          Score: 3 dishes delivered. Step 42/400.
-        """
         extra = self.context.extra
         return {
             "agent_id":       agent_id,
@@ -187,45 +157,143 @@ class OvercookedAdapter(SymbolicAdapter):
                 pid: {"pos": extra["player_pos"][pid], "held": extra["player_held"][pid]}
                 for pid in self._ids if pid != agent_id
             },
-            "pot_contents":   {str(pos): contents for pos, contents in extra["pot_contents"].items()},
+            "pot_contents":   {str(pos): c for pos, c in extra["pot_contents"].items()},
             "pot_cooking":    {str(pos): t for pos, t in extra["pot_cooking"].items()},
+            "pot_status":     {str(pos): s for pos, s in extra["pot_status"].items()},
             "items_on_floor": {str(pos): item for pos, item in extra["items_on_floor"].items()},
             "score":          extra["score"],
             "grid":           extra["grid"],
         }
 
+    def pending(self) -> List[Tuple[str, RawObs]]:
+        return [(pid, self._observation(pid)) for pid in self._ids]
+
     # ── submit ─────────────────────────────────────────────────────────────────
 
     def submit(self, actions: Dict[str, Action]) -> StepResult:
-        """Execute all players' actions simultaneously and advance the kitchen state.
-
-        Expected action formats (see OvercookedParser):
-          "MOVE N" | "MOVE S" | "MOVE E" | "MOVE W"
-          "PICK_UP"
-          "DROP"
-          "INTERACT"
-          "STAY"
-
-        TODO: implement the grid simulation.
-
-        Pseudocode:
-          1. Process MOVE actions (check grid bounds + walls + player collisions).
-          2. Process PICK_UP: pick up adjacent or same-cell item; place in player_held.
-          3. Process DROP: place held item on current cell (if floor/counter).
-          4. Process INTERACT:
-             - At onion/tomato source: pick up ingredient.
-             - At pot: add held ingredient; if pot full → start cooking.
-             - At dish source: pick up empty dish.
-             - At chop board: chop held ingredient (some recipes need chopped items).
-             - At delivery: if holding completed dish → score += 1.
-          5. Advance pot_cooking timers; pots that hit 0 → dish ready.
-          6. Advance step; check done (step >= max_steps).
-          7. Reward = change in score this step.
-        """
         extra = self.context.extra
-        raise NotImplementedError(
-            "OvercookedAdapter.submit() not yet implemented. "
-            "See docstring for the expected grid simulation logic."
+        grid  = extra["grid"]
+
+        # ── 1. Resolve MOVE actions ──────────────────────────────────────────
+        old_pos  = dict(extra["player_pos"])
+        desired  = {}
+        for pid in self._ids:
+            act = str(actions.get(pid, "STAY")).upper()
+            r, c = old_pos[pid]
+            if act.startswith("MOVE ") and len(act) > 5:
+                dr, dc = self.DIRECTIONS.get(act[5], (0, 0))
+                nr, nc = r + dr, c + dc
+                rows = len(grid)
+                cols = len(grid[0]) if rows > 0 else 0
+                if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == " ":
+                    desired[pid] = (nr, nc)
+                else:
+                    desired[pid] = (r, c)
+            else:
+                desired[pid] = (r, c)
+
+        # Block: multiple players want the same cell
+        want_count = Counter(desired.values())
+        new_pos    = {
+            pid: (desired[pid] if want_count[desired[pid]] == 1 else old_pos[pid])
+            for pid in self._ids
+        }
+
+        # Block: swaps (A→B's old cell, B→A's old cell simultaneously)
+        ids = self._ids
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                p1, p2 = ids[i], ids[j]
+                if desired[p1] == old_pos[p2] and desired[p2] == old_pos[p1]:
+                    new_pos[p1] = old_pos[p1]
+                    new_pos[p2] = old_pos[p2]
+
+        extra["player_pos"] = new_pos
+
+        # ── 2. Non-move actions (processed in player order) ──────────────────
+        score_delta = 0
+
+        for pid in self._ids:
+            act  = str(actions.get(pid, "STAY")).upper()
+            r, c = extra["player_pos"][pid]
+            held = extra["player_held"][pid]
+
+            if act == "PICK_UP":
+                pos_key = (r, c)
+                if held is None and pos_key in extra["items_on_floor"]:
+                    extra["player_held"][pid] = extra["items_on_floor"].pop(pos_key)
+
+            elif act == "DROP":
+                if held is not None:
+                    pos_key = (r, c)
+                    if pos_key not in extra["items_on_floor"]:
+                        extra["items_on_floor"][pos_key] = held
+                        extra["player_held"][pid] = None
+
+            elif act == "INTERACT":
+                station_pos, stype = self._find_adjacent_station(grid, r, c)
+                if station_pos is None:
+                    continue
+
+                sr, sc = station_pos
+
+                if stype == "O":  # onion dispenser
+                    if held is None:
+                        extra["player_held"][pid] = "onion"
+
+                elif stype == "T":  # tomato dispenser
+                    if held is None:
+                        extra["player_held"][pid] = "tomato"
+
+                elif stype == "P":  # pot
+                    pot_key    = (sr, sc)
+                    contents   = extra["pot_contents"][pot_key]
+                    pot_status = extra["pot_status"][pot_key]
+
+                    if pot_status == "ready" and held is None:
+                        # Collect the finished soup
+                        soup = "onion_soup" if all(i == "onion" for i in contents) else "soup"
+                        extra["player_held"][pid]     = soup
+                        extra["pot_contents"][pot_key] = []
+                        extra["pot_status"][pot_key]   = "idle"
+                        extra["pot_cooking"][pot_key]  = 0
+
+                    elif pot_status == "idle" and held in ("onion", "tomato"):
+                        contents.append(held)
+                        extra["player_held"][pid] = None
+                        if len(contents) >= 3:
+                            extra["pot_status"][pot_key]  = "cooking"
+                            extra["pot_cooking"][pot_key] = self._cook_time
+
+                elif stype == "D":  # delivery window
+                    if held in ("onion_soup", "tomato_soup", "soup"):
+                        extra["player_held"][pid] = None
+                        extra["score"] += 1
+                        score_delta    += 1
+
+                elif stype == "S":  # dish source — no dish needed in this recipe
+                    if held is None:
+                        extra["player_held"][pid] = "dish"
+
+        # ── 3. Advance pot timers ────────────────────────────────────────────
+        for pot_key in extra["pot_cooking"]:
+            if extra["pot_status"][pot_key] == "cooking":
+                extra["pot_cooking"][pot_key] -= 1
+                if extra["pot_cooking"][pot_key] <= 0:
+                    extra["pot_status"][pot_key]  = "ready"
+                    extra["pot_cooking"][pot_key]  = 0
+
+        # ── 4. Advance step ──────────────────────────────────────────────────
+        extra["step"]          += 1
+        self.context.round_index += 1
+
+        done    = extra["step"] >= self._max_steps
+        rewards = {pid: float(score_delta) for pid in self._ids}
+
+        return StepResult(
+            rewards=rewards,
+            done=done,
+            info={"score": extra["score"], "step": extra["step"]},
         )
 
     def close(self) -> Dict[str, float]:

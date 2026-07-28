@@ -11,56 +11,39 @@ Episode phases (stored in context.extra["phase"]):
   "day_vote"       — all living players vote to eliminate someone (simultaneous)
   "done"           — terminal
 
-Speaker order in day_discussion: pending() advances one step per submit() call.
-Discussion has `discussion_rounds_per_day` complete rotations before day_vote.
-
-Roles:
-  Villager     — no night action; wins if all werewolves eliminated
-  Werewolf     — kills one player per night; wins when werewolves ≥ villagers
-  Seer         — investigates one player per night; sees their true role
-  Doctor       — saves one player per night (can save self); blocked kill if match
-  Hunter       — TODO: shoots one player upon elimination
-  Witch        — TODO: one-use kill potion + one-use save potion
-
 Win conditions (checked after each elimination):
-  Villagers win: number of werewolves alive == 0
-  Werewolves win: number of werewolves >= number of non-werewolves
+  Villagers win: no werewolves remain
+  Werewolves win: werewolves >= non-werewolves among living players
 """
 from __future__ import annotations
 
 import random
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from testbed.envs.symbolic.base import SymbolicAdapter
 from testbed.types import Action, RawObs, RenderContext, StepResult
 
 ROLE_SIDE: Dict[str, str] = {
-    "Villager":  "village",
-    "Seer":      "village",
-    "Doctor":    "village",
-    "Werewolf":  "werewolf",
+    "Villager": "village",
+    "Seer":     "village",
+    "Doctor":   "village",
+    "Werewolf": "werewolf",
 }
 
-# Default role pools by player count [village_roles, werewolf_count]
 DEFAULT_ROLES: Dict[int, Tuple[List[str], int]] = {
-    4:  (["Villager", "Seer"],                        1),
-    5:  (["Villager", "Villager", "Seer"],             1),
-    6:  (["Villager", "Villager", "Seer", "Doctor"],   2),
-    7:  (["Villager"] * 3 + ["Seer", "Doctor"],        2),
-    8:  (["Villager"] * 4 + ["Seer", "Doctor"],        2),
-    9:  (["Villager"] * 4 + ["Seer", "Doctor"],        3),
-    10: (["Villager"] * 5 + ["Seer", "Doctor"],        3),
+    4:  (["Villager", "Seer"],                          1),
+    5:  (["Villager", "Villager", "Seer"],               1),
+    6:  (["Villager", "Villager", "Seer", "Doctor"],     2),
+    7:  (["Villager"] * 3 + ["Seer", "Doctor"],          2),
+    8:  (["Villager"] * 4 + ["Seer", "Doctor"],          2),
+    9:  (["Villager"] * 4 + ["Seer", "Doctor"],          3),
+    10: (["Villager"] * 5 + ["Seer", "Doctor"],          3),
 }
 
 
 class WerewolfAdapter(SymbolicAdapter):
-    """Werewolf with configurable roles and per-phase pending().
-
-    Night phases run in order: werewolf → seer → doctor.
-    Day phase: discussion (multiple speaking turns) then vote.
-
-    TODO: implement _observation() and submit() game logic.
-    """
+    """Werewolf with configurable roles and per-phase pending()."""
 
     def __init__(
         self,
@@ -70,20 +53,22 @@ class WerewolfAdapter(SymbolicAdapter):
         seed: int = 0,
     ) -> None:
         if num_players not in DEFAULT_ROLES and roles is None:
-            raise ValueError(f"No default role setup for {num_players} players; pass explicit roles=")
-        # num_rounds = generous upper bound on turns across all days
+            raise ValueError(
+                f"No default role setup for {num_players} players; pass explicit roles="
+            )
         super().__init__(num_players=num_players, num_rounds=200)
         self._discussion_rounds = discussion_rounds_per_day
-        self._seed  = seed
-        self._roles_spec = roles  # override; if None use DEFAULT_ROLES
+        self._seed        = seed
+        self._roles_spec  = roles
+        self._rng: random.Random = random.Random(seed)
 
     # ── reset ──────────────────────────────────────────────────────────────────
 
     def reset(self, seed: Optional[int] = None) -> None:
         super().reset()
-        rng = random.Random(seed if seed is not None else self._seed)
+        effective = seed if seed is not None else self._seed
+        self._rng = random.Random(effective)
 
-        # Build role pool
         if self._roles_spec is not None:
             pool = list(self._roles_spec)
             assert len(pool) == self.num_players
@@ -91,48 +76,88 @@ class WerewolfAdapter(SymbolicAdapter):
             village_roles, n_wolves = DEFAULT_ROLES[self.num_players]
             pool = list(village_roles) + ["Werewolf"] * n_wolves
 
-        rng.shuffle(pool)
+        self._rng.shuffle(pool)
         roles: Dict[str, str] = {pid: role for pid, role in zip(self._ids, pool)}
 
         werewolves = [pid for pid, r in roles.items() if r == "Werewolf"]
-        seer       = next((pid for pid, r in roles.items() if r == "Seer"), None)
+        seer       = next((pid for pid, r in roles.items() if r == "Seer"),   None)
         doctor     = next((pid for pid, r in roles.items() if r == "Doctor"), None)
 
         self.context.extra.update({
-            "roles":        roles,           # private; exposed per-role in _observation
-            "living":       list(self._ids),
-            "werewolves":   werewolves,
-            "seer":         seer,
-            "doctor":       doctor,
-            "phase":        "night_werewolf",
-            "day_num":      1,
-            # Discussion state
-            "speaker_idx":  0,
-            "discussion_turn": 0,  # how many speaking turns done this day
-            # Night action results (cleared each night)
-            "pending_kill": None,   # werewolf target
-            "saved":        None,   # doctor's save target
-            # Seer's accumulated knowledge
-            "seer_knowledge": {},   # {investigated_pid: role}
-            # History of eliminations
-            "elimination_log": [],  # [{"day": N, "eliminated": pid, "role": role, "by": "vote"|"werewolf"}]
+            "roles":           roles,
+            "living":          list(self._ids),
+            "werewolves":      werewolves,
+            "seer":            seer,
+            "doctor":          doctor,
+            "phase":           "night_werewolf",
+            "day_num":         1,
+            "speaker_idx":     0,
+            "discussion_turn": 0,
+            "pending_kill":    None,
+            "saved":           None,
+            "seer_knowledge":  {},
+            "elimination_log": [],
         })
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _resolve_night(self, extra: Dict) -> None:
+        """Apply the werewolf kill unless the doctor saved the target."""
+        kill   = extra["pending_kill"]
+        saved  = extra["saved"]
+        living = extra["living"]
+
+        if kill and kill in living and kill != saved:
+            living.remove(kill)
+            role = extra["roles"][kill]
+            extra["elimination_log"].append({
+                "day":        extra["day_num"],
+                "eliminated": kill,
+                "role":       role,
+                "by":         "werewolf",
+            })
+            if kill in extra["werewolves"]:
+                extra["werewolves"].remove(kill)
+            if kill == extra["seer"]:
+                extra["seer"] = None
+            if kill == extra["doctor"]:
+                extra["doctor"] = None
+
+        extra["pending_kill"] = None
+        extra["saved"]        = None
+
+    def _start_day(self, extra: Dict) -> None:
+        extra["day_num"]         += 1
+        extra["speaker_idx"]      = 0
+        extra["discussion_turn"]  = 0
+        extra["phase"]            = "day_discussion"
+
+    def _check_win(self, extra: Dict) -> Tuple[bool, Optional[Dict], Optional[Dict]]:
+        """Returns (done, rewards_or_None, info_or_None)."""
+        living   = extra["living"]
+        n_wolves = sum(1 for p in living if p in extra["werewolves"])
+        n_others = len(living) - n_wolves
+
+        if n_wolves == 0:
+            rewards = {p: (0.0 if extra["roles"].get(p) == "Werewolf" else 1.0)
+                       for p in self._ids}
+            extra["phase"] = "done"
+            return True, rewards, {"winner": "village"}
+
+        if n_wolves >= n_others:
+            wolves  = set(extra["werewolves"])
+            rewards = {p: (1.0 if p in wolves else 0.0) for p in self._ids}
+            extra["phase"] = "done"
+            return True, rewards, {"winner": "werewolf"}
+
+        return False, None, None
 
     # ── observation / pending ──────────────────────────────────────────────────
 
     def _observation(self, agent_id: str) -> RawObs:
-        """Return a role-filtered snapshot for agent_id.
-
-        Role visibility:
-          Werewolf: knows other werewolves.
-          Seer:     knows investigated players' roles + other werewolves if any
-                    revealed via the seer_knowledge dict.
-          Everyone: knows living players, elimination log, current day.
-
-        TODO: finalize what each role sees and format for the renderer.
-        """
         extra = self.context.extra
         role  = extra["roles"][agent_id]
+        living = extra["living"]
 
         known_werewolves: List[str] = []
         if role == "Werewolf":
@@ -146,11 +171,13 @@ class WerewolfAdapter(SymbolicAdapter):
             "agent_id":         agent_id,
             "role":             role,
             "side":             ROLE_SIDE.get(role, "village"),
-            "living":           list(extra["living"]),
+            "living":           list(living),
             "phase":            extra["phase"],
             "day_num":          extra["day_num"],
-            "speaker":          extra["living"][extra["speaker_idx"] % len(extra["living"])]
-                                if extra["phase"] == "day_discussion" else None,
+            "speaker":          (
+                living[extra["speaker_idx"] % len(living)]
+                if extra["phase"] == "day_discussion" and living else None
+            ),
             "known_werewolves": known_werewolves,
             "seer_knowledge":   seer_knowledge,
             "elimination_log":  list(extra["elimination_log"]),
@@ -158,8 +185,8 @@ class WerewolfAdapter(SymbolicAdapter):
         }
 
     def pending(self) -> List[Tuple[str, RawObs]]:
-        extra = self.context.extra
-        phase = extra["phase"]
+        extra  = self.context.extra
+        phase  = extra["phase"]
         living = extra["living"]
 
         if phase == "night_werewolf":
@@ -170,87 +197,146 @@ class WerewolfAdapter(SymbolicAdapter):
             seer = extra["seer"]
             if seer and seer in living:
                 return [(seer, self._observation(seer))]
-            return []  # seer eliminated — skip phase
+            return []
 
         if phase == "night_doctor":
             doctor = extra["doctor"]
             if doctor and doctor in living:
                 return [(doctor, self._observation(doctor))]
-            return []  # doctor eliminated — skip phase
+            return []
 
         if phase == "day_discussion":
-            idx = extra["speaker_idx"] % len(living)
+            if not living:
+                return []
+            idx     = extra["speaker_idx"] % len(living)
             speaker = living[idx]
             return [(speaker, self._observation(speaker))]
 
         if phase == "day_vote":
             return [(p, self._observation(p)) for p in living]
 
-        return []  # done
+        return []
 
     # ── submit ─────────────────────────────────────────────────────────────────
 
     def submit(self, actions: Dict[str, Action]) -> StepResult:
-        """Process one phase step.
-
-        Expected action formats (see WerewolfParser):
-          night_werewolf:   {wolf_id: "player_X"}  — kill target
-          night_seer:       {seer_id: "player_X"}  — investigate target
-          night_doctor:     {doctor_id: "player_X"} — save target
-          day_discussion:   {speaker_id: "<free text statement>"}
-          day_vote:         {player_id: "player_X"} — vote to eliminate
-
-        TODO: implement full phase-transition logic.
-
-        Pseudocode:
-
-        night_werewolf:
-          pending_kill = majority_vote(actions.values()) or random if tie
-          advance to night_seer (or day_discussion if no seer)
-
-        night_seer:
-          seer_knowledge[target] = roles[target]
-          advance to night_doctor (or day_discussion if no doctor)
-
-        night_doctor:
-          saved = action[doctor_id]
-          advance to day_discussion
-
-        [on transition to day_discussion]:
-          if pending_kill and pending_kill != saved:
-              living.remove(pending_kill)
-              elimination_log.append({...})
-              check win condition
-
-        day_discussion:
-          log the statement; advance speaker_idx
-          if discussion_turn >= n_living * _discussion_rounds: advance to day_vote
-
-        day_vote:
-          eliminate plurality target; advance to night_werewolf
-          check win condition
-        """
-        extra  = self.context.extra
-        phase  = extra["phase"]
-        living = extra["living"]
+        extra   = self.context.extra
+        phase   = extra["phase"]
+        living  = extra["living"]
         rewards = {pid: 0.0 for pid in self._ids}
+        self.context.round_index += 1
 
-        # --- placeholder transitions (remove TODO raises to activate) ---
-
+        # ── night_werewolf: wolves vote on a kill target ──────────────────────
         if phase == "night_werewolf":
-            raise NotImplementedError("night_werewolf: tally actions and store pending_kill")
+            non_wolves = [p for p in living if p not in extra["werewolves"]]
+            valid = [v for v in actions.values() if v in non_wolves]
+            if valid:
+                counts     = Counter(valid)
+                max_c      = max(counts.values())
+                candidates = sorted(p for p, c in counts.items() if c == max_c)
+                extra["pending_kill"] = candidates[0]
+            elif non_wolves:
+                extra["pending_kill"] = self._rng.choice(non_wolves)
+            else:
+                extra["pending_kill"] = None
 
+            seer   = extra["seer"]
+            doctor = extra["doctor"]
+            if seer and seer in living:
+                extra["phase"] = "night_seer"
+            elif doctor and doctor in living:
+                extra["phase"] = "night_doctor"
+            else:
+                self._resolve_night(extra)
+                done, win_rewards, info = self._check_win(extra)
+                if done:
+                    return StepResult(rewards=win_rewards, done=True, info=info)
+                self._start_day(extra)
+            return StepResult(rewards=rewards, done=False, info={"phase": extra["phase"]})
+
+        # ── night_seer: seer investigates one player ──────────────────────────
         if phase == "night_seer":
-            raise NotImplementedError("night_seer: store investigation result in seer_knowledge")
+            target = next(iter(actions.values()), None) if actions else None
+            if target and target in extra["roles"]:
+                extra["seer_knowledge"][target] = extra["roles"][target]
 
+            doctor = extra["doctor"]
+            if doctor and doctor in living:
+                extra["phase"] = "night_doctor"
+            else:
+                self._resolve_night(extra)
+                done, win_rewards, info = self._check_win(extra)
+                if done:
+                    return StepResult(rewards=win_rewards, done=True, info=info)
+                self._start_day(extra)
+            return StepResult(rewards=rewards, done=False, info={"phase": extra["phase"]})
+
+        # ── night_doctor: doctor saves one player ─────────────────────────────
         if phase == "night_doctor":
-            raise NotImplementedError("night_doctor: store saved target; resolve pending kill; advance to day")
+            target = next(iter(actions.values()), None) if actions else None
+            extra["saved"] = target if (target and target in living) else None
+            self._resolve_night(extra)
+            done, win_rewards, info = self._check_win(extra)
+            if done:
+                return StepResult(rewards=win_rewards, done=True, info=info)
+            self._start_day(extra)
+            return StepResult(rewards=rewards, done=False, info={"phase": extra["phase"]})
 
+        # ── day_discussion: one speaker makes a statement ─────────────────────
         if phase == "day_discussion":
-            raise NotImplementedError("day_discussion: log statement; advance speaker_idx; check if voting time")
+            if actions:
+                speaker = next(iter(actions))
+                stmt    = actions[speaker]
+                if isinstance(stmt, dict):
+                    stmt = stmt.get("statement", "")
+                self.context.history.append({
+                    "day":       extra["day_num"],
+                    "phase":     "discussion",
+                    "speaker":   speaker,
+                    "statement": str(stmt)[:500],
+                })
+            extra["speaker_idx"]     += 1
+            extra["discussion_turn"] += 1
+            total_needed = len(living) * self._discussion_rounds
+            if extra["discussion_turn"] >= total_needed:
+                extra["phase"] = "day_vote"
+            return StepResult(rewards=rewards, done=False, info={"phase": extra["phase"]})
 
+        # ── day_vote: plurality vote to eliminate ─────────────────────────────
         if phase == "day_vote":
-            raise NotImplementedError("day_vote: tally plurality vote; eliminate player; advance to night; check win")
+            valid_votes = {
+                voter: target
+                for voter, target in actions.items()
+                if target in living and target != voter
+            }
+            if valid_votes:
+                counts     = Counter(valid_votes.values())
+                max_c      = max(counts.values())
+                candidates = sorted(p for p, c in counts.items() if c == max_c)
+                eliminated = candidates[0]
+
+                living.remove(eliminated)
+                extra["elimination_log"].append({
+                    "day":        extra["day_num"],
+                    "eliminated": eliminated,
+                    "role":       extra["roles"][eliminated],
+                    "by":         "vote",
+                })
+                if eliminated in extra["werewolves"]:
+                    extra["werewolves"].remove(eliminated)
+                if eliminated == extra["seer"]:
+                    extra["seer"] = None
+                if eliminated == extra["doctor"]:
+                    extra["doctor"] = None
+
+                done, win_rewards, info = self._check_win(extra)
+                if done:
+                    return StepResult(rewards=win_rewards, done=True, info=info)
+
+            extra["phase"]        = "night_werewolf"
+            extra["pending_kill"] = None
+            extra["saved"]        = None
+            return StepResult(rewards=rewards, done=False, info={"phase": "night_werewolf"})
 
         extra["phase"] = "done"
         return StepResult(rewards=rewards, done=True, info={"winner": "unknown"})
