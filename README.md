@@ -1,6 +1,6 @@
 # LLM Steering Multi-Game Testbed
 
-A research testbed for measuring how **prompt injections** change LLM agent behaviour across text-based multi-agent games.
+A research testbed for measuring how **prompt injections** and **activation steering** change LLM agent behaviour across text-based multi-agent games.
 
 ## Overview
 
@@ -8,11 +8,17 @@ Agents powered by local LLMs play coordination games. Steering methods are appli
 
 **Games supported**
 
-| Family | ID | Description |
-|--------|----|-------------|
-| `symbolic` | `gbs` | Goldstone Group Sum — players each submit a contribution; the group wins when contributions sum to a hidden target |
-| `symbolic` | `gbs_exact_replication` | Picking variant — `hide_group_size=True`, `feedback=directional` — faithfully replicates Riedl (2025, arXiv 2510.05174) |
-| `symbolic` | `beauty_contest` | N players guess an integer; winner is closest to 2/3 of the group average |
+| Family | ID | Players | Status | Doc |
+|--------|----|---------|--------|-----|
+| `symbolic` | `gbs` | 2–10 | Fully implemented | [gbs.md](docs/games/gbs.md) |
+| `symbolic` | `gbs_exact_replication` | 2–10 | Fully implemented (Riedl 2025 replication) | [gbs.md](docs/games/gbs.md) |
+| `symbolic` | `beauty_contest` | 2–10 | Fully implemented | [beauty_contest.md](docs/games/beauty_contest.md) |
+| `symbolic` | `avalon` | 5–10 | Skeleton — parser+renderer done, submit() pending | [avalon.md](docs/games/avalon.md) |
+| `symbolic` | `hanabi` | 2–5 | Skeleton — parser+renderer done, submit() pending | [hanabi.md](docs/games/hanabi.md) |
+| `symbolic` | `werewolf` | 4–10 | Skeleton — parser+renderer done, submit() pending | [werewolf.md](docs/games/werewolf.md) |
+| `symbolic` | `overcooked` | 2 | Skeleton — parser+renderer done, grid sim pending | [overcooked.md](docs/games/overcooked.md) |
+| `textarena` | `Diplomacy-v0` | 5–7 | Fully playable via TextArena | [diplomacy.md](docs/games/diplomacy.md) |
+| `textarena` | any TextArena `env_id` | varies | Fully playable — no game code needed | [textarena.md](docs/games/textarena.md) |
 
 **Steering methods**
 
@@ -20,98 +26,141 @@ Agents powered by local LLMs play coordination games. Steering methods are appli
 |--------|-------------|
 | `noop` | Baseline — no steering applied |
 | `prompt_injection` | Per-agent system suffix / user prefix injected at inference time |
+| `activation` | Residual-stream vector addition at a chosen decoder layer |
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
 
-# run one episode (single config, useful for debugging)
+# Run one episode (GBS picking game, useful for debugging)
 python scripts/run_episode.py \
-  --config config/picking_sweep/gbs_exact_replication_plain_2p_14b.yaml \
+  --config config/experiments/picking_sweep/gbs_exact_replication_plain_2p_14b.yaml \
   --episodes 1
 ```
 
 Episode logs land in `logs/picking_sweep/<run_id>/episode_N.jsonl` with a `.summary.json` sidecar.
 
-## Picking sweep (GBS exact-replication)
-
-Systematic sweep over steering conditions (plain / persona / Theory-of-Mind) × player counts (2 / 3 / 10) using the `gbs_exact_replication` game alias (`hide_group_size=True`, `feedback=directional`). Target: **200 episodes per condition × player-count cell**.
-
-### 1 — Generate configs
-
-```bash
-python scripts/gen_picking_configs.py
-```
-
-Writes one YAML per condition × player-count × model to `config/picking_sweep/`.
-
-### 2 — Run on the cluster
-
-```bash
-sbatch scripts/run_exact_gbs_replication_qwen.slurm   # Qwen3-14B
-sbatch scripts/run_exact_gbs_replication_20b.slurm    # gpt-oss-20b
-```
-
-Both scripts are self-requeueing array jobs (54 tasks = 3 conditions × 3 player counts × 6 shards). Each task:
-- skips already-completed episodes via `.summary.json` detection
-- re-submits itself with `--dependency=afterany` if episodes remain at walltime
-- traps `SIGTERM` (walltime kill) so the requeue fires even when the job is killed mid-episode
-
-Walltime: **23 h** (adjust `#SBATCH -t` if your cluster caps lower).
-
-**Notes:**
-- gpt-oss-20b on H100 nodes requires bfloat16. `TransformersPolicy` auto-detects this via `torch.cuda.get_device_name()`.
-- A40 nodes (`gpu22-a40-05`, `gpu22-a40-06`) are excluded — MXFP4 kernels do not support Ampere.
-
-### 3 — Plot results
-
-```bash
-python scripts/plot_picking_sweep.py
-```
-
-Reads every `*.summary.json` under `logs/picking_sweep/` and writes separate figure sets per model:
+## Repository layout
 
 ```
-figures/picking_sweep/
-  qwen3_14b/
-    n_datapoints.png       — converged / non-converged / missing vs 200-episode target (stacked bars)
-    convergence_line.png   — convergence rate vs group size (line chart, 95% Wilson CI)
-    success_rate.png       — convergence rate per condition × player count (bars)
-    rounds_to_success.png  — mean rounds, non-converged capped at 30 (bars)
-    box_10p.png            — round distributions at 10 players (box plots, cap=30)
-    violin.png             — full distributions all group sizes, median + mean marked
-  gpt_oss_20b/
-    (same set; cells with N < 10 are skipped)
-```
-
-Also writes `picking_sweep_summary.csv` (one row per episode).
-
-## Project structure
-
-```
-testbed/
-  orchestrator.py           # game-agnostic episode loop (parallel agent calls via ThreadPoolExecutor)
-  envs/symbolic/gbs.py      # GBSAdapter + gbs_exact_replication alias
-  renderers/symbolic/gbs.py # state → prompt text
-  parsers/symbolic/gbs.py   # text → action, with error feedback
+testbed/                        # Core library — game-agnostic
+  orchestrator.py               # Episode loop (parallel agent calls via ThreadPoolExecutor)
+  registry.py                   # Maps game_id → (Adapter, Renderer, Parser)
+  envs/
+    symbolic/                   # Simultaneous-move games
+      beauty_contest.py
+      gbs.py
+    textarena/
+      ta_adapter.py             # Wraps the TextArena library
+  renderers/symbolic/           # State → prompt text, one file per game
+  parsers/symbolic/             # Text → action, one file per game
   steering/
-    noop.py                 # NoOpSteering
-    prompt_injection.py     # PromptInjectionSteering
+    noop.py
+    prompt_injection.py
+    activation.py
   policy/
-    transformers_policy.py  # in-process HF inference
-    vllm_policy.py          # OpenAI-compatible vLLM client
+    transformers_policy.py      # In-process HuggingFace inference
+    vllm_policy.py              # OpenAI-compatible vLLM client
   logging_/episode_logger.py
-config/picking_sweep/       # one YAML per condition × player-count × model
+
+config/
+  shared/                       # Persona lists shared across games
+    personas.yaml               # 20 character personas (Riedl 2025)
+    behavioral_personas.yaml    # 34 behavioral archetypes
+    run_config.yaml             # Annotated config template
+  games/                        # Individual hand-written configs, one directory per game
+    gbs/
+    beauty_contest/
+    textarena/
+  experiments/                  # Sweep configs (may span multiple games)
+    picking_sweep/
+    exact_replication_sweep/
+    persona_sweep/
+    layer_sweep/
+    reasoning_sweep/
+
+cases/
+  gbs/
+    persona_impact_cases.json   # 50 extracted GBS game states for counterfactual study
+
 scripts/
-  gen_picking_configs.py    # generate config/picking_sweep/ YAMLs
-  run_episode.py            # episode runner CLI
-  plot_picking_sweep.py     # analysis figures
-  run_exact_gbs_replication_qwen.slurm
-  run_exact_gbs_replication_20b.slurm
-logs/picking_sweep/         # episode JSONL + summary files (gitignored)
-figures/picking_sweep/      # PNG outputs
-picking_sweep_summary.csv   # flat per-episode summary
+  run_episode.py                # Game-agnostic episode runner (primary CLI)
+  analyze_results.py            # CSV aggregation across run_ids
+  gbs/                          # GBS-specific experiment scripts
+    picking_sweep/
+      gen_picking_configs.py
+      plot_picking_sweep.py
+    persona_sweep/
+      gen_persona_sweep_configs.py
+      plot_persona_sweep.py
+    persona_impact/
+      extract_persona_cases.py
+      run_persona_cases.py
+      merge_persona_cases.py
+      plot_persona_impact.py
+    steering/
+      collect_activations.py
+      extract_steering_vector.py
+      train_sae.py
+      find_tom_features.py
+      run_layer_sweep.py
+    slurm/                      # SLURM array job scripts (cluster-specific paths)
+  experiments/                  # Multi-game experiment scripts
+    reasoning_sweep/
+      gen_reasoning_sweep_configs.py
+      plot_reasoning_sweep.py
+  beauty_contest/               # Placeholder for future BC-specific scripts
+
+docs/games/                     # Per-game documentation
+  gbs.md
+  beauty_contest.md
+  textarena.md
+  adding_a_new_game.md          # Step-by-step guide
+
+logs/                           # Runtime outputs (gitignored)
+plots/                          # Analysis figures
+figures/                        # Publication figures
+```
+
+## Adding a new game
+
+See **[docs/games/adding_a_new_game.md](docs/games/adding_a_new_game.md)** for the full step-by-step checklist.
+
+The short version:
+1. Add `Adapter` + `Renderer` + `Parser` under `testbed/envs/symbolic/` (or use `textarena` family)
+2. Register in `testbed/registry.py`
+3. Add configs under `config/games/<game_id>/`
+4. Write scripts under `scripts/<game_id>/`
+5. Add `docs/games/<game_id>.md`
+
+## GBS picking sweep
+
+Systematic sweep over steering conditions (plain / persona / Theory-of-Mind) × player counts (2 / 3 / 10):
+
+```bash
+# Generate configs
+python scripts/gbs/picking_sweep/gen_picking_configs.py
+
+# Run on cluster
+sbatch scripts/gbs/slurm/run_exact_gbs_replication_qwen.slurm
+sbatch scripts/gbs/slurm/run_exact_gbs_replication_20b.slurm
+
+# Plot
+python scripts/gbs/picking_sweep/plot_picking_sweep.py
+```
+
+Outputs: `figures/picking_sweep/{qwen3_14b,gpt_oss_20b}/*.png`
+
+## GBS persona impact study
+
+50 game-state cases × 70 conditions × 20 reps = 70,000 inferences:
+
+```bash
+python scripts/gbs/persona_impact/extract_persona_cases.py
+sbatch scripts/gbs/slurm/run_persona_cases.slurm
+python scripts/gbs/persona_impact/merge_persona_cases.py
+python scripts/gbs/persona_impact/plot_persona_impact.py
 ```
 
 ## Tests
