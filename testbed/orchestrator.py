@@ -61,6 +61,7 @@ class Orchestrator:
         self.env.reset()
         turn = 0
         last_rewards: Dict[str, float] = {}
+        last_info: Dict[str, Any] = {}
         done = False
         while not done:
             pending = self.env.pending()
@@ -85,6 +86,7 @@ class Orchestrator:
 
             result = self.env.submit(actions)
             last_rewards = result.rewards
+            last_info    = result.info
             for agent_id, d in decided.items():
                 self.logger.log_step(
                     game=self.game, turn=turn, agent_id=agent_id,
@@ -99,5 +101,6 @@ class Orchestrator:
             turn += 1
             done = result.done
 
-        self.logger.close(summary={"final_rewards": last_rewards})
+        self.logger.close(summary={"final_rewards": last_rewards,
+                                   "final_info": last_info})
         return last_rewards
