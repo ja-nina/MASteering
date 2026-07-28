@@ -13,7 +13,7 @@
 
 # ── Self-requeue on walltime (same pattern as picking sweep) ────────────────
 RESUME_HOP_LIMIT=${RESUME_HOP_LIMIT:-20}
-HOP=${HOP:-0}
+HOP=${1:-0}
 if [ "$HOP" -ge "$RESUME_HOP_LIMIT" ]; then
     echo "Reached hop limit ($RESUME_HOP_LIMIT). Exiting."
     exit 0
@@ -21,7 +21,7 @@ fi
 
 requeue_self() {
     echo "Walltime approaching — requeuing (hop $((HOP+1)))."
-    sbatch --export=ALL,HOP=$((HOP+1)) "$0"
+    sbatch "$0" $((HOP+1))
 }
 trap requeue_self USR1
 

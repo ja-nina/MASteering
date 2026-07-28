@@ -75,7 +75,7 @@ set -euo pipefail
 NUM_SHARDS=6
 RESUME_HOP_LIMIT=16   # ~6.5 days of ~9h45 chunks per shard — generous ceiling, not a target
 
-HOP=${RESUME_HOP:-0}
+HOP=${1:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"
 
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
@@ -121,7 +121,7 @@ PYEOF
 if [ "${REMAINING}" -gt 0 ] && [ "${HOP}" -lt "${RESUME_HOP_LIMIT}" ]; then
   echo "[$(date)] ${REMAINING} episode(s) remaining for task ${T} (shard ${SHARD}/${NUM_SHARDS}) — requeuing (hop $((HOP + 1)))"
   sbatch --dependency=afterany:"${SLURM_JOB_ID}" --array="${T}" \
-         --export=ALL,RESUME_HOP=$((HOP + 1)) "$0"
+         "$0" $((HOP + 1))
 elif [ "${REMAINING}" -gt 0 ]; then
   echo "[$(date)] WARNING: hop limit (${RESUME_HOP_LIMIT}) reached with ${REMAINING} episode(s) still remaining for task ${T} — not requeuing. Investigate before resubmitting by hand."
 else

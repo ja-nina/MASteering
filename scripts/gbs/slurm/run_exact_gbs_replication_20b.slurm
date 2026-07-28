@@ -28,7 +28,7 @@ set -uo pipefail
 NUM_SHARDS=48
 RESUME_HOP_LIMIT=20   # N=10 episodes are slow; allow more hops
 
-HOP=${RESUME_HOP:-0}
+HOP=${1:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"
 
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
@@ -62,7 +62,7 @@ PYEOF
   if [ "${REMAINING}" -gt 0 ] && [ "${HOP}" -lt "${RESUME_HOP_LIMIT}" ]; then
     echo "[$(date)] ${REMAINING} episode(s) remaining — requeuing (hop $((HOP + 1)))"
     sbatch --dependency=afterany:"${SLURM_JOB_ID}" --array="${T}" \
-           --export=ALL,RESUME_HOP=$((HOP + 1)) "$0"
+           "$0" $((HOP + 1))
   elif [ "${REMAINING}" -gt 0 ]; then
     echo "[$(date)] WARNING: hop limit (${RESUME_HOP_LIMIT}) reached with ${REMAINING} remaining."
   else

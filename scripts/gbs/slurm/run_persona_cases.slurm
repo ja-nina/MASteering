@@ -28,7 +28,7 @@ N_CHUNKS=9
 CASES_PER_CHUNK=6
 RESUME_HOP_LIMIT=10
 
-HOP=${RESUME_HOP:-0}
+HOP=${1:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"
 
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
@@ -51,7 +51,7 @@ _requeue() {
   if [ "${REMAINING}" -gt 0 ] && [ "${HOP}" -lt "${RESUME_HOP_LIMIT}" ]; then
     echo "[$(date)] chunk not complete — requeuing (hop $((HOP + 1)))"
     sbatch --dependency=afterany:"${SLURM_JOB_ID}" --array="${T}" \
-           --export=ALL,RESUME_HOP=$((HOP + 1)) "$0"
+           "$0" $((HOP + 1))
   elif [ "${REMAINING}" -gt 0 ]; then
     echo "[$(date)] WARNING: hop limit (${RESUME_HOP_LIMIT}) reached, chunk still incomplete."
   else
