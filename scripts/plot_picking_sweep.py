@@ -41,7 +41,7 @@ BASE_FIG = Path("figures/picking_sweep")
 
 RUN_ID_RE = re.compile(
     r"^gbs_exact_replication_(?P<condition>plain|persona|tom)"
-    r"_(?P<players>\d+)p(?P<model>_20b|_14b)?$"
+    r"_(?P<players>\d+)p(?P<model>_20b|_14b|_phi4)?$"
 )
 
 CONDITION_ORDER = ["plain", "persona", "tom"]
@@ -68,6 +68,7 @@ COLOR_MISSING = "#c3c2b7"   # not yet run / crashed — muted gray
 MODELS = [
     ("Qwen3-14B",   "qwen3_14b"),
     ("gpt-oss-20b", "gpt_oss_20b"),
+    ("Phi4-14B", "phi4_14b")
 ]
 
 
@@ -80,7 +81,7 @@ def parse_run_id(run_id: str) -> dict | None:
     return {
         "condition": m.group("condition"),
         "players":   int(m.group("players")),
-        "model":     {"_20b": "gpt-oss-20b", "_14b": "Qwen3-14B"}.get(
+        "model":     {"_20b": "gpt-oss-20b", "_14b": "Qwen3-14B", '_phi4': 'Phi4-14B'}.get(
                          m.group("model"), "Qwen3-14B"),
     }
 
