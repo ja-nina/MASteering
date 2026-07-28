@@ -47,6 +47,10 @@ _SYMBOLIC = {
 
 def build_game(*, family: str, game_id: str, num_players: int,
                env_kwargs: Dict[str, Any]) -> Tuple[Any, Any, Any]:
+    # num_players may appear in env_kwargs when it duplicates agents.count in the
+    # YAML; strip it so we don't pass it twice to the adapter constructor.
+    env_kwargs = {k: v for k, v in env_kwargs.items() if k != "num_players"}
+
     if family == "symbolic":
         if game_id not in _SYMBOLIC:
             raise ValueError(

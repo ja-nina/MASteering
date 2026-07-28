@@ -138,17 +138,33 @@ class WerewolfAdapter(SymbolicAdapter):
         n_wolves = sum(1 for p in living if p in extra["werewolves"])
         n_others = len(living) - n_wolves
 
+        elim_log       = extra["elimination_log"]
+        wolves_killed  = sum(1 for e in elim_log if e["role"] == "Werewolf")
+        village_killed = len(elim_log) - wolves_killed
+
         if n_wolves == 0:
             rewards = {p: (0.0 if extra["roles"].get(p) == "Werewolf" else 1.0)
                        for p in self._ids}
             extra["phase"] = "done"
-            return True, rewards, {"winner": "village"}
+            return True, rewards, {
+                "winner":          "village",
+                "wolves_killed":   wolves_killed,
+                "village_killed":  village_killed,
+                "days":            extra["day_num"],
+                "elimination_log": elim_log,
+            }
 
         if n_wolves >= n_others:
             wolves  = set(extra["werewolves"])
             rewards = {p: (1.0 if p in wolves else 0.0) for p in self._ids}
             extra["phase"] = "done"
-            return True, rewards, {"winner": "werewolf"}
+            return True, rewards, {
+                "winner":          "werewolf",
+                "wolves_killed":   wolves_killed,
+                "village_killed":  village_killed,
+                "days":            extra["day_num"],
+                "elimination_log": elim_log,
+            }
 
         return False, None, None
 
