@@ -14,16 +14,16 @@ _PHASE_HEADERS = {
 _PHASE_INSTRUCTIONS = {
     "night_werewolf": (
         "Choose one living player to eliminate tonight.\n"
-        "Respond with: KILL: player_X"
+        "Respond with: KILL: <name>"
     ),
     "night_seer": (
         "Choose one living player to investigate.  You will learn their true role.\n"
-        "Respond with: INVESTIGATE: player_X"
+        "Respond with: INVESTIGATE: <name>"
     ),
     "night_doctor": (
         "Choose one living player to protect from elimination tonight.  "
         "You may choose yourself.\n"
-        "Respond with: SAVE: player_X"
+        "Respond with: SAVE: <name>"
     ),
     "day_discussion": (
         "It is your turn to speak.  Share your observations, suspicions, or arguments. "
@@ -33,7 +33,7 @@ _PHASE_INSTRUCTIONS = {
     "day_vote": (
         "Vote to eliminate one player.  The player with the most votes is eliminated.  "
         "Ties are resolved randomly.\n"
-        "Respond with: VOTE: player_X"
+        "Respond with: VOTE: <name>"
     ),
 }
 
@@ -102,11 +102,16 @@ class WerewolfRenderer:
         if obs.get("elimination_log"):
             lines.append("")
 
-        # Recent statements from history
-        day_statements = [h for h in context.history if h.get("phase") == "day_discussion"]
-        for stmt in day_statements[-6:]:
-            lines.append(f"  {stmt.get('player', '?')}: {stmt.get('statement', '')}")
+        # All discussion statements, grouped by day
+        day_statements = [h for h in context.history if h.get("phase") == "discussion"]
         if day_statements:
+            current_day = None
+            for stmt in day_statements:
+                d = stmt.get("day")
+                if d != current_day:
+                    current_day = d
+                    lines.append(f"  --- Day {d} discussion ---")
+                lines.append(f"  {stmt.get('speaker', '?')}: {stmt.get('statement', '')}")
             lines.append("")
 
         # Seer knowledge (only visible to seer)

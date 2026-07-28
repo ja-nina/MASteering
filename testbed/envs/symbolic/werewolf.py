@@ -24,6 +24,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from testbed.envs.symbolic.base import SymbolicAdapter
 from testbed.types import Action, RawObs, RenderContext, StepResult
 
+_NAMES = [
+    "Alice", "Bob", "Carol", "David", "Eve",
+    "Frank", "Grace", "Henry", "Iris", "Jack",
+    "Kate", "Leo", "Mia", "Noah", "Olivia",
+    "Paul", "Quinn", "Rose", "Sam", "Tara",
+    "Uma", "Victor", "Wendy", "Yara", "Zoe",
+]
+
 ROLE_SIDE: Dict[str, str] = {
     "Villager": "village",
     "Seer":     "village",
@@ -68,6 +76,7 @@ class WerewolfAdapter(SymbolicAdapter):
         super().reset()
         effective = seed if seed is not None else self._seed
         self._rng = random.Random(effective)
+        self._ids = self._rng.sample(_NAMES, self.num_players)
 
         if self._roles_spec is not None:
             pool = list(self._roles_spec)
