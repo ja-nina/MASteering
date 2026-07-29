@@ -1,7 +1,7 @@
 """Plot SecretMafia experiment results.
 
 Usage:
-    python scripts/mafia/plot_mafia_results.py [--log-dir logs/mafia] [--out plots/mafia]
+    python scripts/textarena/plot_mafia_results.py [--log-dir logs/mafia] [--out plots/mafia]
 
 Reads episode_*.summary.json and episode_*.jsonl from logs/mafia/mafia_noop_8p/ and produces:
     win_rates.png             — mafia vs civilian win rate
@@ -77,13 +77,7 @@ def load_episode_logs(log_dir: str) -> list[list[dict]]:
 
 
 def _extract_eliminations(steps: list[dict]) -> list[dict]:
-    """Return [{player, turn, phase}] in elimination order, best-effort.
-
-    Checks close_info on the final step first (most reliable), then scans
-    all step info dicts for per-turn elimination events. Returns [] if nothing
-    is found so callers can degrade gracefully.
-    """
-    # ── 1. close_info on the last step ────────────────────────────────────────
+    """Return [{player, turn, phase}] in elimination order, best-effort."""
     for step in reversed(steps):
         info = step.get("info", {}) or {}
         close = info.get("close_info", {}) or {}
@@ -96,7 +90,6 @@ def _extract_eliminations(steps: list[dict]) -> list[dict]:
                 return [{"player": str(p), "turn": None, "phase": "unknown"}
                         for p in val]
 
-    # ── 2. per-step info events ────────────────────────────────────────────────
     elims, seen = [], set()
     for step in steps:
         info = step.get("info", {}) or {}
@@ -116,7 +109,6 @@ def _extract_eliminations(steps: list[dict]) -> list[dict]:
 
 
 def _close_info_keys(episode_logs: list[list[dict]]) -> set[str]:
-    """Collect all keys that appear in close_info across all episodes."""
     keys: set[str] = set()
     for steps in episode_logs:
         for step in reversed(steps):
@@ -140,33 +132,18 @@ def _player_order(summaries: list[dict]) -> list[str]:
 
 
 def _winner(summary: dict) -> str:
-    """Infer winner from close_info or reward pattern."""
     info = summary.get("final_info", {})
-    # TextArena stores close_info inside final_info
     close = info.get("close_info", info)
     if isinstance(close, dict):
         w = close.get("winner", close.get("winning_team", ""))
         if w:
             return str(w).lower()
-    # fallback: if any player has reward > 0, check majority
-    rews = summary.get("final_rewards", {})
-    if not rews:
-        return "unknown"
-    pos = sum(1 for v in rews.values() if v > 0)
-    total = len(rews)
-    # mafia typically wins with fewer players getting positive reward
     return "unknown"
 
 
 # ── plot 1: win rates ─────────────────────────────────────────────────────────
 
 def plot_win_rates(summaries: list, out: str):
-    """
-    TextArena SecretMafia rewards:
-      winners (mafia OR civilians depending on who wins) get reward > 0.
-    We infer the winning team from close_info['winner'] when available,
-    and fall back to checking the reward structure.
-    """
     mafia_wins = 0
     civ_wins   = 0
     unknown    = 0
@@ -191,14 +168,13 @@ def plot_win_rates(summaries: list, out: str):
             values.append(unknown / total * 100)
             colors.append("#95A5A6")
         x = np.arange(len(labels))
-        bars = ax.bar(x, values, color=colors, zorder=3)
+        ax.bar(x, values, color=colors, zorder=3)
         for i, v in enumerate(values):
             ax.text(i, v + 1.5, f"{v:.0f}%", ha="center", fontsize=10)
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_ylim(0, max(values) * 1.3 + 10)
     else:
-        # close_info winner field not present — show raw reward positivity
         players = _player_order(summaries)
         frac_pos = [
             sum(1 for s in summaries if s["final_rewards"].get(p, 0) > 0) / total * 100
@@ -250,7 +226,7 @@ def plot_reward_distribution(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
-# ── plot 3: cumulative average reward (stability) ─────────────────────────────
+# ── plot 3: cumulative average reward ─────────────────────────────────────────
 
 def plot_reward_over_episodes(summaries: list, out: str):
     players = _player_order(summaries)
@@ -270,17 +246,15 @@ def plot_reward_over_episodes(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
-# ── plot 4: fraction of episodes with positive reward per player ──────────────
+# ── plot 4: survival rate ─────────────────────────────────────────────────────
 
 def plot_survival_rate(summaries: list, out: str):
-    """Proxy for survival: players who end with reward > 0 were on the winning team."""
     players = _player_order(summaries)
     if not players:
         return
     total  = len(summaries)
     rates  = [sum(1 for s in summaries if s["final_rewards"].get(p, 0) > 0) / total * 100
               for p in players]
-    uniform = 100.0  # all players on winning team get positive reward → not a uniform baseline
 
     fig, ax = plt.subplots(figsize=(max(7, 2 * len(players)), 5))
     x = np.arange(len(players))
@@ -299,23 +273,10 @@ def plot_survival_rate(summaries: list, out: str):
 
 def plot_elimination_timeline(episode_logs: list[list[dict]],
                               summaries: list[dict], out: str):
-    """Plot when each player seat tends to be eliminated.
-
-    Two sub-panels:
-      Left  — mean elimination order (1 = first killed, 8 = last/survived)
-               across all episodes where that seat was eliminated.
-      Right — distribution of elimination order per seat (box + jitter).
-
-    Falls back to a note if no elimination data is found in the logs,
-    and prints which close_info keys ARE present to aid debugging.
-    """
     players = _player_order(summaries)
     if not players:
         return
 
-    # Collect elimination order per player seat across episodes
-    # elim_orders[player] = list of integer positions (1-based) at which they
-    # were eliminated, or len(players)+1 if they survived to the end.
     n_players = len(players)
     survived_rank = n_players + 1
     elim_orders: dict[str, list[int]] = defaultdict(list)
@@ -325,24 +286,19 @@ def plot_elimination_timeline(episode_logs: list[list[dict]],
     for steps in episode_logs:
         elims = _extract_eliminations(steps)
         if not elims:
-            # No elimination data — mark all as "unknown" so we can count episodes
             continue
         parsed_any = True
-        # Build a set of eliminated player ids for this episode
         elim_set = {e["player"] for e in elims}
         for rank, e in enumerate(elims, start=1):
             p = e["player"]
             elim_orders[p].append(rank)
             if e["turn"] is not None:
                 elim_turns[p].append(e["turn"])
-        # Survivors: anyone with positive final reward who wasn't eliminated
-        # We approximate survivors as players not in elim_set
         for p in players:
             if p not in elim_set:
                 elim_orders[p].append(survived_rank)
 
     if not parsed_any:
-        # Print what IS available so the user knows how to wire it up
         keys = _close_info_keys(episode_logs)
         print(f"\n[elimination_timeline] No elimination events found in logs.")
         print(f"  close_info keys observed: {sorted(keys) or '(none)'}")
@@ -354,7 +310,6 @@ def plot_elimination_timeline(episode_logs: list[list[dict]],
     fig.suptitle(f"Elimination Timeline — SecretMafia (n={len(episode_logs)} episodes)",
                  fontsize=13, fontweight="bold")
 
-    # ── left: mean elimination order ─────────────────────────────────────────
     ax = axes[0]
     means = [np.mean(elim_orders.get(p, [survived_rank])) for p in players]
     sems  = [np.std(elim_orders.get(p, [survived_rank])) /
@@ -377,7 +332,6 @@ def plot_elimination_timeline(episode_logs: list[list[dict]],
     ax.spines["right"].set_visible(False)
     ax.legend(frameon=False, fontsize=8)
 
-    # ── right: box + jitter per seat ─────────────────────────────────────────
     ax = axes[1]
     data = [elim_orders.get(p, [survived_rank]) for p in players]
     rng = np.random.default_rng(42)
@@ -401,7 +355,6 @@ def plot_elimination_timeline(episode_logs: list[list[dict]],
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # ── if turn data is available, add a third note ───────────────────────────
     if elim_turns:
         note_lines = []
         for p in players:

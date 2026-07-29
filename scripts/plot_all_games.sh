@@ -11,35 +11,15 @@ OUT="${2:-plots}"
 
 PYTHON="${PYTHON:-python}"
 
-echo "=== Plotting Werewolf ==="
-$PYTHON scripts/werewolf/plot_werewolf_results.py \
-    --log-dir "${LOG}/werewolf" \
-    --out     "${OUT}/werewolf"
-
-echo "=== Plotting Avalon ==="
-$PYTHON scripts/avalon/plot_avalon_results.py \
-    --log-dir "${LOG}/avalon" \
-    --out     "${OUT}/avalon"
-
-echo "=== Plotting Hanabi ==="
-$PYTHON scripts/hanabi/plot_hanabi_results.py \
-    --log-dir "${LOG}/hanabi" \
-    --out     "${OUT}/hanabi"
-
-echo "=== Plotting Overcooked ==="
-$PYTHON scripts/overcooked/plot_overcooked_results.py \
-    --log-dir "${LOG}/overcooked" \
-    --out     "${OUT}/overcooked"
-
-echo "=== Plotting Mafia ==="
-$PYTHON scripts/mafia/plot_mafia_results.py \
-    --log-dir "${LOG}/mafia" \
-    --out     "${OUT}/mafia"
-
 echo "=== Plotting Debate ==="
-$PYTHON scripts/debate/plot_debate_results.py \
+$PYTHON scripts/textarena/plot_debate_results.py \
     --log-dir "${LOG}/debate" \
     --out     "${OUT}/debate"
+
+echo "=== Plotting Mafia ==="
+$PYTHON scripts/textarena/plot_mafia_results.py \
+    --log-dir "${LOG}/mafia" \
+    --out     "${OUT}/mafia"
 
 echo "=== Plotting Negotiation ==="
 $PYTHON scripts/textarena/plot_negotiation_results.py \
@@ -135,6 +115,11 @@ echo "=== Plotting Scorable Games ==="
 $PYTHON scripts/textarena/plot_scorable_games_results.py \
     --log-dir "${LOG}/scorable_games" \
     --out     "${OUT}/scorable_games"
+
+echo "=== Plotting Diplomacy ==="
+$PYTHON scripts/textarena/plot_diplomacy_results.py \
+    --log-dir "${LOG}/diplomacy" \
+    --out     "${OUT}/diplomacy"
 
 echo "=== Plotting GBS ==="
 $PYTHON scripts/gbs/plot_gbs_results.py \

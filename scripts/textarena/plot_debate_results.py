@@ -1,7 +1,7 @@
 """Plot Debate experiment results.
 
 Usage:
-    python scripts/debate/plot_debate_results.py [--log-dir logs/debate] [--out plots/debate]
+    python scripts/textarena/plot_debate_results.py [--log-dir logs/debate] [--out plots/debate]
 
 Reads episode_*.summary.json from logs/debate/debate_noop_2p/ and produces:
     win_rate.png             — which player position wins more often
@@ -78,7 +78,6 @@ def plot_win_rate(summaries: list, out: str):
     total   = len(summaries)
     colors  = [FOR_COLOR, AGAINST_COLOR] + ["#4CAF7D"] * max(0, len(players) - 2)
 
-    # A player "wins" if their reward is strictly greater than the opponent's
     wins = []
     for p in players:
         w = sum(
@@ -173,7 +172,7 @@ def plot_overview(summaries: list, out: str):
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     topics = list(dict.fromkeys(t for t in (_extract_topic(s) for s in summaries) if t))
-    topic_str = f": "{topics[0]}"" if len(topics) == 1 else ""
+    topic_str = f": \"{topics[0]}\"" if len(topics) == 1 else ""
     fig.suptitle(f"Debate Baseline Results (n={total}){topic_str}", fontsize=13, fontweight="bold")
 
     ax = axes[0]
@@ -232,7 +231,6 @@ def _print_summary(summaries: list[dict]) -> None:
         "player_1": "AGAINST (argues AGAINST the motion)",
     }
 
-    # ── role framing ──────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
     print(f"  Debate baseline — {total} episode(s)")
     print(f"{'─'*60}")
@@ -241,7 +239,6 @@ def _print_summary(summaries: list[dict]) -> None:
         label = position_labels.get(p, f"position {i}")
         print(f"    {p}  →  {label}")
 
-    # ── debate topics ─────────────────────────────────────────────────────────
     topics = [_extract_topic(s) for s in summaries]
     topics_found = [(i, t) for i, t in enumerate(topics) if t]
     if topics_found:
@@ -258,7 +255,6 @@ def _print_summary(summaries: list[dict]) -> None:
     else:
         print(f"\n  Debate motions: not found in close_info")
 
-    # ── win/reward stats ──────────────────────────────────────────────────────
     win_counts = {p: 0 for p in players}
     draw_count = 0
     for s in summaries:
@@ -282,7 +278,6 @@ def _print_summary(summaries: list[dict]) -> None:
     print(f"  {'─'*60}")
     print(f"  Draws: {draw_count}/{total} ({draw_count/total*100:.1f}%)")
 
-    # ── remaining close_info keys ─────────────────────────────────────────────
     close_keys: dict = {}
     for s in summaries:
         ci = (s.get("final_info") or {}).get("close_info") or {}
@@ -313,10 +308,10 @@ def main():
 
     _print_summary(summaries)
 
-    plot_win_rate(summaries,           os.path.join(args.out, "win_rate.png"))
-    plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
+    plot_win_rate(summaries,            os.path.join(args.out, "win_rate.png"))
+    plot_reward_distribution(summaries,  os.path.join(args.out, "reward_distribution.png"))
     plot_reward_over_episodes(summaries, os.path.join(args.out, "reward_over_episodes.png"))
-    plot_overview(summaries,            os.path.join(args.out, "overview.png"))
+    plot_overview(summaries,             os.path.join(args.out, "overview.png"))
     print(f"\nAll plots → {args.out}/")
 
 

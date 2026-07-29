@@ -1,7 +1,7 @@
 """Plot Diplomacy experiment results.
 
 Usage:
-    python scripts/diplomacy/plot_diplomacy_results.py [--log-dir logs/diplomacy] [--out plots/diplomacy]
+    python scripts/textarena/plot_diplomacy_results.py [--log-dir logs/diplomacy] [--out plots/diplomacy]
 
 Reads episode_*.summary.json from logs/diplomacy/diplomacy_noop_5p/ and produces:
     reward_distribution.png  — per-player reward distribution across episodes
@@ -41,7 +41,6 @@ def _style(ax, title, xlabel, ylabel):
 
 
 def load_summaries(log_dir: str) -> list[dict]:
-    """Return list of summary dicts from all run dirs under log_dir (any run_id)."""
     summaries = []
     for path in sorted(glob.glob(os.path.join(log_dir, "**", "episode_*.summary.json"),
                                  recursive=True)):
@@ -56,11 +55,9 @@ def load_summaries(log_dir: str) -> list[dict]:
 
 
 def _player_order(summaries: list[dict]) -> list[str]:
-    """Infer sorted player IDs from the first summary."""
     if not summaries:
         return []
     pids = list(summaries[0].get("final_rewards", {}).keys())
-    # sort player_0, player_1, ... or alphabetically
     try:
         return sorted(pids, key=lambda p: int(re.search(r"\d+", p).group()))
     except (AttributeError, TypeError):
@@ -103,7 +100,6 @@ def plot_reward_distribution(summaries: list, out: str):
 # ── plot 2: win rate by player ────────────────────────────────────────────────
 
 def _is_winner(reward: float, all_rewards: list[float]) -> bool:
-    """A player wins if their reward equals the max reward in the episode."""
     if not all_rewards:
         return False
     return reward == max(all_rewards)
@@ -145,7 +141,7 @@ def plot_win_rate(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
-# ── plot 3: cumulative average reward (stability check) ───────────────────────
+# ── plot 3: cumulative average reward ─────────────────────────────────────────
 
 def plot_reward_over_episodes(summaries: list, out: str):
     players = _player_order(summaries)
@@ -193,7 +189,6 @@ def plot_overview(summaries: list, out: str):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f"Diplomacy Baseline Results (n={total})", fontsize=14, fontweight="bold")
 
-    # Panel 1: reward distribution
     ax = axes[0]
     rng = np.random.default_rng(0)
     bp = ax.boxplot(
@@ -211,10 +206,10 @@ def plot_overview(summaries: list, out: str):
     ax.set_xticks(range(len(players))); ax.set_xticklabels([f"P{i}" for i in range(len(players))])
     _style(ax, "Reward Distribution", "Player", "Final reward")
 
-    # Panel 2: win rates
     ax = axes[1]
     ax.bar(x, win_rates, color=colors, zorder=3)
-    ax.axhline(uniform, color="#AAAAAA", linewidth=1.2, linestyle="--", label=f"Uniform ({uniform:.0f}%)")
+    ax.axhline(uniform, color="#AAAAAA", linewidth=1.2, linestyle="--",
+               label=f"Uniform ({uniform:.0f}%)")
     for i, wr in enumerate(win_rates):
         ax.text(i, wr + 1.5, f"{wr:.0f}%", ha="center", fontsize=9)
     ax.set_xticks(x); ax.set_xticklabels([f"P{i}" for i in range(len(players))])
@@ -243,10 +238,10 @@ def main():
         mean_r = np.mean([s["final_rewards"].get(p, 0) for s in summaries])
         print(f"  {p}: mean reward {mean_r:.3f}")
 
-    plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
-    plot_win_rate(summaries,            os.path.join(args.out, "win_rate.png"))
+    plot_reward_distribution(summaries,  os.path.join(args.out, "reward_distribution.png"))
+    plot_win_rate(summaries,             os.path.join(args.out, "win_rate.png"))
     plot_reward_over_episodes(summaries, os.path.join(args.out, "reward_over_episodes.png"))
-    plot_overview(summaries,            os.path.join(args.out, "overview.png"))
+    plot_overview(summaries,             os.path.join(args.out, "overview.png"))
     print(f"\nAll plots → {args.out}/")
 
 
