@@ -67,7 +67,7 @@ def _player_order(summaries: list[dict]) -> list[str]:
 
 
 def _side_label(i: int, player: str) -> str:
-    labels = ["FOR (player_0)", "AGAINST (player_1)"]
+    labels = ["Affirmative / FOR (player_0)", "Non-Affirmative / AGAINST (player_1)"]
     return labels[i] if i < len(labels) else player
 
 
@@ -172,7 +172,9 @@ def plot_overview(summaries: list, out: str):
         wins.append(w / total * 100)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle(f"Debate Baseline Results (n={total})", fontsize=14, fontweight="bold")
+    topics = list(dict.fromkeys(t for t in (_extract_topic(s) for s in summaries) if t))
+    topic_str = f": "{topics[0]}"" if len(topics) == 1 else ""
+    fig.suptitle(f"Debate Baseline Results (n={total}){topic_str}", fontsize=13, fontweight="bold")
 
     ax = axes[0]
     x  = np.arange(len(players))
@@ -208,6 +210,96 @@ def plot_overview(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
+def _extract_topic(summary: dict) -> str | None:
+    """Extract the debate motion/topic from close_info."""
+    ci = (summary.get("final_info") or {}).get("close_info") or {}
+    if not isinstance(ci, dict):
+        return None
+    for key in ("topic", "motion", "debate_topic", "statement", "proposition",
+                "resolution", "subject", "claim"):
+        val = ci.get(key)
+        if val:
+            return str(val)
+    return None
+
+
+def _print_summary(summaries: list[dict]) -> None:
+    players = _player_order(summaries)
+    total   = len(summaries)
+
+    position_labels = {
+        "player_0": "FOR  (argues IN FAVOUR of the motion)",
+        "player_1": "AGAINST (argues AGAINST the motion)",
+    }
+
+    # ── role framing ──────────────────────────────────────────────────────────
+    print(f"\n{'─'*60}")
+    print(f"  Debate baseline — {total} episode(s)")
+    print(f"{'─'*60}")
+    print(f"  Player roles:")
+    for i, p in enumerate(players):
+        label = position_labels.get(p, f"position {i}")
+        print(f"    {p}  →  {label}")
+
+    # ── debate topics ─────────────────────────────────────────────────────────
+    topics = [_extract_topic(s) for s in summaries]
+    topics_found = [(i, t) for i, t in enumerate(topics) if t]
+    if topics_found:
+        unique_topics = list(dict.fromkeys(t for _, t in topics_found))
+        print(f"\n  Debate motions ({len(unique_topics)} unique across {total} episodes):")
+        for t in unique_topics[:10]:
+            eps = [i for i, topic in topics_found if topic == t]
+            ep_str = ", ".join(str(e) for e in eps[:5])
+            if len(eps) > 5:
+                ep_str += f" … ({len(eps)} total)"
+            print(f"    • {t}  [ep {ep_str}]")
+        if len(unique_topics) > 10:
+            print(f"    … and {len(unique_topics) - 10} more motions")
+    else:
+        print(f"\n  Debate motions: not found in close_info")
+
+    # ── win/reward stats ──────────────────────────────────────────────────────
+    win_counts = {p: 0 for p in players}
+    draw_count = 0
+    for s in summaries:
+        rews    = s["final_rewards"]
+        best    = max(rews.get(p, 0) for p in players)
+        winners = [p for p in players if rews.get(p, 0) == best]
+        if len(winners) > 1:
+            draw_count += 1
+        else:
+            win_counts[winners[0]] += 1
+
+    print(f"\n  {'Player':<12}  {'Position':<38}  {'Wins':>5}  {'Win%':>6}  "
+          f"{'Mean rew':>9}  {'Std':>7}  {'Median':>7}")
+    print(f"  {'─'*12}  {'─'*38}  {'─'*5}  {'─'*6}  {'─'*9}  {'─'*7}  {'─'*7}")
+    for i, p in enumerate(players):
+        rews  = [s["final_rewards"].get(p, 0) for s in summaries]
+        label = position_labels.get(p, f"position {i}")
+        wins  = win_counts[p]
+        print(f"  {p:<12}  {label:<38}  {wins:>5}  {wins/total*100:>5.1f}%  "
+              f"{np.mean(rews):>9.3f}  {np.std(rews):>7.3f}  {float(np.median(rews)):>7.3f}")
+    print(f"  {'─'*60}")
+    print(f"  Draws: {draw_count}/{total} ({draw_count/total*100:.1f}%)")
+
+    # ── remaining close_info keys ─────────────────────────────────────────────
+    close_keys: dict = {}
+    for s in summaries:
+        ci = (s.get("final_info") or {}).get("close_info") or {}
+        for k, v in ci.items():
+            if k not in ("topic", "motion", "debate_topic", "statement",
+                         "proposition", "resolution", "subject", "claim"):
+                close_keys.setdefault(k, []).append(v)
+    if close_keys:
+        print(f"\n  Other close_info fields:")
+        for k, vals in sorted(close_keys.items()):
+            unique = list(dict.fromkeys(str(v) for v in vals))
+            sample = unique[:5]
+            suffix = f" … ({len(unique)} unique)" if len(unique) > 5 else ""
+            print(f"    {k}: {', '.join(sample)}{suffix}")
+    print(f"{'─'*60}\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log-dir", default="logs/debate")
@@ -219,15 +311,7 @@ def main():
     if not summaries:
         print("No summaries found. Run episodes first."); return
 
-    players = _player_order(summaries)
-    total   = len(summaries)
-    print(f"Loaded {total} episodes, players: {players}")
-    for i, p in enumerate(players):
-        mean_r = np.mean([s["final_rewards"].get(p, 0) for s in summaries])
-        wins   = sum(1 for s in summaries
-                     if s["final_rewards"].get(p, 0) > max(
-                         (s["final_rewards"].get(q, 0) for q in players if q != p), default=0))
-        print(f"  {_side_label(i, p)}: mean reward {mean_r:.3f}, wins {wins}/{total}")
+    _print_summary(summaries)
 
     plot_win_rate(summaries,           os.path.join(args.out, "win_rate.png"))
     plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))

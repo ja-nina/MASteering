@@ -3,11 +3,12 @@
 Usage:
     python scripts/mafia/plot_mafia_results.py [--log-dir logs/mafia] [--out plots/mafia]
 
-Reads episode_*.summary.json from logs/mafia/mafia_noop_8p/ and produces:
-    win_rates.png          — mafia vs civilian win rate
-    reward_distribution.png — per-player reward spread
-    survival_rate.png      — how often each player position survives to end
-    reward_over_episodes.png — cumulative average reward (stability / convergence check)
+Reads episode_*.summary.json and episode_*.jsonl from logs/mafia/mafia_noop_8p/ and produces:
+    win_rates.png             — mafia vs civilian win rate
+    reward_distribution.png   — per-player reward spread
+    survival_rate.png         — how often each player position survives to end
+    reward_over_episodes.png  — cumulative average reward (stability / convergence check)
+    elimination_timeline.png  — mean elimination order / turn per player seat
 """
 from __future__ import annotations
 
@@ -54,6 +55,78 @@ def load_summaries(log_dir: str) -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     return summaries
+
+
+def load_episode_logs(log_dir: str) -> list[list[dict]]:
+    """Load JSONL step logs — one list-of-steps per episode."""
+    episodes = []
+    for path in sorted(glob.glob(os.path.join(log_dir, "**", "episode_*.jsonl"),
+                                 recursive=True)):
+        steps = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        steps.append(json.loads(line))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if steps:
+            episodes.append(steps)
+    return episodes
+
+
+def _extract_eliminations(steps: list[dict]) -> list[dict]:
+    """Return [{player, turn, phase}] in elimination order, best-effort.
+
+    Checks close_info on the final step first (most reliable), then scans
+    all step info dicts for per-turn elimination events. Returns [] if nothing
+    is found so callers can degrade gracefully.
+    """
+    # ── 1. close_info on the last step ────────────────────────────────────────
+    for step in reversed(steps):
+        info = step.get("info", {}) or {}
+        close = info.get("close_info", {}) or {}
+        if not isinstance(close, dict):
+            continue
+        for key in ("elimination_order", "eliminations", "dead_players",
+                    "eliminated_players", "kill_order", "deaths"):
+            val = close.get(key)
+            if isinstance(val, list) and val:
+                return [{"player": str(p), "turn": None, "phase": "unknown"}
+                        for p in val]
+
+    # ── 2. per-step info events ────────────────────────────────────────────────
+    elims, seen = [], set()
+    for step in steps:
+        info = step.get("info", {}) or {}
+        if not isinstance(info, dict):
+            continue
+        for key in ("eliminated", "killed", "voted_out", "night_kill",
+                    "elimination", "lynched"):
+            val = info.get(key)
+            if val is not None and str(val) not in seen:
+                seen.add(str(val))
+                elims.append({
+                    "player": str(val),
+                    "turn": step.get("turn"),
+                    "phase": info.get("phase", "unknown"),
+                })
+    return elims
+
+
+def _close_info_keys(episode_logs: list[list[dict]]) -> set[str]:
+    """Collect all keys that appear in close_info across all episodes."""
+    keys: set[str] = set()
+    for steps in episode_logs:
+        for step in reversed(steps):
+            info = step.get("info", {}) or {}
+            close = info.get("close_info", {}) or {}
+            if isinstance(close, dict):
+                keys.update(close.keys())
+            if close:
+                break
+    return keys
 
 
 def _player_order(summaries: list[dict]) -> list[str]:
@@ -224,6 +297,127 @@ def plot_survival_rate(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
+def plot_elimination_timeline(episode_logs: list[list[dict]],
+                              summaries: list[dict], out: str):
+    """Plot when each player seat tends to be eliminated.
+
+    Two sub-panels:
+      Left  — mean elimination order (1 = first killed, 8 = last/survived)
+               across all episodes where that seat was eliminated.
+      Right — distribution of elimination order per seat (box + jitter).
+
+    Falls back to a note if no elimination data is found in the logs,
+    and prints which close_info keys ARE present to aid debugging.
+    """
+    players = _player_order(summaries)
+    if not players:
+        return
+
+    # Collect elimination order per player seat across episodes
+    # elim_orders[player] = list of integer positions (1-based) at which they
+    # were eliminated, or len(players)+1 if they survived to the end.
+    n_players = len(players)
+    survived_rank = n_players + 1
+    elim_orders: dict[str, list[int]] = defaultdict(list)
+    elim_turns:  dict[str, list[int]] = defaultdict(list)
+    parsed_any = False
+
+    for steps in episode_logs:
+        elims = _extract_eliminations(steps)
+        if not elims:
+            # No elimination data — mark all as "unknown" so we can count episodes
+            continue
+        parsed_any = True
+        # Build a set of eliminated player ids for this episode
+        elim_set = {e["player"] for e in elims}
+        for rank, e in enumerate(elims, start=1):
+            p = e["player"]
+            elim_orders[p].append(rank)
+            if e["turn"] is not None:
+                elim_turns[p].append(e["turn"])
+        # Survivors: anyone with positive final reward who wasn't eliminated
+        # We approximate survivors as players not in elim_set
+        for p in players:
+            if p not in elim_set:
+                elim_orders[p].append(survived_rank)
+
+    if not parsed_any:
+        # Print what IS available so the user knows how to wire it up
+        keys = _close_info_keys(episode_logs)
+        print(f"\n[elimination_timeline] No elimination events found in logs.")
+        print(f"  close_info keys observed: {sorted(keys) or '(none)'}")
+        print(f"  Skipping elimination_timeline.png\n")
+        return
+
+    colors = [PLAYER_COLORS[i % len(PLAYER_COLORS)] for i in range(n_players)]
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(f"Elimination Timeline — SecretMafia (n={len(episode_logs)} episodes)",
+                 fontsize=13, fontweight="bold")
+
+    # ── left: mean elimination order ─────────────────────────────────────────
+    ax = axes[0]
+    means = [np.mean(elim_orders.get(p, [survived_rank])) for p in players]
+    sems  = [np.std(elim_orders.get(p, [survived_rank])) /
+             max(1, len(elim_orders.get(p, []))) ** 0.5 for p in players]
+    x = np.arange(n_players)
+    ax.bar(x, means, color=colors, zorder=3, yerr=sems, capsize=5,
+           error_kw={"linewidth": 1.2})
+    ax.axhline(survived_rank, color="#AAAAAA", linewidth=1, linestyle="--",
+               label=f"Survived (rank {survived_rank})")
+    for i, m in enumerate(means):
+        ax.text(i, m + 0.15, f"{m:.1f}", ha="center", fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(players, rotation=20, ha="right")
+    ax.set_ylabel("Mean elimination order (lower = killed earlier)")
+    ax.set_ylim(0, survived_rank * 1.25)
+    ax.set_title("Mean Elimination Order by Seat", fontsize=11, fontweight="bold", pad=6)
+    ax.yaxis.grid(True, color=GRID_COLOR, linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False, fontsize=8)
+
+    # ── right: box + jitter per seat ─────────────────────────────────────────
+    ax = axes[1]
+    data = [elim_orders.get(p, [survived_rank]) for p in players]
+    rng = np.random.default_rng(42)
+    bp = ax.boxplot(data, positions=range(n_players), widths=0.4,
+                    patch_artist=True,
+                    medianprops=dict(color="black", linewidth=2), zorder=3)
+    for patch, col in zip(bp["boxes"], colors):
+        patch.set_facecolor(col + "55"); patch.set_edgecolor(col)
+    for i, (d, col) in enumerate(zip(data, colors)):
+        jit = rng.uniform(-0.13, 0.13, len(d))
+        ax.scatter(np.full(len(d), i) + jit, d,
+                   color=col, alpha=0.5, s=14, zorder=4)
+    ax.axhline(survived_rank, color="#AAAAAA", linewidth=1, linestyle="--")
+    ax.set_xticks(range(n_players))
+    ax.set_xticklabels(players, rotation=20, ha="right")
+    ax.set_ylabel("Elimination order")
+    ax.set_ylim(0, survived_rank * 1.2)
+    ax.set_title("Elimination Order Distribution by Seat", fontsize=11, fontweight="bold", pad=6)
+    ax.yaxis.grid(True, color=GRID_COLOR, linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # ── if turn data is available, add a third note ───────────────────────────
+    if elim_turns:
+        note_lines = []
+        for p in players:
+            turns = elim_turns.get(p)
+            if turns:
+                note_lines.append(f"{p}: mean turn {np.mean(turns):.1f}")
+        if note_lines:
+            fig.text(0.5, -0.02, "Mean elimination turn: " + "  |  ".join(note_lines),
+                     ha="center", fontsize=8, color="#666666")
+
+    fig.tight_layout()
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log-dir", default="logs/mafia")
@@ -242,10 +436,15 @@ def main():
         pos    = sum(1 for s in summaries if s["final_rewards"].get(p, 0) > 0)
         print(f"  {p}: mean reward {mean_r:.3f}, positive in {pos}/{len(summaries)} eps")
 
+    episode_logs = load_episode_logs(args.log_dir)
+    print(f"Loaded {len(episode_logs)} JSONL episode log(s) for elimination analysis.")
+
     plot_win_rates(summaries,          os.path.join(args.out, "win_rates.png"))
     plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
     plot_reward_over_episodes(summaries, os.path.join(args.out, "reward_over_episodes.png"))
     plot_survival_rate(summaries,       os.path.join(args.out, "survival_rate.png"))
+    plot_elimination_timeline(episode_logs, summaries,
+                              os.path.join(args.out, "elimination_timeline.png"))
     print(f"\nAll plots → {args.out}/")
 
 
