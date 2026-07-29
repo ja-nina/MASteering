@@ -2,7 +2,7 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-29%12
+#SBATCH --array=0-59%12
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/werewolf_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/werewolf_qwen_%A_%a.err
 #SBATCH -t 06:00:00
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # ── Configurable sweep ───────────────────────────────────────────────────────
-PLAYERS=(6 7 8 9 10)   # player counts to sweep
+PLAYERS=(6 7 8 9 10 11 12 13 14 15)   # player counts to sweep
 NUM_SHARDS=6            # array tasks per player count
 
 # ── Requeue guard ────────────────────────────────────────────────────────────
