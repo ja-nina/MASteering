@@ -26,11 +26,6 @@ $PYTHON scripts/textarena/plot_negotiation_results.py \
     --log-dir "${LOG}/negotiation" \
     --out     "${OUT}/negotiation"
 
-echo "=== Plotting Taboo ==="
-$PYTHON scripts/textarena/plot_taboo_results.py \
-    --log-dir "${LOG}/taboo" \
-    --out     "${OUT}/taboo"
-
 echo "=== Plotting Three-Player IPD ==="
 $PYTHON scripts/textarena/plot_three_player_ipd_results.py \
     --log-dir "${LOG}/three_player_ipd" \
@@ -45,11 +40,6 @@ echo "=== Plotting Three-Player TicTacToe ==="
 $PYTHON scripts/textarena/plot_three_player_tictactoe_results.py \
     --log-dir "${LOG}/three_player_tictactoe" \
     --out     "${OUT}/three_player_tictactoe"
-
-echo "=== Plotting Blind Auction ==="
-$PYTHON scripts/textarena/plot_blind_auction_results.py \
-    --log-dir "${LOG}/blind_auction" \
-    --out     "${OUT}/blind_auction"
 
 echo "=== Plotting Codenames ==="
 $PYTHON scripts/textarena/plot_codenames_results.py \
@@ -80,11 +70,6 @@ echo "=== Plotting Iterated Ultimatum Game ==="
 $PYTHON scripts/textarena/plot_iterated_ultimatum_results.py \
     --log-dir "${LOG}/iterated_ultimatum" \
     --out     "${OUT}/iterated_ultimatum"
-
-echo "=== Plotting Used Car Negotiation ==="
-$PYTHON scripts/textarena/plot_used_car_results.py \
-    --log-dir "${LOG}/used_car" \
-    --out     "${OUT}/used_car"
 
 echo "=== Plotting Public Goods Game ==="
 $PYTHON scripts/textarena/plot_public_goods_results.py \

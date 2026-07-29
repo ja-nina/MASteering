@@ -2,24 +2,22 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-219%30
+#SBATCH --array=0-179%30
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/textarena_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/textarena_%A_%a.err
 #SBATCH -t 08:00:00
 #
 # All TextArena noop baselines — single unified array.
 # Encoding: task_id = game_index * NUM_SHARDS + shard
-# 22 games × 10 shards = 220 tasks; 30 concurrent max (%30).
+# 18 games × 10 shards = 180 tasks; 30 concurrent max (%30).
 #
 # Game index → config mapping (update CONFIGS array when adding games):
-#   0  debate               8  codenames            16  settlers_of_catan
-#   1  mafia                9  character_conclave   17  high_society
-#   2  negotiation         10  truth_and_deception  18  market_entry
-#   3  taboo               11  liars_dice           19  poker
-#   4  three_player_ipd    12  iterated_ipd         20  scorable_games
-#   5  three_player_gops   13  iterated_ultimatum   21  diplomacy
-#   6  three_player_ttt    14  used_car
-#   7  blind_auction       15  public_goods
+#   0  debate               6  codenames            12  settlers_of_catan
+#   1  mafia                7  truth_and_deception  13  high_society
+#   2  negotiation          8  liars_dice           14  market_entry
+#   3  three_player_ipd     9  iterated_ipd         15  poker
+#   4  three_player_gops   10  iterated_ultimatum   16  scorable_games
+#   5  three_player_ttt    11  public_goods         17  diplomacy
 #
 # Submit:
 #   sbatch scripts/textarena/slurm/run_all_textarena_qwen.slurm
@@ -37,25 +35,21 @@ CONFIGS=(
     "config/games/debate/debate_noop_2p.yaml"                                    # 0
     "config/games/mafia/mafia_noop_8p.yaml"                                      # 1
     "config/games/negotiation/negotiation_noop_2p.yaml"                          # 2
-    "config/games/taboo/taboo_noop_2p.yaml"                                      # 3
-    "config/games/three_player_ipd/three_player_ipd_noop_3p.yaml"                # 4
-    "config/games/three_player_gops/three_player_gops_noop_3p.yaml"              # 5
-    "config/games/three_player_tictactoe/three_player_tictactoe_noop_3p.yaml"    # 6
-    "config/games/blind_auction/blind_auction_noop_4p.yaml"                      # 7
-    "config/games/codenames/codenames_noop_4p.yaml"                              # 8
-    "config/games/character_conclave/character_conclave_noop_4p.yaml"            # 9
-    "config/games/two_rooms/truth_and_deception_noop_2p.yaml"                    # 10
-    "config/games/liars_dice/liars_dice_noop_3p.yaml"                            # 11
-    "config/games/iterated_ipd/iterated_ipd_noop_2p.yaml"                        # 12
-    "config/games/iterated_ultimatum/iterated_ultimatum_noop_2p.yaml"             # 13
-    "config/games/used_car/used_car_noop_2p.yaml"                                # 14
-    "config/games/public_goods/public_goods_noop_4p.yaml"                        # 15
-    "config/games/settlers_of_catan/settlers_of_catan_noop_4p.yaml"              # 16
-    "config/games/high_society/high_society_noop_4p.yaml"                        # 17
-    "config/games/market_entry/market_entry_noop_4p.yaml"                        # 18
-    "config/games/poker/poker_noop_4p.yaml"                                      # 19
-    "config/games/scorable_games/scorable_games_noop_4p.yaml"                    # 20
-    "config/games/diplomacy/diplomacy_noop_5p.yaml"                              # 21
+    "config/games/three_player_ipd/three_player_ipd_noop_3p.yaml"                # 3
+    "config/games/three_player_gops/three_player_gops_noop_3p.yaml"              # 4
+    "config/games/three_player_tictactoe/three_player_tictactoe_noop_3p.yaml"    # 5
+    "config/games/codenames/codenames_noop_4p.yaml"                              # 6
+    "config/games/two_rooms/truth_and_deception_noop_2p.yaml"                    # 7
+    "config/games/liars_dice/liars_dice_noop_3p.yaml"                            # 8
+    "config/games/iterated_ipd/iterated_ipd_noop_2p.yaml"                        # 9
+    "config/games/iterated_ultimatum/iterated_ultimatum_noop_2p.yaml"             # 10
+    "config/games/public_goods/public_goods_noop_4p.yaml"                        # 11
+    "config/games/settlers_of_catan/settlers_of_catan_noop_4p.yaml"              # 12
+    "config/games/high_society/high_society_noop_4p.yaml"                        # 13
+    "config/games/market_entry/market_entry_noop_4p.yaml"                        # 14
+    "config/games/poker/poker_noop_4p.yaml"                                      # 15
+    "config/games/scorable_games/scorable_games_noop_4p.yaml"                    # 16
+    "config/games/diplomacy/diplomacy_noop_5p.yaml"                              # 17
 )
 
 CONFIG="${CONFIGS[$GAME_IDX]}"
