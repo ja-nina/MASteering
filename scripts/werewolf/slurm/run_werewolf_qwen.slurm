@@ -2,7 +2,7 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-99%15
+#SBATCH --array=0-99%5
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/werewolf_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/werewolf_qwen_%A_%a.err
 #SBATCH -t 08:00:00
