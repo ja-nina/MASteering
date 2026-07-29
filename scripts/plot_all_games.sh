@@ -31,10 +31,15 @@ $PYTHON scripts/overcooked/plot_overcooked_results.py \
     --log-dir "${LOG}/overcooked" \
     --out     "${OUT}/overcooked"
 
-echo "=== Plotting Diplomacy ==="
-$PYTHON scripts/diplomacy/plot_diplomacy_results.py \
-    --log-dir "${LOG}/diplomacy" \
-    --out     "${OUT}/diplomacy"
+echo "=== Plotting Mafia ==="
+$PYTHON scripts/mafia/plot_mafia_results.py \
+    --log-dir "${LOG}/mafia" \
+    --out     "${OUT}/mafia"
+
+echo "=== Plotting Debate ==="
+$PYTHON scripts/debate/plot_debate_results.py \
+    --log-dir "${LOG}/debate" \
+    --out     "${OUT}/debate"
 
 echo "=== Plotting GBS ==="
 $PYTHON scripts/gbs/plot_gbs_results.py \
