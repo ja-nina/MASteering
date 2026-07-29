@@ -145,24 +145,36 @@ def main(argv=None):
     steering = build_steering(cfg.steering)
     policy = build_policy(cfg.model, steering=steering)
 
+    n_ok = 0
+    n_err = 0
     try:
         for ep in remaining:
-            env, renderer, parser_ = build_game(
-                family=cfg.game_family, game_id=cfg.game_id,
-                num_players=cfg.num_players or 3,
-                env_kwargs=_episode_env_kwargs(cfg, ep))
-            logger = EpisodeLogger(
-                run_dir=cfg.logging_dir, run_id=cfg.run_id,
-                episode=ep, wandb_run=wandb_run)
-            orch = Orchestrator(
-                env=env, renderer=renderer, parser=parser_, policy=policy,
-                steering=steering, logger=logger, game=cfg.game_id,
-                max_parse_retries=cfg.max_parse_retries)
-            final = orch.run_episode()
-            print(f"Episode {ep} final rewards: {final}")
+            try:
+                env, renderer, parser_ = build_game(
+                    family=cfg.game_family, game_id=cfg.game_id,
+                    num_players=cfg.num_players or 3,
+                    env_kwargs=_episode_env_kwargs(cfg, ep))
+                logger = EpisodeLogger(
+                    run_dir=cfg.logging_dir, run_id=cfg.run_id,
+                    episode=ep, wandb_run=wandb_run)
+                orch = Orchestrator(
+                    env=env, renderer=renderer, parser=parser_, policy=policy,
+                    steering=steering, logger=logger, game=cfg.game_id,
+                    max_parse_retries=cfg.max_parse_retries)
+                final = orch.run_episode()
+                print(f"Episode {ep} final rewards: {final}")
+                n_ok += 1
+            except Exception as exc:
+                n_err += 1
+                print(f"ERROR episode {ep}: {type(exc).__name__}: {exc}", flush=True)
+                import traceback
+                traceback.print_exc()
     finally:
         if wandb_run is not None:
             wandb_run.finish()
+    if n_err:
+        print(f"Completed {n_ok} episodes OK, {n_err} failed.")
+        return 1
     return 0
 
 

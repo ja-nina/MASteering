@@ -7,7 +7,7 @@
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/diplomacy_qwen_%A_%a.err
 #SBATCH -t 06:00:00
 #
-# Diplomacy noop baseline — Qwen3-14B, TextArena Diplomacy-v0, 5 players.
+# Diplomacy noop baseline — Qwen3-14B, TextArena Diplomacy-v0, 7 players (standard).
 # 20 episodes sharded over 10 tasks (2 episodes per shard).
 # TextArena handles negotiation + order resolution internally.
 #
