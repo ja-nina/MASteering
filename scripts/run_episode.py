@@ -9,9 +9,6 @@ import sys
 import zlib
 
 import yaml
-from dotenv import load_dotenv
-
-load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -121,6 +118,9 @@ def main(argv=None):
                              "Useful for single-episode debugging (--episodes 1).")
     args = parser.parse_args(argv)
 
+
+    from dotenv import load_dotenv
+    load_dotenv()
 
     if not (0 <= args.shard < args.num_shards):
         parser.error(f"--shard must be in [0, {args.num_shards}), got {args.shard}")

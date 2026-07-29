@@ -8,7 +8,7 @@ class TextArenaRenderer:
     def __init__(self, system_prompt_text: str = "") -> None:
         self._sys = system_prompt_text
 
-    def system_prompt(self, agent_id: str) -> str:
+    def system_prompt(self, agent_id: str, raw_obs: RawObs | None = None) -> str:
         return self._sys
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
