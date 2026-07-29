@@ -2,32 +2,43 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-11%10
+#SBATCH --array=0-59%12
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/avalon_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/avalon_qwen_%A_%a.err
-#SBATCH -t 03:00:00
+#SBATCH -t 04:00:00
 #
-# Avalon noop baseline — Qwen3-14B, 5 players, 50 episodes sharded over 12 tasks.
-# Each task handles ~4 episodes; self-requeues until all are done.
+# Avalon noop baseline — Qwen3-14B, player-count sweep 5-10, 100 episodes each.
+#
+# Layout: PLAYERS x NUM_SHARDS = 6 x 10 = 60 array tasks (0-59).
+#   task T → player count PLAYERS[T / NUM_SHARDS], shard T % NUM_SHARDS
+#
+# To change player counts: edit PLAYERS below AND update --array upper bound:
+#   new_upper = len(PLAYERS) * NUM_SHARDS - 1
 #
 # Submit:
 #   sbatch scripts/avalon/slurm/run_avalon_qwen.slurm
 
 set -euo pipefail
 
-NUM_SHARDS=12
-RESUME_HOP_LIMIT=20
+# ── Configurable sweep ───────────────────────────────────────────────────────
+PLAYERS=(5 6 7 8 9 10)   # player counts to sweep
+NUM_SHARDS=10              # array tasks per player count
 
+# ── Requeue guard ────────────────────────────────────────────────────────────
+RESUME_HOP_LIMIT=20
 HOP=${1:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"
+
+# ── Map array task → player count + shard ────────────────────────────────────
+PLAYER_IDX=$((SLURM_ARRAY_TASK_ID / NUM_SHARDS))
+SHARD=$((SLURM_ARRAY_TASK_ID % NUM_SHARDS))
+N=${PLAYERS[$PLAYER_IDX]}
+CONFIG="config/games/avalon/avalon_noop_${N}p.yaml"
 
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
-CONFIG="config/games/avalon/avalon_noop_5p.yaml"
-SHARD=${SLURM_ARRAY_TASK_ID}
-
-echo "[$(date)] config=${CONFIG} shard=${SHARD}/${NUM_SHARDS}"
+echo "[$(date)] config=${CONFIG}  players=${N}  shard=${SHARD}/${NUM_SHARDS}"
 "$PYTHON" scripts/run_episode.py --config "${CONFIG}" \
           --shard "${SHARD}" --num-shards "${NUM_SHARDS}"
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} finished this chunk."
@@ -57,5 +68,5 @@ if [ "${REMAINING}" -gt 0 ] && [ "${HOP}" -lt "${RESUME_HOP_LIMIT}" ]; then
 elif [ "${REMAINING}" -gt 0 ]; then
   echo "[$(date)] WARNING: hop limit (${RESUME_HOP_LIMIT}) reached with ${REMAINING} remaining."
 else
-  echo "[$(date)] All episodes complete for shard ${SHARD}/${NUM_SHARDS}."
+  echo "[$(date)] All episodes complete: ${N}p shard ${SHARD}/${NUM_SHARDS}."
 fi

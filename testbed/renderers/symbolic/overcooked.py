@@ -76,6 +76,17 @@ class OvercookedRenderer:
             for pos_str, item in floor_items.items():
                 lines.append(f"Item on floor at {pos_str}: {item}.")
 
-        lines.append("")
+        # Recent action history (last 10 steps) so agents can see what worked
+        recent = [h for h in context.history if "actions" in h][-10:]
+        if recent:
+            lines.append("Recent actions:")
+            for entry in recent:
+                acts = ", ".join(
+                    f"{pid}: {a}" for pid, a in entry.get("actions", {}).items()
+                )
+                suffix = "  ← SCORED!" if entry.get("score_delta") else ""
+                lines.append(f"  Step {entry['step']}: {acts}{suffix}")
+            lines.append("")
+
         lines.append("What do you do next?")
         return "\n".join(lines)

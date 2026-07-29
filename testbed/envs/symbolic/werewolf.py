@@ -47,6 +47,11 @@ DEFAULT_ROLES: Dict[int, Tuple[List[str], int]] = {
     8:  (["Villager"] * 4 + ["Seer", "Doctor"],          2),
     9:  (["Villager"] * 4 + ["Seer", "Doctor"],          3),
     10: (["Villager"] * 5 + ["Seer", "Doctor"],          3),
+    11: (["Villager"] * 6 + ["Seer", "Doctor"],          3),
+    12: (["Villager"] * 7 + ["Seer", "Doctor"],          3),
+    13: (["Villager"] * 7 + ["Seer", "Doctor"],          4),
+    14: (["Villager"] * 8 + ["Seer", "Doctor"],          4),
+    15: (["Villager"] * 9 + ["Seer", "Doctor"],          4),
 }
 
 

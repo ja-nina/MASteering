@@ -70,10 +70,29 @@ class HanabiRenderer:
         lines.append("(You cannot see your own cards — the above shows accumulated hints only.)")
         lines.append("")
 
-        # Recent history
-        for entry in context.history[-5:]:
-            lines.append(f"  {entry.get('player', '?')}: {entry.get('action_desc', '?')}")
+        # Recent action history
         if context.history:
+            lines.append("Recent actions:")
+            for entry in context.history[-8:]:
+                actor = entry.get("player", "?")
+                act   = entry.get("action", "?")
+                if act == "play":
+                    c   = entry.get("card", {})
+                    tag = f"{c.get('color','?')[0].upper()}{c.get('rank','?')}"
+                    res = entry.get("result", "?")
+                    desc = f"played {tag} → {res}"
+                elif act == "discard":
+                    c   = entry.get("card", {})
+                    tag = f"{c.get('color','?')[0].upper()}{c.get('rank','?')}"
+                    desc = f"discarded {tag}"
+                elif act == "hint":
+                    tgt  = entry.get("target", "?")
+                    htyp = entry.get("hint_type", "?")
+                    val  = entry.get("value", "?")
+                    desc = f"hinted {tgt}: {htyp.upper()}={val}"
+                else:
+                    desc = act
+                lines.append(f"  {actor}: {desc}")
             lines.append("")
 
         if is_turn:

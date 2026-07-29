@@ -2,34 +2,47 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-5%6
+#SBATCH --array=0-29%6
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/overcooked_qwen_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/overcooked_qwen_%A_%a.err
-#SBATCH -t 08:00:00
+#SBATCH -t 10:00:00
 #
-# Overcooked noop baseline — Qwen3-14B, 2 players, cramped_room, 400 steps/episode.
-# 30 episodes sharded over 6 tasks (5 episodes per shard).
-# Both players act simultaneously (parallel inference), but 400 steps/episode
-# means the generous 8h budget is needed.
+# Overcooked noop baseline — Qwen3-14B, layout sweep, 100 episodes each.
+# 2 players act simultaneously; 400 steps/episode → generous time budget.
+#
+# Layout: LAYOUTS x NUM_SHARDS = 3 x 10 = 30 array tasks (0-29).
+#   task T → layout CONFIGS[T / NUM_SHARDS], shard T % NUM_SHARDS
+#
+# To change layouts: edit CONFIGS below AND update --array upper bound:
+#   new_upper = len(CONFIGS) * NUM_SHARDS - 1
 #
 # Submit:
 #   sbatch scripts/overcooked/slurm/run_overcooked_qwen.slurm
 
 set -euo pipefail
 
-NUM_SHARDS=6
-RESUME_HOP_LIMIT=20
+# ── Configurable sweep ───────────────────────────────────────────────────────
+CONFIGS=(
+  config/games/overcooked/overcooked_noop_2p.yaml
+  config/games/overcooked/overcooked_noop_asymmetric_adv_2p.yaml
+  config/games/overcooked/overcooked_noop_coordination_ring_2p.yaml
+)
+NUM_SHARDS=10   # array tasks per layout
 
+# ── Requeue guard ────────────────────────────────────────────────────────────
+RESUME_HOP_LIMIT=20
 HOP=${1:-0}
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} starting on ${HOSTNAME} (hop ${HOP})"
+
+# ── Map array task → layout config + shard ───────────────────────────────────
+LAYOUT_IDX=$((SLURM_ARRAY_TASK_ID / NUM_SHARDS))
+SHARD=$((SLURM_ARRAY_TASK_ID % NUM_SHARDS))
+CONFIG="${CONFIGS[$LAYOUT_IDX]}"
 
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
-CONFIG="config/games/overcooked/overcooked_noop_2p.yaml"
-SHARD=${SLURM_ARRAY_TASK_ID}
-
-echo "[$(date)] config=${CONFIG} shard=${SHARD}/${NUM_SHARDS}"
+echo "[$(date)] config=${CONFIG}  shard=${SHARD}/${NUM_SHARDS}"
 "$PYTHON" scripts/run_episode.py --config "${CONFIG}" \
           --shard "${SHARD}" --num-shards "${NUM_SHARDS}"
 echo "[$(date)] Job ${SLURM_JOB_ID} task ${SLURM_ARRAY_TASK_ID} finished this chunk."
@@ -59,5 +72,5 @@ if [ "${REMAINING}" -gt 0 ] && [ "${HOP}" -lt "${RESUME_HOP_LIMIT}" ]; then
 elif [ "${REMAINING}" -gt 0 ]; then
   echo "[$(date)] WARNING: hop limit (${RESUME_HOP_LIMIT}) reached with ${REMAINING} remaining."
 else
-  echo "[$(date)] All episodes complete for shard ${SHARD}/${NUM_SHARDS}."
+  echo "[$(date)] All episodes complete: ${CONFIG} shard ${SHARD}/${NUM_SHARDS}."
 fi

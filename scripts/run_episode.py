@@ -69,25 +69,39 @@ def _completed_episodes(logging_dir: str, run_id: str) -> set[int]:
     return done
 
 
-def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
-    """Per-episode env kwargs, with a per-episode GBS seed injected.
+# Symbolic games whose adapter does not accept a `seed` kwarg.
+_NO_SEED_GAMES = frozenset({"beauty_contest"})
 
-    GBSAdapter defaults to seed=0 when not given one, so without this every
-    episode (and every run_id/task sharing a player count) would draw the
-    identical hidden target. Deriving the seed from (run_id, episode) instead
-    gives each episode its own target, and different tasks (e.g. different
-    reasoning-sweep modes) their own independent sequence of targets, while
-    staying deterministic across resumed/rerun chunks of the same episode.
-    A config that already pins its own `seed` or `target` is left alone.
+
+def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
+    """Per-episode env kwargs with a deterministic per-episode seed injected.
+
+    Without this, every episode runs with seed=0 and produces structurally
+    identical games (same role draws, same starting positions, etc.).
+    Deriving the seed from (run_id, episode) gives each episode its own
+    randomised setup while staying fully reproducible across resumed runs.
+
+    GBS keeps its special seed_base logic so that different steering conditions
+    share the same scenario sequence and results are directly comparable.
+    Games listed in _NO_SEED_GAMES have no seed parameter and are left alone.
+    TextArena games are passed through unchanged.
+    A config that already pins its own seed/target is never overridden.
     """
     kwargs = dict(cfg.env_kwargs)
-    if cfg.game_id in ("gbs", "gbs_exact_replication") and "seed" not in kwargs and "target" not in kwargs:
-        # seed_base lets multiple runs share the same random scenario sequence so
-        # that per-episode results are directly comparable across conditions.
-        seed_base = kwargs.pop("seed_base", cfg.run_id)
-        kwargs["seed"] = zlib.crc32(f"{seed_base}:{ep}".encode()) & 0xFFFFFFFF
+
+    if cfg.game_id in ("gbs", "gbs_exact_replication"):
+        if "seed" not in kwargs and "target" not in kwargs:
+            seed_base = kwargs.pop("seed_base", cfg.run_id)
+            kwargs["seed"] = zlib.crc32(f"{seed_base}:{ep}".encode()) & 0xFFFFFFFF
+        else:
+            kwargs.pop("seed_base", None)
+    elif cfg.game_family == "symbolic" and cfg.game_id not in _NO_SEED_GAMES:
+        kwargs.pop("seed_base", None)
+        if "seed" not in kwargs:
+            kwargs["seed"] = zlib.crc32(f"{cfg.run_id}:{ep}".encode()) & 0xFFFFFFFF
     else:
-        kwargs.pop("seed_base", None)   # harmless cleanup if seed/target was explicit
+        kwargs.pop("seed_base", None)
+
     return kwargs
 
 

@@ -26,6 +26,7 @@ for Human-AI Coordination. NeurIPS 2019.
 from __future__ import annotations
 
 import copy
+import random
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -101,10 +102,25 @@ class OvercookedAdapter(SymbolicAdapter):
 
     def reset(self, seed: Optional[int] = None) -> None:
         super().reset()
-        grid   = copy.deepcopy(self._layout["grid"])
-        starts = self._layout["player_starts"]
+        effective = seed if seed is not None else self._seed
+        rng = random.Random(effective)
 
-        player_pos  = {pid: tuple(starts[i % len(starts)]) for i, pid in enumerate(self._ids)}
+        grid = copy.deepcopy(self._layout["grid"])
+
+        # Randomise starting positions over walkable floor cells so each
+        # episode presents agents with a different initial configuration.
+        floor_cells = [
+            (r, c)
+            for r, row in enumerate(grid)
+            for c, cell in enumerate(row)
+            if cell == " "
+        ]
+        if len(floor_cells) >= self.num_players:
+            starts = rng.sample(floor_cells, self.num_players)
+        else:
+            starts = list(self._layout["player_starts"])
+
+        player_pos  = {pid: tuple(starts[i]) for i, pid in enumerate(self._ids)}
         player_held = {pid: None for pid in self._ids}
 
         pots: List[Tuple[int, int]] = [
@@ -284,8 +300,16 @@ class OvercookedAdapter(SymbolicAdapter):
                     extra["pot_cooking"][pot_key]  = 0
 
         # ── 4. Advance step ──────────────────────────────────────────────────
+        step_just_done = extra["step"]
         extra["step"]          += 1
         self.context.round_index += 1
+
+        self.context.history.append({
+            "step":        step_just_done,
+            "actions":     {pid: str(actions.get(pid, "STAY")) for pid in self._ids},
+            "score_delta": score_delta,
+            "score":       extra["score"],
+        })
 
         done    = extra["step"] >= self._max_steps
         rewards = {pid: float(score_delta) for pid in self._ids}
