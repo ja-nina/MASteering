@@ -25,8 +25,8 @@ import numpy as np
 
 GAME_NAME = "Iterated Ultimatum Game"
 PLAYER_LABELS = {
-    "player_0": "Player 0",
-    "player_1": "Player 1",
+    "player_0": "Proposer",
+    "player_1": "Responder",
 }
 PLAYER_COLORS = [
     "#4C9BE8", "#E8604C", "#4CAF7D", "#F5A623",
@@ -100,37 +100,6 @@ def plot_reward_distribution(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
-def plot_joint_reward(summaries: list, out: str):
-    """Joint reward shows whether deals are being struck (>0) or rejected (=0)."""
-    players = _player_order(summaries)
-    ep_idx = np.arange(1, len(summaries) + 1)
-    colors = [PLAYER_COLORS[i % len(PLAYER_COLORS)] for i in range(len(players))]
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    ax = axes[0]
-    for p, col in zip(players, colors):
-        vals = np.array([s["final_rewards"].get(p, 0) for s in summaries])
-        ax.plot(ep_idx, np.cumsum(vals) / ep_idx, color=col, linewidth=2,
-                label=_player_label(p))
-    ax.axhline(0, color=GRID_COLOR, linewidth=0.8, linestyle="--")
-    _style(ax, "Cumulative Average Reward per Player", "Episode", "Cumulative mean reward")
-    ax.legend(frameon=False, fontsize=9)
-
-    ax = axes[1]
-    joint = np.array([sum(s["final_rewards"].get(p, 0) for p in players)
-                      for s in summaries])
-    deal_rate = np.cumsum(joint > 0) / ep_idx * 100
-    ax.plot(ep_idx, deal_rate, color="#4CAF7D", linewidth=2.5)
-    ax.set_ylim(0, 105)
-    _style(ax, "Cumulative Deal Rate (both players rewarded > 0)",
-           "Episode", "Deal rate (%)")
-
-    fig.suptitle(f"{GAME_NAME}", fontsize=13, fontweight="bold")
-    fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
-    print(f"Saved: {out}")
-
-
 def _print_summary(summaries: list[dict]) -> None:
     players = _player_order(summaries)
     total = len(summaries)
@@ -177,7 +146,6 @@ def main():
 
     _print_summary(summaries)
     plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
-    plot_joint_reward(summaries,        os.path.join(args.out, "joint_reward.png"))
     print(f"\nAll plots → {args.out}/")
 
 

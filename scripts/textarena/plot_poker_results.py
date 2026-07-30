@@ -135,24 +135,6 @@ def plot_reward_distribution(summaries: list, out: str):
     print(f"Saved: {out}")
 
 
-def plot_cumulative_reward(summaries: list, out: str):
-    players = _player_order(summaries)
-    ep_idx = np.arange(1, len(summaries) + 1)
-    colors = [PLAYER_COLORS[i % len(PLAYER_COLORS)] for i in range(len(players))]
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for p, col in zip(players, colors):
-        vals = np.array([s["final_rewards"].get(p, 0) for s in summaries])
-        ax.plot(ep_idx, np.cumsum(vals) / ep_idx, color=col, linewidth=2,
-                label=_player_label(p))
-    ax.axhline(0, color=GRID_COLOR, linewidth=0.8, linestyle="--")
-    _style(ax, f"{GAME_NAME} — Cumulative Average Reward",
-           "Episode", "Cumulative mean reward")
-    ax.legend(frameon=False, fontsize=9)
-    fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
-    print(f"Saved: {out}")
-
-
 def _print_summary(summaries: list[dict]) -> None:
     players = _player_order(summaries)
     total = len(summaries)
@@ -210,7 +192,6 @@ def main():
     _print_summary(summaries)
     plot_win_rate(summaries,          os.path.join(args.out, "win_rate.png"))
     plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
-    plot_cumulative_reward(summaries, os.path.join(args.out, "cumulative_reward.png"))
     print(f"\nAll plots → {args.out}/")
 
 

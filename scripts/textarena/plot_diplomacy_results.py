@@ -143,27 +143,6 @@ def plot_win_rate(summaries: list, out: str):
 
 # ── plot 3: cumulative average reward ─────────────────────────────────────────
 
-def plot_reward_over_episodes(summaries: list, out: str):
-    players = _player_order(summaries)
-    if not players or not summaries:
-        return
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ep_idx  = np.arange(1, len(summaries) + 1)
-    for i, p in enumerate(players):
-        col  = PLAYER_COLORS[i % len(PLAYER_COLORS)]
-        rews = np.array([s["final_rewards"].get(p, 0) for s in summaries])
-        cumavg = np.cumsum(rews) / ep_idx
-        ax.plot(ep_idx, cumavg, color=col, linewidth=1.5, label=p)
-    ax.axhline(0, color=GRID_COLOR, linewidth=0.8, linestyle="--")
-    _style(ax, "Cumulative Average Reward per Player",
-           "Episode", "Cumulative mean reward")
-    ax.legend(frameon=False, fontsize=9, ncol=2)
-    fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
-    print(f"Saved: {out}")
-
-
-# ── plot 4: overview (2-panel) ────────────────────────────────────────────────
-
 def plot_overview(summaries: list, out: str):
     players = _player_order(summaries)
     if not players:
@@ -240,7 +219,6 @@ def main():
 
     plot_reward_distribution(summaries,  os.path.join(args.out, "reward_distribution.png"))
     plot_win_rate(summaries,             os.path.join(args.out, "win_rate.png"))
-    plot_reward_over_episodes(summaries, os.path.join(args.out, "reward_over_episodes.png"))
     plot_overview(summaries,             os.path.join(args.out, "overview.png"))
     print(f"\nAll plots → {args.out}/")
 

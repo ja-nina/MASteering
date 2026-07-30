@@ -137,26 +137,6 @@ def plot_reward_distribution(summaries: list, out: str):
 
 # ── plot 3: cumulative average (bias / stability) ─────────────────────────────
 
-def plot_reward_over_episodes(summaries: list, out: str):
-    players = _player_order(summaries)
-    colors  = [FOR_COLOR, AGAINST_COLOR] + ["#4CAF7D"] * max(0, len(players) - 2)
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ep_idx  = np.arange(1, len(summaries) + 1)
-    for p, col in zip(players, colors):
-        vals   = np.array([s["final_rewards"].get(p, 0) for s in summaries])
-        cumavg = np.cumsum(vals) / ep_idx
-        ax.plot(ep_idx, cumavg, color=col, linewidth=2,
-                label=_side_label(players.index(p), p))
-    ax.axhline(0, color=GRID_COLOR, linewidth=0.8, linestyle="--", label="Zero")
-    _style(ax, "Cumulative Average Reward — Position Bias Check",
-           "Episode", "Cumulative mean reward")
-    ax.legend(frameon=False)
-    fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
-    print(f"Saved: {out}")
-
-
-# ── plot 4: overview ──────────────────────────────────────────────────────────
-
 def plot_overview(summaries: list, out: str):
     players = _player_order(summaries)
     colors  = [FOR_COLOR, AGAINST_COLOR] + ["#4CAF7D"] * max(0, len(players) - 2)
@@ -310,7 +290,6 @@ def main():
 
     plot_win_rate(summaries,            os.path.join(args.out, "win_rate.png"))
     plot_reward_distribution(summaries,  os.path.join(args.out, "reward_distribution.png"))
-    plot_reward_over_episodes(summaries, os.path.join(args.out, "reward_over_episodes.png"))
     plot_overview(summaries,             os.path.join(args.out, "overview.png"))
     print(f"\nAll plots → {args.out}/")
 
