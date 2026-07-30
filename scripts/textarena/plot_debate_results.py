@@ -6,7 +6,6 @@ Usage:
 Reads episode_*.summary.json from logs/debate/debate_noop_2p/ and produces:
     win_rate.png             — which player position wins more often
     reward_distribution.png — reward spread per player
-    reward_over_episodes.png — cumulative average (position bias / stability check)
     overview.png             — 2-panel summary
 
 In Debate-v0 one player argues FOR, the other AGAINST. The game is zero-sum:
@@ -134,8 +133,6 @@ def plot_reward_distribution(summaries: list, out: str):
     fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
     print(f"Saved: {out}")
 
-
-# ── plot 3: cumulative average (bias / stability) ─────────────────────────────
 
 def plot_overview(summaries: list, out: str):
     players = _player_order(summaries)

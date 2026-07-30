@@ -6,7 +6,6 @@ Usage:
 Reads episode_*.summary.json from logs/diplomacy/diplomacy_noop_5p/ and produces:
     reward_distribution.png  — per-player reward distribution across episodes
     win_rate.png             — fraction of episodes each player position wins
-    reward_over_episodes.png — cumulative average reward per player (learning/stability check)
     overview.png             — 2-panel summary
 """
 from __future__ import annotations
@@ -140,8 +139,6 @@ def plot_win_rate(summaries: list, out: str):
     fig.tight_layout(); fig.savefig(out, dpi=150, bbox_inches="tight"); plt.close(fig)
     print(f"Saved: {out}")
 
-
-# ── plot 3: cumulative average reward ─────────────────────────────────────────
 
 def plot_overview(summaries: list, out: str):
     players = _player_order(summaries)

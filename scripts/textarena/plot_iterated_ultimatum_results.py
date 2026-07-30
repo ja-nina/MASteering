@@ -28,6 +28,7 @@ PLAYER_LABELS = {
     "player_0": "Proposer",
     "player_1": "Responder",
 }
+_LABELS: dict[str, str] = {}  # resolved at runtime from summary player_roles
 PLAYER_COLORS = [
     "#4C9BE8", "#E8604C", "#4CAF7D", "#F5A623",
     "#9B59B6", "#1ABC9C", "#E74C3C", "#95A5A6",
@@ -47,7 +48,20 @@ def _style(ax, title, xlabel, ylabel):
 
 
 def _player_label(p: str) -> str:
-    return PLAYER_LABELS.get(p, p)
+    return _LABELS.get(p) or PLAYER_LABELS.get(p, p)
+
+
+def _resolve_labels(summaries: list[dict]) -> None:
+    from collections import Counter
+    global _LABELS
+    votes: dict[str, Counter] = {}
+    for s in summaries:
+        for pid, role in (s.get("player_roles") or {}).items():
+            votes.setdefault(pid, Counter())[str(role)] += 1
+    _LABELS = {
+        pid: ctr.most_common(1)[0][0].replace("_", " ").title()
+        for pid, ctr in votes.items()
+    } if votes else {}
 
 
 def load_summaries(log_dir: str) -> list[dict]:
@@ -144,6 +158,7 @@ def main():
     if not summaries:
         print("No summaries found. Run episodes first."); return
 
+    _resolve_labels(summaries)
     _print_summary(summaries)
     plot_reward_distribution(summaries, os.path.join(args.out, "reward_distribution.png"))
     print(f"\nAll plots → {args.out}/")

@@ -46,11 +46,6 @@ $PYTHON scripts/textarena/plot_codenames_results.py \
     --log-dir "${LOG}/codenames" \
     --out     "${OUT}/codenames"
 
-echo "=== Plotting Character Conclave ==="
-$PYTHON scripts/textarena/plot_character_conclave_results.py \
-    --log-dir "${LOG}/character_conclave" \
-    --out     "${OUT}/character_conclave"
-
 echo "=== Plotting Truth and Deception ==="
 $PYTHON scripts/textarena/plot_truth_and_deception_results.py \
     --log-dir "${LOG}/truth_and_deception" \

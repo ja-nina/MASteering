@@ -113,7 +113,16 @@ def _player_order(summaries: list[dict]) -> list[str]:
 # ── role extraction ───────────────────────────────────────────────────────────
 
 def _extract_roles(summary: dict) -> dict[str, str] | None:
-    """Return {player_id: role_name} from close_info, or None if not found."""
+    """Return {player_id: role_name} from summary, or None if not found.
+
+    Checks the top-level player_roles field first (written by the orchestrator
+    since it now persists roles for every game), then falls back to scanning
+    close_info for older logs that pre-date that field.
+    """
+    top = summary.get("player_roles")
+    if isinstance(top, dict) and top:
+        return {str(k): str(v).lower() for k, v in top.items()}
+
     ci = (summary.get("final_info") or {}).get("close_info") or {}
     if not isinstance(ci, dict):
         return None

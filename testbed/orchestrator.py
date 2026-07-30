@@ -57,6 +57,51 @@ class Orchestrator:
             "truncated": truncated,
         }
 
+    def _extract_player_roles(self, last_info: Dict[str, Any]) -> Dict[str, str]:
+        """Return {player_id: role_name} from close_info or env attributes.
+
+        Tries all known role-field names used across TextArena games.
+        Integer keys (TextArena's native player IDs) are normalised to "player_N".
+        Returns an empty dict when no role data is found.
+        """
+        _ROLE_KEYS = ("roles", "player_roles", "role_assignments",
+                      "role_map", "assignments", "player_role")
+
+        def _normalise(raw: dict) -> Dict[str, str]:
+            return {
+                (f"player_{k}" if isinstance(k, int) else str(k)): str(v)
+                for k, v in raw.items()
+            }
+
+        # TextArena: roles live inside close_info
+        ci = last_info.get("close_info") or {}
+        if isinstance(ci, dict):
+            for key in _ROLE_KEYS:
+                val = ci.get(key)
+                if isinstance(val, dict) and val:
+                    return _normalise(val)
+
+        # Symbolic envs may expose roles directly on the env or its context
+        for obj in (self.env, getattr(self.env, "context", None)):
+            if obj is None:
+                continue
+            for key in _ROLE_KEYS:
+                val = getattr(obj, key, None)
+                if isinstance(val, dict) and val:
+                    return _normalise(val)
+
+        return {}
+
+    def _count_steered(self) -> int:
+        """Number of agents that received non-noop steering this episode (0 for baselines)."""
+        from testbed.steering.noop import NoOpSteering
+        if isinstance(self.steering, NoOpSteering):
+            return 0
+        agent_ids: list = (
+            self.env.agent_ids() if hasattr(self.env, "agent_ids") else []
+        )
+        return sum(1 for aid in agent_ids if self.steering.steering_spec(aid) is not None)
+
     def run_episode(self) -> Dict[str, float]:
         self.env.reset()
         turn = 0
@@ -101,6 +146,10 @@ class Orchestrator:
             turn += 1
             done = result.done
 
-        self.logger.close(summary={"final_rewards": last_rewards,
-                                   "final_info": last_info})
+        self.logger.close(summary={
+            "final_rewards": last_rewards,
+            "final_info": last_info,
+            "player_roles": self._extract_player_roles(last_info),
+            "steered": self._count_steered(),
+        })
         return last_rewards
