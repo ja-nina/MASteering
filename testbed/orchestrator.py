@@ -92,6 +92,55 @@ class Orchestrator:
 
         return {}
 
+    # Keys that signal a single-player elimination event in per-step info
+    _ELIM_STEP_KEYS = (
+        "eliminated", "killed", "voted_out", "night_kill", "lynched",
+        "dead", "eliminated_player", "killed_player", "exile",
+    )
+    # Keys that carry an ordered elimination list in close_info
+    _ELIM_CLOSE_KEYS = (
+        "elimination_order", "eliminations", "dead_players",
+        "eliminated_players", "kill_order", "deaths",
+    )
+
+    def _collect_step_eliminations(
+        self,
+        turn: int,
+        info: Dict[str, Any],
+        seen: set,
+        events: list,
+    ) -> None:
+        """Append any new elimination event found in a step's info dict."""
+        for key in self._ELIM_STEP_KEYS:
+            val = info.get(key)
+            if val is None:
+                continue
+            pid = f"player_{val}" if isinstance(val, int) else str(val)
+            if pid not in seen:
+                seen.add(pid)
+                events.append({"player_id": pid, "turn": turn, "type": key})
+
+    def _finalise_eliminations(
+        self,
+        last_info: Dict[str, Any],
+        seen: set,
+        events: list,
+    ) -> list:
+        """Merge close_info elimination lists with any step-level events already recorded."""
+        ci = last_info.get("close_info") or {}
+        if isinstance(ci, dict):
+            for key in self._ELIM_CLOSE_KEYS:
+                val = ci.get(key)
+                if isinstance(val, list) and val:
+                    for pid_raw in val:
+                        pid = f"player_{pid_raw}" if isinstance(pid_raw, int) else str(pid_raw)
+                        if pid not in seen:
+                            seen.add(pid)
+                            # turn=-1 means we know they were eliminated but not when
+                            events.append({"player_id": pid, "turn": -1, "type": key})
+                    break  # first matching key wins
+        return events
+
     def _count_steered(self) -> int:
         """Number of agents that received non-noop steering this episode (0 for baselines)."""
         from testbed.steering.noop import NoOpSteering
@@ -108,6 +157,9 @@ class Orchestrator:
         last_rewards: Dict[str, float] = {}
         last_info: Dict[str, Any] = {}
         done = False
+        elim_events: list = []
+        elim_seen: set = set()
+
         while not done:
             pending = self.env.pending()
             actions: Dict[str, Any] = {}
@@ -132,6 +184,7 @@ class Orchestrator:
             result = self.env.submit(actions)
             last_rewards = result.rewards
             last_info    = result.info
+            self._collect_step_eliminations(turn, result.info, elim_seen, elim_events)
             for agent_id, d in decided.items():
                 self.logger.log_step(
                     game=self.game, turn=turn, agent_id=agent_id,
@@ -146,10 +199,12 @@ class Orchestrator:
             turn += 1
             done = result.done
 
+        self._finalise_eliminations(last_info, elim_seen, elim_events)
         self.logger.close(summary={
             "final_rewards": last_rewards,
             "final_info": last_info,
             "player_roles": self._extract_player_roles(last_info),
+            "eliminations": elim_events,
             "steered": self._count_steered(),
         })
         return last_rewards

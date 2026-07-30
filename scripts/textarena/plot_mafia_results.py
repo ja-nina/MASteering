@@ -285,7 +285,14 @@ def plot_elimination_by_role(episode_logs: list[list[dict]],
     """Elimination order grouped by role instead of seat."""
     from collections import defaultdict as _dd
 
-    def _extract_elims(steps):
+    def _extract_elims(steps, summary=None):
+        # Prefer the summary's eliminations field (written by orchestrator)
+        if summary:
+            evts = summary.get("eliminations") or []
+            if evts:
+                return [e["player_id"] for e in evts]
+
+        # Fallback: scan step-level JSONL for older logs
         for step in reversed(steps):
             ci = (step.get("info") or {}).get("close_info") or {}
             for key in ("elimination_order", "eliminations", "dead_players",
@@ -309,7 +316,7 @@ def plot_elimination_by_role(episode_logs: list[list[dict]],
         roles = _extract_roles(summary)
         if not roles:
             continue
-        elims = _extract_elims(steps)
+        elims = _extract_elims(steps, summary)
         if not elims:
             continue
         parsed += 1
