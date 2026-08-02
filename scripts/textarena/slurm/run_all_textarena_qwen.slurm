@@ -63,7 +63,7 @@ mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 echo "[$(date)] Task ${SLURM_ARRAY_TASK_ID} finished this chunk."
 
 REMAINING=$("$PYTHON" - "${CONFIG}" "${SHARD}" "${NUM_SHARDS}" <<'PYEOF'
-import glob, re, sys, yaml
+import glob, re, sys, yaml 
 
 cfg = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 shard, num_shards = int(sys.argv[2]), int(sys.argv[3])
