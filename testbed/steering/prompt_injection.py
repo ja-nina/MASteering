@@ -29,3 +29,6 @@ class PromptInjectionSteering:
 
     def steering_spec(self, agent_id: str) -> Optional[SteeringSpec]:
         return None  # prompt injection works purely on text
+
+    def on_episode_start(self, env) -> None:
+        pass

@@ -55,6 +55,7 @@ class Orchestrator:
             "action": action, "system": system, "user": base_user,
             "completion": completion, "retries": retries, "spec_id": spec_id,
             "truncated": truncated,
+            "persona_probe": getattr(self.policy, "_last_probe", {}),
         }
 
     def _extract_player_roles(self, last_info: Dict[str, Any]) -> Dict[str, str]:
@@ -153,6 +154,7 @@ class Orchestrator:
 
     def run_episode(self) -> Dict[str, float]:
         self.env.reset()
+        self.steering.on_episode_start(self.env)
         turn = 0
         last_rewards: Dict[str, float] = {}
         last_info: Dict[str, Any] = {}
@@ -195,6 +197,7 @@ class Orchestrator:
                     steering_spec_id=d["spec_id"],
                     info=result.info,
                     truncated=d.get("truncated", False),
+                    persona_probe=d.get("persona_probe", {}),
                 )
             turn += 1
             done = result.done

@@ -12,3 +12,6 @@ class NoOpSteering:
 
     def steering_spec(self, agent_id: str) -> Optional[SteeringSpec]:
         return None
+
+    def on_episode_start(self, env) -> None:
+        pass

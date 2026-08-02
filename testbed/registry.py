@@ -13,35 +13,26 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 from testbed.envs.symbolic.avalon import AvalonAdapter
-from testbed.envs.symbolic.beauty_contest import BeautyContestAdapter
-from testbed.envs.symbolic.gbs import GBSAdapter
 from testbed.envs.symbolic.hanabi import HanabiAdapter
 from testbed.envs.symbolic.overcooked import OvercookedAdapter
 from testbed.envs.symbolic.werewolf import WerewolfAdapter
 from testbed.envs.textarena.ta_adapter import TextArenaAdapter
 from testbed.parsers.symbolic.avalon import AvalonParser
-from testbed.parsers.symbolic.beauty_contest import BeautyContestParser
-from testbed.parsers.symbolic.gbs import GBSParser
 from testbed.parsers.symbolic.hanabi import HanabiParser
 from testbed.parsers.symbolic.overcooked import OvercookedParser
 from testbed.parsers.symbolic.werewolf import WerewolfParser
 from testbed.parsers.textarena import TextArenaParser
 from testbed.renderers.symbolic.avalon import AvalonRenderer
-from testbed.renderers.symbolic.beauty_contest import BeautyContestRenderer
-from testbed.renderers.symbolic.gbs import GBSRenderer
 from testbed.renderers.symbolic.hanabi import HanabiRenderer
 from testbed.renderers.symbolic.overcooked import OvercookedRenderer
 from testbed.renderers.symbolic.werewolf import WerewolfRenderer
 from testbed.renderers.textarena import TextArenaRenderer
 
 _SYMBOLIC = {
-    "beauty_contest":        (BeautyContestAdapter, BeautyContestRenderer, BeautyContestParser),
-    "gbs":                   (GBSAdapter,            GBSRenderer,            GBSParser),
-    "gbs_exact_replication": (GBSAdapter,            GBSRenderer,            GBSParser),
-    "avalon":                (AvalonAdapter,          AvalonRenderer,          AvalonParser),
-    "hanabi":                (HanabiAdapter,          HanabiRenderer,          HanabiParser),
-    "werewolf":              (WerewolfAdapter,        WerewolfRenderer,        WerewolfParser),
-    "overcooked":            (OvercookedAdapter,      OvercookedRenderer,      OvercookedParser),
+    "avalon":    (AvalonAdapter,    AvalonRenderer,    AvalonParser),
+    "hanabi":    (HanabiAdapter,    HanabiRenderer,    HanabiParser),
+    "werewolf":  (WerewolfAdapter,  WerewolfRenderer,  WerewolfParser),
+    "overcooked": (OvercookedAdapter, OvercookedRenderer, OvercookedParser),
 }
 
 

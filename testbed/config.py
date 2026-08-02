@@ -1,33 +1,63 @@
-"""Config parsing + builders for steering and policy."""
+"""Config parsing + builders for steering, probing, and policy."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from testbed.steering.activation import ActivationSteering
 from testbed.steering.noop import NoOpSteering
-from testbed.steering.prompt_injection import PromptInjectionSteering
 
 
 def build_steering(cfg: Dict[str, Any]):
     method = cfg.get("default", "noop")
     per_agent = cfg.get("per_agent", {}) or {}
     default_config = cfg.get("default_config") or None
+    mode = cfg.get("mode", "adaptive")
+
     if method == "noop":
         return NoOpSteering()
-    if method == "prompt_injection":
-        return PromptInjectionSteering(per_agent=per_agent,
-                                       default_config=default_config)
     if method == "activation":
         return ActivationSteering(per_agent=per_agent,
-                                  default_config=default_config)
-    raise ValueError(f"Unknown steering method: {method}")
+                                  default_config=default_config,
+                                  mode=mode)
+    if method == "role_aware_activation":
+        from testbed.steering.role_aware import RoleAwareActivationSteering
+        target_roles = cfg.get("target_roles") or []
+        if default_config is None:
+            raise ValueError(
+                "role_aware_activation requires 'default_config' in the steering block"
+            )
+        return RoleAwareActivationSteering(
+            target_roles=target_roles,
+            default_config=default_config,
+            mode=mode,
+        )
+    raise ValueError(f"Unknown steering method: {method!r}")
 
 
-_TRANSFORMERS_STRUCTURAL = {"backend", "model_id", "device", "enable_thinking", "reasoning_cue"}
+def build_probe(probing_cfg: Optional[Dict[str, Any]]):
+    """Build a PersonaProbe if probing is enabled in the config, else None."""
+    if not probing_cfg or not probing_cfg.get("enabled"):
+        return None
+    from testbed.probing.persona_probe import PersonaProbe
+    layer = probing_cfg.get("layer", 20)
+    template = probing_cfg.get("layer_path_template", "model.layers.{}")
+    return PersonaProbe(
+        vectors_dir=probing_cfg["vectors_dir"],
+        layer=layer,
+        layer_path=template.format(layer),
+        window_tokens=probing_cfg.get("window_tokens", 10),
+        top_k=probing_cfg.get("top_k", 5),
+    )
 
 
-def build_policy(model_cfg: Dict[str, Any], steering=None):
+_TRANSFORMERS_STRUCTURAL = {
+    "backend", "model_id", "device", "enable_thinking", "reasoning_cue",
+}
+
+
+def build_policy(model_cfg: Dict[str, Any], steering=None,
+                 probing_cfg: Optional[Dict[str, Any]] = None):
     backend = model_cfg.get("backend", "transformers")
     model_id = model_cfg["model_id"]
     if backend == "transformers":
@@ -40,6 +70,7 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
             enable_thinking=model_cfg.get("enable_thinking", False),
             reasoning_cue=model_cfg.get("reasoning_cue", False),
             steering=steering,
+            probe=build_probe(probing_cfg),
             **gen_kwargs,
         )
     if backend == "vllm":
@@ -51,7 +82,7 @@ def build_policy(model_cfg: Dict[str, Any], steering=None):
             endpoint=model_cfg.get("endpoint", "http://localhost:8000") + "/v1",
             temperature=model_cfg.get("temperature", 0.7),
             api_key=api_key)
-    raise ValueError(f"Unknown backend: {backend}")
+    raise ValueError(f"Unknown backend: {backend!r}")
 
 
 @dataclass
@@ -64,6 +95,7 @@ class RunConfig:
     max_parse_retries: int
     model: Dict[str, Any]
     steering: Dict[str, Any]
+    probing: Dict[str, Any]
     logging_dir: str
     env_kwargs: Dict[str, Any]
 
@@ -80,6 +112,7 @@ class RunConfig:
             max_parse_retries=agents.get("max_parse_retries", 5),
             model=d.get("model", {}),
             steering=d.get("steering", {"default": "noop", "per_agent": {}}),
+            probing=d.get("probing", {"enabled": False}),
             logging_dir=d.get("logging", {}).get("dir", "logs/"),
             env_kwargs=game.get("env_kwargs", {}),
         )

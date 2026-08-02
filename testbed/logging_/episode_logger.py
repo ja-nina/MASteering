@@ -1,5 +1,10 @@
 """JSONL trace logger: one line per agent per turn, plus an episode summary.
 
+Each JSONL record includes a `persona_probe` field: a dict mapping trait name
+to cosine projection score (populated when probing is enabled in the config;
+empty dict otherwise). Use scripts/textarena/analyze_persona_probes.py to
+read and interpret these scores qualitatively.
+
 Pass a wandb run object to also stream metrics and upload the trace as an artifact.
 """
 from __future__ import annotations
@@ -25,14 +30,14 @@ class EpisodeLogger:
         self._trace = open(self.trace_path, "w", encoding="utf-8")
         self._wandb = wandb_run
         self._global_step = 0
-        self._gbs_converged_round: Optional[int] = None
 
     def log_step(self, *, game: str, turn: int, agent_id: str, system_prompt: str,
                  user_prompt: str, completion: str, parsed_action: Any,
                  parse_retries: int, reward: float,
                  steering_spec_id: Optional[str],
                  info: Optional[Dict[str, Any]] = None,
-                 truncated: bool = False) -> None:
+                 truncated: bool = False,
+                 persona_probe: Optional[Dict[str, float]] = None) -> None:
         rec = {
             "run_id": self.run_id, "episode": self.episode, "game": game,
             "turn": turn, "agent_id": agent_id, "system_prompt": system_prompt,
@@ -41,12 +46,10 @@ class EpisodeLogger:
             "reward": reward, "steering_spec_id": steering_spec_id,
             "truncated": truncated,
             "info": info or {},
+            "persona_probe": persona_probe or {},
         }
         self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self._fh.flush()
-
-        if info and info.get("direction") == "correct" and self._gbs_converged_round is None:
-            self._gbs_converged_round = turn
 
         self._trace.write(
             f"{_SEP}\n"
@@ -62,6 +65,10 @@ class EpisodeLogger:
         )
         if info:
             self._trace.write(f"[INFO] {json.dumps(info)}\n\n")
+        if persona_probe:
+            top = sorted(persona_probe.items(), key=lambda x: x[1], reverse=True)[:5]
+            top_str = ", ".join(f"{t}={v:.3f}" for t, v in top)
+            self._trace.write(f"[PROBE top-5] {top_str}\n\n")
         self._trace.flush()
 
         if self._wandb is not None:
@@ -72,37 +79,10 @@ class EpisodeLogger:
                 "episode": self.episode,
                 "steering": steering_spec_id,
             }
-            if info:
-                if game == "beauty_contest":
-                    metrics[f"{agent_id}/guess"] = parsed_action
-                    if "target" in info:
-                        try:
-                            metrics[f"{agent_id}/guess_error"] = abs(
-                                float(parsed_action) - info["target"])
-                        except (TypeError, ValueError):
-                            pass
-                    if "mean" in info:
-                        metrics["bc/group_mean"] = info["mean"]
-                    if "target" in info:
-                        metrics["bc/target"] = info["target"]
-                    if "winners" in info:
-                        metrics[f"{agent_id}/won"] = int(
-                            agent_id in info["winners"])
-
-                elif game in ("gbs", "gbs_exact_replication"):
-                    metrics[f"{agent_id}/contribution"] = parsed_action
-                    if "group_sum" in info:
-                        metrics[f"{game}/group_sum"] = info["group_sum"]
-                    if "error" in info:
-                        metrics[f"{game}/error"] = info["error"]
-                        metrics[f"{game}/abs_error"] = abs(info["error"])
-                    if info.get("direction") == "correct":
-                        metrics[f"{game}/converged"] = 1
-                        if self._gbs_converged_round is None:
-                            self._gbs_converged_round = turn
-                    else:
-                        metrics[f"{game}/converged"] = 0
-
+            if persona_probe:
+                top5 = sorted(persona_probe.items(), key=lambda x: x[1], reverse=True)[:5]
+                for trait, score in top5:
+                    metrics[f"{agent_id}/probe/{trait}"] = score
             self._wandb.log(metrics, step=self._global_step)
         self._global_step += 1
 
@@ -112,12 +92,6 @@ class EpisodeLogger:
         if not self._trace.closed:
             self._trace.close()
         if summary is not None:
-            if self._gbs_converged_round is not None:
-                summary["gbs_converged_round"] = self._gbs_converged_round
-                summary["gbs_converged"] = True
-            elif "final_rewards" in summary:
-                summary["gbs_converged"] = False
-
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
             with open(spath, "w", encoding="utf-8") as f:
                 json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -125,11 +99,6 @@ class EpisodeLogger:
             if self._wandb is not None:
                 for agent_id, r in summary.get("final_rewards", {}).items():
                     self._wandb.summary[f"final_reward/{agent_id}"] = r
-                if "gbs_converged_round" in summary:
-                    self._wandb.summary["gbs_converged_round"] = (
-                        summary["gbs_converged_round"])
-                self._wandb.summary["gbs_converged"] = summary.get(
-                    "gbs_converged", False)
                 import wandb as _wandb
                 artifact = _wandb.Artifact(
                     f"episode-{self.episode}-trace", type="trace")

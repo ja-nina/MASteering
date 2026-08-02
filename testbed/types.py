@@ -36,6 +36,9 @@ class SteeringSpec:
     layer: Optional[str] = None
     vector_path: Optional[str] = None
     coefficient: float = 0.0
+    # "adaptive": soft top-up toward α·‖v‖ (never overshoots, default)
+    # "additive": unconditional hidden += α·v (kept for ablations)
+    mode: str = "adaptive"
     # free-form params for prompt injection (e.g. {"system_suffix": "..."})
     params: Dict[str, Any] = field(default_factory=dict)
 

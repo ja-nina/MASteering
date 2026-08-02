@@ -1,7 +1,7 @@
 """SteeringMethod protocol."""
 from __future__ import annotations
 
-from typing import Optional, Protocol, Tuple, runtime_checkable
+from typing import Any, Optional, Protocol, Tuple, runtime_checkable
 
 from testbed.types import SteeringSpec
 
@@ -12,3 +12,7 @@ class SteeringMethod(Protocol):
                         agent_id: str) -> Tuple[str, str]: ...
 
     def steering_spec(self, agent_id: str) -> Optional[SteeringSpec]: ...
+
+    def on_episode_start(self, env: Any) -> None:
+        """Called once after env.reset() before the first step. No-op by default."""
+        ...
