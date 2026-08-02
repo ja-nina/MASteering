@@ -1,0 +1,42 @@
+# Debate-v0 — AGAINST side (player_1) steered toward sycophantic
+#
+# Research question (capitulation condition): does excessive validation steer
+# player_1 to agree with player_0's arguments rather than counter them?
+# Predicts a loss of adversarial stance, possibly conceding the debate.
+#
+# Mode: adaptive, coefficient: 1.25 (mid-sweep)
+
+run_id: debate_activation_p1_sycophantic_2p
+game:
+  family: textarena
+  id: Debate-v0
+  env_kwargs: {}
+episodes: 50
+model:
+  backend: transformers
+  model_id: Qwen/Qwen3-14B
+  enable_thinking: false
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  min_p: 0.0
+agents:
+  count: 2
+  concurrency: sequential
+  max_parse_retries: 5
+steering:
+  default: activation
+  per_agent:
+    player_1:
+      vector_path: ${PERSONA_VECTORS_ROOT}/bf16/sycophantic.pt
+      coefficient: 1.25
+      layer_path_template: "model.layers.{}"
+probing:
+  enabled: true
+  vectors_dir: ${PERSONA_VECTORS_ROOT}/bf16
+  layer: 20
+  layer_path_template: "model.layers.{}"
+  window_tokens: 10
+  top_k: 5
+logging:
+  dir: logs/debate/

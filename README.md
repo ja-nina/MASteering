@@ -185,13 +185,29 @@ for steering.
 
 During `model.generate()` a read-only hook collects the final-token hidden
 state at the probe layer (default: layer 20, same as the steering vectors).
-It accumulates an exponential moving average over a configurable token window
-(default 10 tokens), then at the end of each generation projects the mean
-state onto every trait vector in `vectors_dir` via cosine similarity.
+Two parallel accumulators run simultaneously:
 
-The result is a `persona_probe` dict `{trait: score}` logged to every JSONL
-step record. No extra inference is required — the hook is free, adding only dot
-products.
+- **Welford mean** — exact running mean over every generated token for an
+  overall per-completion summary.
+- **Chunk accumulator** — sum that resets every `window_tokens` tokens,
+  snapshotting a chunk mean to a list; partial final chunks are also flushed.
+
+The result logged to every JSONL step record is:
+
+```json
+{
+  "mean":   {"opportunistic": 0.412, "charismatic": 0.301, ...},
+  "chunks": [
+    {"token": 10, "scores": {"opportunistic": 0.389, ...}},
+    {"token": 20, "scores": {"opportunistic": 0.431, ...}},
+    ...
+  ]
+}
+```
+
+`mean` is the episode-level summary; `chunks` is the intra-completion
+time-series showing how persona alignment evolves token-by-token.
+No extra inference is required — the hook adds only dot products.
 
 ### Enabling probing
 

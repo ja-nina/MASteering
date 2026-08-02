@@ -88,45 +88,88 @@ class PersonaProbe:
     # ── Hook factory ───────────────────────────────────────────────────────
 
     def make_hook(self) -> Tuple[Callable, Callable]:
-        """Return (hook_fn, get_scores_fn) for one generate() call.
+        """Return (hook_fn, get_result_fn) for one generate() call.
 
-        hook_fn    — forward hook to register on the probe layer
-        get_scores_fn — call after generate() to retrieve {trait: projection}
+        hook_fn       — read-only forward hook to register on the probe layer
+        get_result_fn — call after generate() to retrieve:
+            {
+              "mean":   {trait: float, ...},   # Welford mean over full completion
+              "chunks": [                       # snapshot every window_tokens tokens
+                  {"token": 10, "scores": {trait: float, ...}},
+                  {"token": 20, "scores": {trait: float, ...}},
+                  ...
+              ]
+            }
 
-        The hook accumulates a running mean over the last `window_tokens`
-        newly-generated token positions using an exponential moving average.
-        Pass window_tokens=0 to get a cumulative mean over all tokens.
+        "mean" is the per-completion summary used for episode aggregation.
+        "chunks" is the full intra-completion time-series: one entry per
+        window_tokens generated tokens, showing how persona projections
+        evolve across the generation — including partial final chunks.
         """
-        state: Dict = {"n": 0, "mean": None}
-        w = self.window_tokens
+        state: Dict = {
+            "n": 0,
+            "mean": None,       # Welford running mean over all tokens
+            "chunk_sum": None,  # sum accumulator for current chunk
+            "chunk_n": 0,       # tokens in current chunk
+            "chunks": [],       # completed chunk snapshots
+        }
+        w = self.window_tokens if self.window_tokens > 0 else None
 
         def _hook(module, inputs, output):
             h = output[0] if isinstance(output, tuple) else output
-            # Grab the final token position — the just-generated token.
             last = h[:, -1, :].detach().float().mean(dim=0)  # [hidden_dim]
+
+            # overall Welford mean
             n = state["n"] + 1
             state["n"] = n
             if state["mean"] is None:
-                state["mean"] = last
-            elif w == 0 or n <= w:
-                # Welford online mean (exact over first w tokens or all tokens)
-                state["mean"] = state["mean"] + (last - state["mean"]) / n
+                state["mean"] = last.clone()
             else:
-                # EMA: weights older tokens exponentially less
-                alpha = 1.0 / w
-                state["mean"] = (1.0 - alpha) * state["mean"] + alpha * last
+                state["mean"] = state["mean"] + (last - state["mean"]) / n
 
-        def _get_scores() -> Dict[str, float]:
-            h = state["mean"]
-            if h is None:
-                return {}
-            h_norm = h / (h.norm() + 1e-8)
-            return {
-                trait: float((h_norm * v_hat.to(h.device)).sum())
-                for trait, v_hat in self._vectors.items()
-            }
+            # chunk accumulation — simple sum, divide when flushing
+            if w is not None:
+                if state["chunk_sum"] is None:
+                    state["chunk_sum"] = last.clone()
+                    state["chunk_n"] = 1
+                else:
+                    state["chunk_sum"] = state["chunk_sum"] + last
+                    state["chunk_n"] += 1
 
-        return _hook, _get_scores
+                if state["chunk_n"] >= w:
+                    chunk_mean = state["chunk_sum"] / state["chunk_n"]
+                    state["chunks"].append({
+                        "token": n,
+                        "scores": self._project(chunk_mean),
+                    })
+                    state["chunk_sum"] = None
+                    state["chunk_n"] = 0
+
+        def _get_result() -> Dict:
+            chunks = list(state["chunks"])
+            # flush any partial final chunk so no tokens are lost
+            if state["chunk_sum"] is not None and state["chunk_n"] > 0:
+                chunk_mean = state["chunk_sum"] / state["chunk_n"]
+                chunks.append({
+                    "token": state["n"],
+                    "scores": self._project(chunk_mean),
+                })
+            mean_scores = (
+                self._project(state["mean"]) if state["mean"] is not None else {}
+            )
+            return {"mean": mean_scores, "chunks": chunks}
+
+        return _hook, _get_result
+
+    # ── Projection helper ─────────────────────────────────────────────────
+
+    def _project(self, h: "torch.Tensor") -> Dict[str, float]:
+        """Project a hidden-state vector onto all trait unit vectors → scores."""
+        h_norm = h / (h.norm() + 1e-8)
+        return {
+            trait: float((h_norm * v_hat.to(h.device)).sum())
+            for trait, v_hat in self._vectors.items()
+        }
 
     # ── Qualitative helpers ────────────────────────────────────────────────
 

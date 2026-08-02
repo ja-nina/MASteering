@@ -79,7 +79,12 @@ def aggregate_probes(
     for rec in records:
         aid = rec["agent_id"]
         probe = rec.get("persona_probe") or {}
-        for trait, score in probe.items():
+        # probe is {"mean": {trait: float}, "chunks": [...]} — use mean for aggregation
+        scores_dict = probe.get("mean", probe) if isinstance(probe, dict) else {}
+        # skip records where "mean" key is missing (old flat format falls back gracefully)
+        if "chunks" in scores_dict:
+            scores_dict = {}  # malformed; skip
+        for trait, score in scores_dict.items():
             sums[aid][trait] += score
         counts[aid] += 1
 

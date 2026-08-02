@@ -66,9 +66,11 @@ class EpisodeLogger:
         if info:
             self._trace.write(f"[INFO] {json.dumps(info)}\n\n")
         if persona_probe:
-            top = sorted(persona_probe.items(), key=lambda x: x[1], reverse=True)[:5]
-            top_str = ", ".join(f"{t}={v:.3f}" for t, v in top)
-            self._trace.write(f"[PROBE top-5] {top_str}\n\n")
+            mean_scores = persona_probe.get("mean", {}) if isinstance(persona_probe, dict) else {}
+            if mean_scores:
+                top = sorted(mean_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+                top_str = ", ".join(f"{t}={v:.3f}" for t, v in top)
+                self._trace.write(f"[PROBE top-5] {top_str}\n\n")
         self._trace.flush()
 
         if self._wandb is not None:
@@ -80,7 +82,8 @@ class EpisodeLogger:
                 "steering": steering_spec_id,
             }
             if persona_probe:
-                top5 = sorted(persona_probe.items(), key=lambda x: x[1], reverse=True)[:5]
+                mean_scores = persona_probe.get("mean", {}) if isinstance(persona_probe, dict) else {}
+                top5 = sorted(mean_scores.items(), key=lambda x: x[1], reverse=True)[:5]
                 for trait, score in top5:
                     metrics[f"{agent_id}/probe/{trait}"] = score
             self._wandb.log(metrics, step=self._global_step)
