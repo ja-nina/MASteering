@@ -2,6 +2,7 @@
 #SBATCH -p gpu17
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
+#SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
 #SBATCH --array=0-39%10
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/steering_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/steering_%A_%a.err
