@@ -3,15 +3,15 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-79%16
+#SBATCH --array=0-99%20
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/additive_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/additive_%A_%a.err
 #SBATCH -t 04:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
-#  Additive steering sweep — 14 traits × 2 games + 2 noop-chunk controls
+#  Additive steering sweep — 16 traits × 2 games + 2 noop-chunk controls
 #  coefficient: 1.25, mode: additive
-#  16 configs × 5 shards = 80 tasks  |  %16 concurrent
+#  20 configs × 5 shards = 100 tasks  |  %20 concurrent
 # ════════════════════════════════════════════════════════════════════════════
 #
 # Configs
@@ -24,15 +24,19 @@
 #  4   debate  goal-oriented
 #  5   debate  sarcastic
 #  6   debate  sycophantic
-#  7   mafia   charismatic
-#  8   mafia   ethical
-#  9   mafia   evil
-# 10   mafia   loquacious
-# 11   mafia   opportunistic
-# 12   mafia   sycophantic
-# 13   mafia   trustworthiness
-# 14   debate  [CONTROL noop+chunks]
-# 15   mafia   [CONTROL noop+chunks]
+#  7   debate  apathetic
+#  8   debate  angry
+#  9   mafia   charismatic
+# 10   mafia   ethical
+# 11   mafia   evil
+# 12   mafia   loquacious
+# 13   mafia   opportunistic
+# 14   mafia   sycophantic
+# 15   mafia   trustworthiness
+# 16   mafia   apathetic
+# 17   mafia   angry
+# 18   debate  [CONTROL noop+chunks]
+# 19   mafia   [CONTROL noop+chunks]
 # ───────────────────────────────────────────────────────────────────────────
 #
 # Submit:
@@ -56,17 +60,21 @@ CONFIGS=(
     "config/games/debate/debate_activation_p1_goal-oriented_additive_2p.yaml"      #  4
     "config/games/debate/debate_activation_p1_sarcastic_additive_2p.yaml"          #  5
     "config/games/debate/debate_activation_p1_sycophantic_additive_2p.yaml"        #  6
+    "config/games/debate/debate_activation_p1_apathetic_additive_2p.yaml"          #  7
+    "config/games/debate/debate_activation_p1_angry_additive_2p.yaml"              #  8
     # ── Mafia additive steering ──────────────────────────────────────────────
-    "config/games/mafia/mafia_activation_wolf_charismatic_additive_8p.yaml"        #  7
-    "config/games/mafia/mafia_activation_wolf_ethical_additive_8p.yaml"            #  8
-    "config/games/mafia/mafia_activation_wolf_evil_additive_8p.yaml"               #  9
-    "config/games/mafia/mafia_activation_wolf_loquacious_additive_8p.yaml"         # 10
-    "config/games/mafia/mafia_activation_wolf_opportunistic_additive_8p.yaml"      # 11
-    "config/games/mafia/mafia_activation_wolf_sycophantic_additive_8p.yaml"        # 12
-    "config/games/mafia/mafia_activation_wolf_trustworthiness_additive_8p.yaml"    # 13
+    "config/games/mafia/mafia_activation_wolf_charismatic_additive_8p.yaml"        #  9
+    "config/games/mafia/mafia_activation_wolf_ethical_additive_8p.yaml"            # 10
+    "config/games/mafia/mafia_activation_wolf_evil_additive_8p.yaml"               # 11
+    "config/games/mafia/mafia_activation_wolf_loquacious_additive_8p.yaml"         # 12
+    "config/games/mafia/mafia_activation_wolf_opportunistic_additive_8p.yaml"      # 13
+    "config/games/mafia/mafia_activation_wolf_sycophantic_additive_8p.yaml"        # 14
+    "config/games/mafia/mafia_activation_wolf_trustworthiness_additive_8p.yaml"    # 15
+    "config/games/mafia/mafia_activation_wolf_apathetic_additive_8p.yaml"          # 16
+    "config/games/mafia/mafia_activation_wolf_angry_additive_8p.yaml"              # 17
     # ── Noop baselines with chunk probe ──────────────────────────────────────
-    "config/games/debate/debate_noop_chunks_2p.yaml"                               # 14
-    "config/games/mafia/mafia_noop_chunks_8p.yaml"                                 # 15
+    "config/games/debate/debate_noop_chunks_2p.yaml"                               # 18
+    "config/games/mafia/mafia_noop_chunks_8p.yaml"                                 # 19
 )
 
 CONFIG="${CONFIGS[$CONFIG_IDX]}"

@@ -142,9 +142,19 @@ def counts(rewards: List[float], cats: List[float]) -> Dict[float, int]:
 
 # ── debate figure ─────────────────────────────────────────────────────────────
 
+ADDITIVE_COLOR = "#5b8dd9"  # blue tint to distinguish additive bars
+
+
 def plot_debate_outcomes(conditions: Dict[str, List[float]],
-                         noop_label: str, out_path: str) -> None:
-    """Horizontal stacked-proportion bars, sorted by win rate, with CI + stars."""
+                         noop_label: str, out_path: str,
+                         additive_keys: set | None = None) -> None:
+    """Horizontal stacked-proportion bars, sorted by win rate, with CI + stars.
+
+    additive_keys: set of condition labels that use additive steering (drawn
+    with hatching to distinguish from adaptive/solid bars).
+    """
+    if additive_keys is None:
+        additive_keys = set()
     cats = [1.0, 0.0, -1.0]
     noop_rw  = conditions[noop_label]
     noop_cnt = counts(noop_rw, cats)
@@ -174,7 +184,8 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
         else:
             _, p = chi2_vs_noop(cnt, noop_cnt, cats)
         rows_data.append(dict(label=label, n=n, wr=wr, dr=dr, lr=lr,
-                              ci_lo=lo, ci_hi=hi, p=p))
+                              ci_lo=lo, ci_hi=hi, p=p,
+                              additive=label in additive_keys))
 
     ys = np.arange(n_rows)
     h  = 0.58
@@ -186,10 +197,14 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
 
     # Horizontal stacked bars
     for i, d in enumerate(rows_data):
-        y = ys[i]
-        ax.barh(y, d["wr"], h, color=WIN_COLOR,  zorder=2)
-        ax.barh(y, d["dr"], h, left=d["wr"],            color=DRAW_COLOR, zorder=2)
-        ax.barh(y, d["lr"], h, left=d["wr"] + d["dr"],  color=LOSS_COLOR, zorder=2)
+        y     = ys[i]
+        hatch = "///" if d["additive"] else None
+        kw    = dict(hatch=hatch, linewidth=0 if not hatch else 0.5)
+        ax.barh(y, d["wr"], h, color=WIN_COLOR,  zorder=2, **kw)
+        ax.barh(y, d["dr"], h, left=d["wr"],
+                color=DRAW_COLOR, zorder=2, **kw)
+        ax.barh(y, d["lr"], h, left=d["wr"] + d["dr"],
+                color=LOSS_COLOR, zorder=2, **kw)
 
         # 2 px white dividers between segments
         for edge in [d["wr"], d["wr"] + d["dr"]]:
@@ -220,7 +235,7 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
                     fontsize=9 if marker != "n.s." else 7.5,
                     color=col, transform=ax.get_yaxis_transform(), zorder=6)
 
-    # Y-axis labels — noop stands out in bold
+    # Y-axis labels
     tick_labels = []
     for d in rows_data:
         if d["label"] == noop_label:
@@ -230,8 +245,6 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
 
     ax.set_yticks(ys)
     ax.set_yticklabels(tick_labels, fontsize=9)
-
-    # Make noop row label bold
     ax.get_yticklabels()[0].set_fontweight("bold")
     ax.get_yticklabels()[0].set_color(NOOP_COLOR)
 
@@ -243,7 +256,7 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
     ax.set_xlim(0, 1.0)
     ax.set_xlabel("Proportion of episodes", labelpad=7)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
-    ax.set_title("Debate  —  player_1 (AGAINST) outcomes by steering trait",
+    ax.set_title("Debate  —  player_1 (AGAINST) outcomes by steering trait  [additive]",
                  pad=12, loc="left", color=INK)
 
     for spine in ax.spines.values():
@@ -253,7 +266,6 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
     ax.grid(axis="x")
     ax.grid(axis="y", visible=False)
 
-    # Legend row
     legend_patches = [
         mpatches.Patch(color=WIN_COLOR,  label="Win  (player_1)"),
         mpatches.Patch(color=DRAW_COLOR, label="Draw"),
@@ -279,8 +291,15 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
 # ── mafia figure ──────────────────────────────────────────────────────────────
 
 def plot_mafia_outcomes(conditions: Dict[str, List[float]],
-                        noop_label: str, out_path: str) -> None:
-    """Horizontal dot-plot of wolf win rate, CI bands, Fisher significance."""
+                        noop_label: str, out_path: str,
+                        additive_keys: set | None = None) -> None:
+    """Horizontal dot-plot of wolf win rate, CI bands, Fisher significance.
+
+    additive_keys: set of condition labels that use additive steering (drawn
+    with open markers to distinguish from adaptive/filled dots).
+    """
+    if additive_keys is None:
+        additive_keys = set()
     cats     = [1.0, -1.0]
     noop_rw  = conditions[noop_label]
     noop_cnt = counts(noop_rw, cats)
@@ -308,7 +327,8 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
             _, p = fisher_exact(
                 [[cnt[1.0], cnt[-1.0]], [noop_cnt[1.0], noop_cnt[-1.0]]]
             )
-        rows_data.append(dict(label=label, n=n, wr=wr, ci_lo=lo, ci_hi=hi, p=p))
+        rows_data.append(dict(label=label, n=n, wr=wr, ci_lo=lo, ci_hi=hi, p=p,
+                              additive=label in additive_keys))
 
     ys = np.arange(n_rows)
 
@@ -329,7 +349,8 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
                 color=color, lw=1.8, alpha=0.55, zorder=3)
 
         # Dot
-        ax.scatter(d["wr"], y, s=70, color=color, zorder=4, linewidths=0)
+        ax.scatter(d["wr"], y, s=70, marker="o",
+                   color=color, zorder=4, linewidths=0)
 
         # Value label
         ax.text(d["ci_hi"] + 0.012, y, f"{d['wr']:.0%}",
@@ -337,11 +358,11 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
                 color=color, fontweight="semibold")
 
         # Significance star
-        marker = sig_marker(d["p"])
-        if marker:
-            col = INK if marker != "n.s." else INK_MUTED
-            ax.text(1.03, y, marker, ha="left", va="center",
-                    fontsize=9 if marker != "n.s." else 7.5,
+        sig = sig_marker(d["p"])
+        if sig:
+            col = INK if sig != "n.s." else INK_MUTED
+            ax.text(1.03, y, sig, ha="left", va="center",
+                    fontsize=9 if sig != "n.s." else 7.5,
                     color=col, transform=ax.get_yaxis_transform())
 
     tick_labels = []
@@ -367,11 +388,18 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
     ax.set_xlim(0, min(1.0, x_max))
     ax.set_xlabel("Wolf win rate", labelpad=7)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
-    ax.set_title("Mafia  —  wolf win rate by steering trait",
+    ax.set_title("Mafia  —  wolf win rate by steering trait  [additive]",
                  pad=12, loc="left", color=INK)
 
-    ax.legend(loc="lower right", frameon=True, framealpha=0.92,
-              edgecolor=GRID_C, facecolor=SURFACE)
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=WIN_COLOR,
+               markersize=8, label="Steered (additive)"),
+        Line2D([0], [0], color=NOOP_COLOR, lw=1.4, ls="--",
+               label=f"noop baseline  ({noop_wr:.0%})"),
+    ]
+    ax.legend(handles=legend_handles, loc="lower right", frameon=True,
+              framealpha=0.92, edgecolor=GRID_C, facecolor=SURFACE, fontsize=8.5)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -380,7 +408,8 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
     ax.grid(axis="x")
     ax.grid(axis="y", visible=False)
 
-    ax.text(0, -0.06, "Dot: win rate  |  Line + band: 95% Wilson CI",
+    ax.text(0, -0.06,
+            "Filled circle = adaptive  |  Open diamond = additive  |  Line: 95% Wilson CI",
             transform=ax.transAxes, fontsize=7, color=INK_MUTED)
     ax.text(1.0, -0.06, "* p<.05   (Fisher's exact vs noop)",
             transform=ax.transAxes, fontsize=7, color=INK_MUTED, ha="right")
@@ -405,39 +434,46 @@ def main():
     print("=== Debate ===")
     debate_base = os.path.join(args.logs_dir, "debate")
     debate_cond: Dict[str, List[float]] = {}
+    debate_additive_keys: set = set()
 
-    for noop_id in ["debate_noop_probe_2p", "debate_noop_2p"]:
+    for noop_id in ["debate_noop_probe_2p", "debate_noop_chunks_2p", "debate_noop_2p"]:
         rw = load_debate_outcomes(os.path.join(debate_base, noop_id))
         if rw:
             debate_cond["noop"] = rw
             print(f"  noop: {noop_id}  n={len(rw)}")
             break
 
+    # Additive: debate_activation_p1_{trait}_additive_2p
     for run_dir in sorted(glob.glob(
-            os.path.join(debate_base, "debate_activation_p1_*"))):
-        m = re.search(r"debate_activation_p1_(.+)_2p$", os.path.basename(run_dir))
+            os.path.join(debate_base, "debate_activation_p1_*_additive_2p"))):
+        m = re.search(r"debate_activation_p1_(.+)_additive_2p$",
+                      os.path.basename(run_dir))
         if not m:
             continue
         trait = m.group(1)
         rw = load_debate_outcomes(run_dir)
         if rw:
-            debate_cond[trait] = rw
+            label = trait
+            debate_cond[label] = rw
+            debate_additive_keys.add(label)
             cnt = counts(rw, [1.0, 0.0, -1.0])
             n   = len(rw)
-            print(f"  {trait:25s}  n={n}  "
+            print(f"  {label:35s}  n={n}  "
                   f"win={cnt[1.0]/n:.0%} draw={cnt[0.0]/n:.0%} "
                   f"loss={cnt[-1.0]/n:.0%}")
 
     if "noop" in debate_cond and len(debate_cond) > 1:
         plot_debate_outcomes(debate_cond, "noop",
-                             os.path.join(args.out_dir, "debate", "outcomes.png"))
+                             os.path.join(args.out_dir, "debate", "outcomes.png"),
+                             additive_keys=debate_additive_keys)
 
     # ── Mafia ─────────────────────────────────────────────────────────────────
     print("=== Mafia ===")
     mafia_base = os.path.join(args.logs_dir, "mafia")
     mafia_cond: Dict[str, List[float]] = {}
+    mafia_additive_keys: set = set()
 
-    for noop_id in ["mafia_noop_probe_8p", "mafia_noop_8p"]:
+    for noop_id in ["mafia_noop_probe_8p", "mafia_noop_chunks_8p", "mafia_noop_8p"]:
         rw = load_mafia_wolf_outcomes(os.path.join(mafia_base, noop_id))
         if rw:
             mafia_cond["noop"] = rw
@@ -446,22 +482,27 @@ def main():
             print(f"  noop: {noop_id}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
             break
 
+    # Additive: mafia_activation_wolf_{trait}_additive_8p
     for run_dir in sorted(glob.glob(
-            os.path.join(mafia_base, "mafia_activation_wolf_*"))):
-        m = re.search(r"mafia_activation_wolf_(.+)_8p$", os.path.basename(run_dir))
+            os.path.join(mafia_base, "mafia_activation_wolf_*_additive_8p"))):
+        m = re.search(r"mafia_activation_wolf_(.+)_additive_8p$",
+                      os.path.basename(run_dir))
         if not m:
             continue
         trait = m.group(1)
         rw = load_mafia_wolf_outcomes(run_dir)
         if rw:
-            mafia_cond[trait] = rw
+            label = trait
+            mafia_cond[label] = rw
+            mafia_additive_keys.add(label)
             cnt = counts(rw, [1.0, -1.0])
             n   = len(rw)
-            print(f"  {trait:25s}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
+            print(f"  {label:35s}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
 
     if "noop" in mafia_cond and len(mafia_cond) > 1:
         plot_mafia_outcomes(mafia_cond, "noop",
-                            os.path.join(args.out_dir, "mafia", "outcomes.png"))
+                            os.path.join(args.out_dir, "mafia", "outcomes.png"),
+                            additive_keys=mafia_additive_keys)
 
     print("Done.")
 

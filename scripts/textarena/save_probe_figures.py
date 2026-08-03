@@ -75,6 +75,18 @@ MAFIA_NOOP_CHUNKS_ID  = "mafia_noop_chunks_8p"
 MAFIA_NOOP_FLAT_ID    = "mafia_noop_probe_8p"
 TRAIT_RE = re.compile(r"debate_activation_p1_(.+)_2p|mafia_activation_wolf_(.+)_8p")
 
+# Big-Five / OCEAN traits — pinned to fixed colors so they're identifiable
+# across all plots regardless of sort order
+OCEAN_COLORS = {
+    "openness":      "#2a78d6",  # blue
+    "conscientious": "#eb6834",  # orange
+    "extraversion":  "#1baf7a",  # green
+    "empathy":       "#eda100",  # amber
+    "agreeableness": "#e87ba4",  # pink
+    "neuroticism":   "#4a3aa7",  # violet
+}
+OCEAN_TRAITS = set(OCEAN_COLORS)
+
 
 def parse_target_trait(run_id: str) -> Optional[str]:
     m = TRAIT_RE.match(run_id)
@@ -163,71 +175,127 @@ def mean_wolf_villager(records: List[dict], wolf_map: Dict[int, str]
 
 
 def chunk_ts(records: List[dict], keep: callable, trait: str,
-             max_chunks: int = 30) -> np.ndarray:
-    """Chunk trajectory for records matching keep(rec)==True, one trait."""
-    buckets: List[List[float]] = [[] for _ in range(max_chunks)]
+             max_tokens: int = 8000, bin_size: int = 10) -> np.ndarray:
+    """Cumulative-game chunk trajectory for records matching keep(rec)==True.
+
+    For each episode, concatenates the agent's turns in game order and computes
+    per-bin averages using cumulative token positions (turn 1 ends at tok N,
+    turn 2 starts at N+1, etc.). Per-episode means are then averaged across
+    episodes, so shorter games don't drag down later positions.
+    """
+    from collections import defaultdict as _dd
+
+    num_buckets = max_tokens // bin_size
+
+    # Group filtered records by (episode, agent_id), preserving file (game) order.
+    # Using (ep, agent) as key ensures each player's turns accumulate independently —
+    # critical for mafia villagers where 7 players share the same episode.
+    by_agent: Dict[Tuple, List[dict]] = _dd(list)
     for rec in records:
         if not keep(rec):
             continue
-        _, chunks = _extract_probe(rec)
-        for chunk in chunks:
-            token = chunk.get("token", 0)
-            cidx  = max(0, (token // 10) - 1)
-            if cidx < max_chunks:
+        key = (rec.get("episode", -1), rec.get("agent_id", ""))
+        by_agent[key].append(rec)
+
+    # For each (episode, agent): walk turns in order, accumulate token offsets.
+    # Then average across all agents (within same episode first, then across episodes).
+    ep_bucket_lists: Dict[int, List[Dict[int, float]]] = _dd(list)
+
+    for (ep, _agent), agent_recs in by_agent.items():
+        cum_offset = 0
+        agent_buckets: Dict[int, List[float]] = _dd(list)
+        for rec in agent_recs:
+            _, chunks = _extract_probe(rec)
+            for chunk in chunks:
+                tok  = chunk.get("token", 0)
+                ctok = cum_offset + tok
+                cidx = (ctok - 1) // bin_size if ctok > 0 else 0
+                if cidx >= num_buckets:
+                    continue
                 v = chunk.get("scores", {}).get(trait)
                 if v is not None:
-                    buckets[cidx].append(v)
-    return np.array([
-        np.mean(b) if b else np.nan for b in buckets
-    ])
+                    agent_buckets[cidx].append(v)
+            if chunks:
+                cum_offset += max(c.get("token", 0) for c in chunks)
+
+        # Reduce to per-bucket mean for this agent, then collect by episode.
+        ep_bucket_lists[ep].append(
+            {cidx: float(np.mean(vals)) for cidx, vals in agent_buckets.items() if vals}
+        )
+
+    # Average within each episode (over agents), then across episodes.
+    global_buckets: List[List[float]] = [[] for _ in range(num_buckets)]
+    for agent_dicts in ep_bucket_lists.values():
+        # Episode-mean at each bucket position (average over all agents in this ep).
+        all_cidxs = set(cidx for d in agent_dicts for cidx in d)
+        for cidx in all_cidxs:
+            vals = [d[cidx] for d in agent_dicts if cidx in d]
+            if vals and 0 <= cidx < num_buckets:
+                global_buckets[cidx].append(float(np.mean(vals)))
+
+    return np.array([np.mean(b) if b else np.nan for b in global_buckets])
 
 
 def top_traits(means: Dict[str, float], exclude: Optional[str] = None,
-               k: int = 4) -> List[str]:
+               k: Optional[int] = None) -> List[str]:
     ranked = sorted(means, key=lambda t: -abs(means[t]))
-    return [t for t in ranked if t != exclude][:k]
+    filtered = [t for t in ranked if t != exclude]
+    return filtered if k is None else filtered[:k]
 
 
 # ── plotting helpers ──────────────────────────────────────────────────────────
 
-def _chunk_xs(arr: np.ndarray) -> np.ndarray:
-    """Token positions corresponding to chunk indices."""
-    return (np.arange(len(arr)) + 1) * 10
+def _chunk_xs(arr: np.ndarray, bin_size: int = 10) -> np.ndarray:
+    """Cumulative token positions corresponding to chunk bin indices."""
+    return (np.arange(len(arr)) + 1) * bin_size
 
 
 def _draw_chunk_ax(ax, records, keep, target_trait, other_traits,
                    noop_mean, label, color):
-    """Draw chunk trajectory + noop reference on an Axes."""
-    xs_full = _chunk_xs(np.zeros(30))
+    """Draw chunk trajectory for all traits + noop reference on an Axes.
 
+    Rendering order (bottom → top):
+      thin/faint  — background traits
+      semi-bold   — OCEAN traits (always highlighted)
+      bold        — target (steered) trait
+    """
     # noop reference (horizontal dashed)
     if noop_mean is not None:
         ax.axhline(noop_mean, color=NOOP_COLOR, lw=1.2, ls="--",
                    label=f"noop mean ({noop_mean:.3f})", zorder=1)
 
-    # other traits (thin, muted)
-    for ti, trait in enumerate(other_traits):
-        arr = chunk_ts(records, keep, trait)
-        xs  = _chunk_xs(arr)
+    # all other traits — thin, low alpha; OCEAN get pinned colors
+    bg_ci = 0  # cycle index for non-OCEAN traits
+    for trait in other_traits:
+        arr  = chunk_ts(records, keep, trait)
+        xs   = _chunk_xs(arr)
         mask = ~np.isnan(arr)
-        if mask.any():
-            ax.plot(xs[mask], arr[mask], color=CAT[(ti + 1) % len(CAT)],
-                    lw=OTHER_LW, alpha=OTHER_ALPHA, label=trait, zorder=2)
+        if not mask.any():
+            continue
+        if trait in OCEAN_COLORS:
+            c = OCEAN_COLORS[trait]
+        else:
+            c = CAT[bg_ci % len(CAT)]
+            bg_ci += 1
+        ax.plot(xs[mask], arr[mask], color=c,
+                lw=0.6, alpha=0.30, label=trait, zorder=2)
 
-    # target trait (bold)
+    # target trait — bold on top
     arr  = chunk_ts(records, keep, target_trait)
     xs   = _chunk_xs(arr)
     mask = ~np.isnan(arr)
     if mask.any():
         ax.plot(xs[mask], arr[mask], color=color, lw=TARGET_LW,
-                label=f"{target_trait} ★", zorder=3)
+                label=f"{target_trait} ★", zorder=4)
 
     ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
     ax.set_title(label, pad=6)
-    ax.set_xlabel("Token position")
+    ax.set_xlabel("Cumulative token position (across all turns)")
     ax.set_ylabel("Projection / ||v||  (>= alpha when steered)")
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
-    ax.legend(loc="upper right", fontsize=7.5)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
+    ax.legend(loc="upper right", fontsize=6.5, ncol=3,
+              handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
+              frameon=True, framealpha=0.85)
 
 
 def _noop_bar_ax(ax, means, title, top_k=12):
@@ -284,37 +352,43 @@ def debate_figures(logs_dir: str, out_dir: str):
         (noop_p0, "player_0 (FOR) — noop baseline",     "p0_noop.png", "player_0"),
     ]:
         if noop_has_chunks:
-            # chunk trajectory of top-5 traits
-            top5 = top_traits(means, k=5)
-            fig, ax = plt.subplots(figsize=(8, 4.5))
-            for ti, trait in enumerate(top5):
+            all_traits = top_traits(means)
+            fig, ax = plt.subplots(figsize=(14, 7))
+            bg_ci = 0
+            for trait in all_traits:
                 arr  = chunk_ts(noop_recs, lambda r, a=agent_id: r["agent_id"] == a, trait)
                 xs   = _chunk_xs(arr)
                 mask = ~np.isnan(arr)
-                if mask.any():
-                    ax.plot(xs[mask], arr[mask], color=CAT[ti % len(CAT)],
-                            lw=TARGET_LW if ti == 0 else OTHER_LW,
-                            alpha=1.0 if ti == 0 else OTHER_ALPHA,
-                            label=trait)
+                if not mask.any():
+                    continue
+                c = OCEAN_COLORS[trait] if trait in OCEAN_COLORS else CAT[bg_ci % len(CAT)]
+                if trait not in OCEAN_COLORS:
+                    bg_ci += 1
+                ax.plot(xs[mask], arr[mask], color=c,
+                        lw=0.6, alpha=0.30, label=trait, zorder=2)
             ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
             ax.set_title(label, pad=6)
-            ax.set_xlabel("Token position")
+            ax.set_xlabel("Cumulative token position (across all turns)")
             ax.set_ylabel("Projection / ||v||  (>= alpha when steered)")
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
-            ax.legend(loc="upper right", fontsize=7.5)
+            ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
+            ax.legend(loc="upper right", fontsize=6.5, ncol=3,
+                      handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
+                      frameon=True, framealpha=0.85)
         else:
             fig, ax = plt.subplots(figsize=(7, 5))
             _noop_bar_ax(ax, means, label + "\n(chunk data pending — re-run after overnight job)")
         fig.suptitle("Debate — noop baseline", fontsize=9, color="#9a9890", y=1.0)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures
+    # per-experiment chunk figures — additive only
     for ci, run_dir in enumerate(sorted(glob.glob(
-            os.path.join(base, "debate_activation_p1_*")))):
-        run_id = os.path.basename(run_dir)
-        trait  = parse_target_trait(run_id)
-        if not trait:
+            os.path.join(base, "debate_activation_p1_*_additive_2p")))):
+        run_id    = os.path.basename(run_dir)
+        trait_raw = parse_target_trait(run_id)   # e.g. "charismatic_additive"
+        if not trait_raw:
             continue
+        # strip "_additive" suffix to look up noop mean by base trait name
+        base_trait = trait_raw.removesuffix("_additive")
         recs = load_records(run_dir)
         if not recs:
             continue
@@ -328,17 +402,19 @@ def debate_figures(logs_dir: str, out_dir: str):
         p0_mean = mean_for_agent(recs, "player_0")
 
         for (agent_id, means, noop_m, label, fname) in [
-            ("player_1", p1_mean, noop_p1.get(trait),
-             f"player_1 — {trait} (steered)",  f"p1_{trait}.png"),
-            ("player_0", p0_mean, noop_p0.get(trait),
-             f"player_0 — {trait} run (unsteered)", f"p0_{trait}.png"),
+            ("player_1", p1_mean, noop_p1.get(base_trait),
+             f"player_1 — {base_trait} [additive] (steered)",
+             f"p1_{base_trait}_additive.png"),
+            ("player_0", p0_mean, noop_p0.get(base_trait),
+             f"player_0 — {base_trait} [additive] run (unsteered)",
+             f"p0_{base_trait}_additive.png"),
         ]:
-            others = top_traits(means, exclude=trait, k=4)
-            fig, ax = plt.subplots(figsize=(8, 4.5))
+            others = top_traits(means, exclude=base_trait)
+            fig, ax = plt.subplots(figsize=(14, 7))
             _draw_chunk_ax(
                 ax, recs,
                 keep=lambda r, a=agent_id: r["agent_id"] == a,
-                target_trait=trait, other_traits=others,
+                target_trait=base_trait, other_traits=others,
                 noop_mean=noop_m, label=label, color=color,
             )
             fig.suptitle(f"Debate — {run_id}", fontsize=9,
@@ -368,9 +444,10 @@ def mafia_figures(logs_dir: str, out_dir: str):
         (noop_vil_m,  False, "Villager — noop baseline", "vil_noop.png"),
     ]:
         if noop_has_chunks:
-            top5 = top_traits(means, k=5)
-            fig, ax = plt.subplots(figsize=(8, 4.5))
-            for ti, trait in enumerate(top5):
+            all_traits = top_traits(means)
+            fig, ax = plt.subplots(figsize=(14, 7))
+            bg_ci = 0
+            for trait in all_traits:
                 arr  = chunk_ts(
                     noop_recs,
                     keep=lambda r, wm=noop_wolf_map, iw=is_wolf:
@@ -379,30 +456,37 @@ def mafia_figures(logs_dir: str, out_dir: str):
                 )
                 xs   = _chunk_xs(arr)
                 mask = ~np.isnan(arr)
-                if mask.any():
-                    ax.plot(xs[mask], arr[mask], color=CAT[ti % len(CAT)],
-                            lw=TARGET_LW if ti == 0 else OTHER_LW,
-                            alpha=1.0 if ti == 0 else OTHER_ALPHA,
-                            label=trait)
+                if not mask.any():
+                    continue
+                if trait in OCEAN_COLORS:
+                    c = OCEAN_COLORS[trait]
+                else:
+                    c = CAT[bg_ci % len(CAT)]
+                    bg_ci += 1
+                ax.plot(xs[mask], arr[mask], color=c,
+                        lw=0.6, alpha=0.30, label=trait, zorder=2)
             ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
             ax.set_title(label, pad=6)
-            ax.set_xlabel("Token position")
+            ax.set_xlabel("Cumulative token position (across all turns)")
             ax.set_ylabel("Projection / ||v||  (>= alpha when steered)")
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
-            ax.legend(loc="upper right", fontsize=7.5)
+            ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
+            ax.legend(loc="upper right", fontsize=6.5, ncol=3,
+                      handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
+                      frameon=True, framealpha=0.85)
         else:
             fig, ax = plt.subplots(figsize=(7, 5))
             _noop_bar_ax(ax, means, label + "\n(chunk data pending — re-run after overnight job)")
         fig.suptitle("Mafia — noop baseline", fontsize=9, color="#9a9890", y=1.0)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures
+    # per-experiment chunk figures — additive only
     for ci, run_dir in enumerate(sorted(glob.glob(
-            os.path.join(base, "mafia_activation_wolf_*")))):
-        run_id = os.path.basename(run_dir)
-        trait  = parse_target_trait(run_id)
-        if not trait:
+            os.path.join(base, "mafia_activation_wolf_*_additive_8p")))):
+        run_id    = os.path.basename(run_dir)
+        trait_raw = parse_target_trait(run_id)
+        if not trait_raw:
             continue
+        base_trait = trait_raw.removesuffix("_additive")
         recs = load_records(run_dir)
         if not recs:
             continue
@@ -416,18 +500,20 @@ def mafia_figures(logs_dir: str, out_dir: str):
         color = CAT[ci % len(CAT)]
 
         for (is_wolf, means, noop_m, label, fname) in [
-            (True,  wolf_m, noop_wolf_m.get(trait),
-             f"Wolf — {trait} (steered)",        f"wolf_{trait}.png"),
-            (False, vil_m,  noop_vil_m.get(trait),
-             f"Villager — {trait} run (unsteered)", f"vil_{trait}.png"),
+            (True,  wolf_m, noop_wolf_m.get(base_trait),
+             f"Wolf — {base_trait} [additive] (steered)",
+             f"wolf_{base_trait}_additive.png"),
+            (False, vil_m,  noop_vil_m.get(base_trait),
+             f"Villager — {base_trait} [additive] run (unsteered)",
+             f"vil_{base_trait}_additive.png"),
         ]:
-            others = top_traits(means, exclude=trait, k=4)
-            fig, ax = plt.subplots(figsize=(8, 4.5))
+            others = top_traits(means, exclude=base_trait)
+            fig, ax = plt.subplots(figsize=(14, 7))
             _draw_chunk_ax(
                 ax, recs,
                 keep=lambda r, wm=wolf_map, iw=is_wolf:
                     (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
-                target_trait=trait, other_traits=others,
+                target_trait=base_trait, other_traits=others,
                 noop_mean=noop_m, label=label, color=color,
             )
             fig.suptitle(f"Mafia — {run_id}", fontsize=9,
