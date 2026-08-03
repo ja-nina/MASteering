@@ -7,17 +7,55 @@ from testbed.types import Action, RawObs, RenderContext, StepResult
 
 
 def _make_fixed_jury(model_name: str, jury_size: int = 1):
-    """Return a jury_class that always uses a single fixed model."""
-    from textarena.utils import OpenRouterJury
+    """Return a jury_class that always calls one fixed OpenRouter model.
 
-    class FixedJury(OpenRouterJury):
-        def __init__(self, **kwargs):
-            super().__init__(
-                jury_size=jury_size,
-                model_names=[model_name],
-                **{k: v for k, v in kwargs.items()
-                   if k not in ("jury_size", "model_names")},
+    Self-contained — does not depend on textarena.utils so it works across
+    textarena versions. Requires OPENROUTER_API_KEY in the environment.
+    """
+    import os, random
+
+    SYSTEM = (
+        "You are a fair and impartial juror. You will be given a context and a "
+        "list of possible options. Please select the single most appropriate option "
+        "from the list, responding with only that exact option name "
+        "(e.g., 'Affirmative', 'Negative', etc.)."
+    )
+
+    class FixedJury:
+        def __init__(self, jury_size: int = jury_size,
+                     options=("Affirmative", "Negative"), **_):
+            self.jury_size = jury_size
+            self.options   = list(options)
+
+        def evaluate(self, context: str) -> str:
+            from openai import OpenAI
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             )
+            votes = []
+            for _ in range(self.jury_size):
+                try:
+                    resp = client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": SYSTEM},
+                            {"role": "user",   "content": context},
+                        ],
+                        max_tokens=16,
+                        temperature=0.0,
+                    )
+                    text = resp.choices[0].message.content.strip()
+                    # pick whichever option appears first in the response
+                    matched = next(
+                        (o for o in self.options if o.lower() in text.lower()),
+                        random.choice(self.options),
+                    )
+                    votes.append(matched)
+                except Exception:
+                    votes.append(random.choice(self.options))
+            # majority vote
+            return max(set(votes), key=votes.count)
 
     FixedJury.__name__ = f"FixedJury[{model_name}]"
     return FixedJury

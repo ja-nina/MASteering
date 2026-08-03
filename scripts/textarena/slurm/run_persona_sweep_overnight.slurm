@@ -102,8 +102,8 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
-
 export PERSONA_VECTORS_ROOT="/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona/qwen3-14b"
+export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
