@@ -67,13 +67,55 @@ OTHER_ALPHA = 0.55
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-# Prefer the new-format noop runs (with chunk time-series).
-# Falls back to the old flat-dict runs if the chunk version hasn't been run yet.
-DEBATE_NOOP_CHUNKS_ID = "debate_noop_chunks_2p"
-DEBATE_NOOP_FLAT_ID   = "debate_noop_probe_2p"
-MAFIA_NOOP_CHUNKS_ID  = "mafia_noop_chunks_8p"
-MAFIA_NOOP_FLAT_ID    = "mafia_noop_probe_8p"
+# Noop run IDs keyed by probe layer.  Each steered run's probe layer is looked
+# up from the companion JSON metadata so the reference line is always from the
+# correct layer.  Falls back to the flat-format run if no chunk run exists yet.
+DEBATE_NOOP_BY_LAYER = {
+    10: "debate_noop_chunks_layer10_2p",
+    20: "debate_noop_chunks_layer20_2p",
+    29: "debate_noop_chunks_2p",
+}
+MAFIA_NOOP_BY_LAYER = {
+    10: "mafia_noop_chunks_layer10_8p",
+    20: "mafia_noop_chunks_layer20_8p",
+    29: "mafia_noop_chunks_8p",
+}
+DEBATE_NOOP_FLAT_ID = "debate_noop_probe_2p"
+MAFIA_NOOP_FLAT_ID  = "mafia_noop_probe_8p"
 TRAIT_RE = re.compile(r"debate_activation_p1_(.+)_2p|mafia_activation_wolf_(.+)_8p")
+
+# Per-trait best probe layer, loaded once from the companion JSON files.
+# Populated by _load_trait_layer_map() on first use.
+_TRAIT_LAYER_MAP: Dict[str, int] = {}
+
+
+def _load_trait_layer_map(vectors_dir: str) -> Dict[str, int]:
+    """Return {trait: best_layer_int} from PersVecGen companion JSON files."""
+    import pathlib
+    result: Dict[str, int] = {}
+    for jf in sorted(pathlib.Path(vectors_dir).glob("*.json")):
+        trait = jf.stem
+        try:
+            meta = json.load(open(str(jf)))
+            sweep = meta.get("sweep_scores", {})
+            if not sweep:
+                continue
+            def _delta(lk: str, sw=sweep) -> float:
+                sv = {float(k): float(v) for k, v in sw[lk].items()}
+                b = sv.get(0.0, min(sv.values()))
+                return max(sv.values()) - b
+            result[trait] = int(max(sweep.keys(), key=_delta))
+        except Exception:
+            continue
+    return result
+
+
+def trait_probe_layer(trait: str, vectors_dir: str) -> int:
+    """Return the optimal probe layer for a trait (cached after first call)."""
+    global _TRAIT_LAYER_MAP
+    if not _TRAIT_LAYER_MAP:
+        _TRAIT_LAYER_MAP = _load_trait_layer_map(vectors_dir)
+    return _TRAIT_LAYER_MAP.get(trait, 29)  # default to 29 if unknown
 
 # Big-Five / OCEAN traits — pinned to fixed colors so they're identifiable
 # across all plots regardless of sort order
@@ -335,28 +377,58 @@ def _pick_noop(base: str, chunks_id: str, flat_id: str) -> Tuple[List[dict], boo
     return flat_recs, False
 
 
+def _noop_cache_debate(base: str) -> Dict[int, Tuple[Dict, Dict, bool]]:
+    """Return {layer: (noop_p1_means, noop_p0_means, has_chunks)} for all layers."""
+    cache: Dict[int, Tuple[Dict, Dict, bool]] = {}
+    for layer, chunks_id in DEBATE_NOOP_BY_LAYER.items():
+        recs, has_chunks = _pick_noop(base, chunks_id, DEBATE_NOOP_FLAT_ID)
+        cache[layer] = (
+            mean_for_agent(recs, "player_1"),
+            mean_for_agent(recs, "player_0"),
+            has_chunks,
+        )
+    return cache
+
+
+def _noop_cache_mafia(base: str) -> Dict[int, Tuple[Dict, Dict, Dict, bool]]:
+    """Return {layer: (wolf_means, vil_means, wolf_map, has_chunks)} for all layers."""
+    cache: Dict[int, Tuple[Dict, Dict, Dict, bool]] = {}
+    for layer, chunks_id in MAFIA_NOOP_BY_LAYER.items():
+        recs, has_chunks = _pick_noop(base, chunks_id, MAFIA_NOOP_FLAT_ID)
+        wm = load_wolf_map(
+            os.path.join(base, chunks_id if has_chunks else MAFIA_NOOP_FLAT_ID)
+        )
+        wolf_m, vil_m = mean_wolf_villager(recs, wm)
+        cache[layer] = (wolf_m, vil_m, wm, recs, has_chunks)
+    return cache
+
+
 def debate_figures(logs_dir: str, out_dir: str):
     base = os.path.join(logs_dir, "debate")
     out  = os.path.join(out_dir, "debate")
 
-    # noop — prefer new chunk-format run
-    noop_recs, noop_has_chunks = _pick_noop(
-        base, DEBATE_NOOP_CHUNKS_ID, DEBATE_NOOP_FLAT_ID
+    vectors_dir = os.path.expandvars(
+        "${PERSONA_VECTORS_ROOT}/bf16" if os.environ.get("PERSONA_VECTORS_ROOT")
+        else "C:/Users/ismyn/UNI/MPI/Thesis/PersVecGen/data/vector_extraction/persona/qwen3-14b/bf16"
     )
-    noop_p1 = mean_for_agent(noop_recs, "player_1")
-    noop_p0 = mean_for_agent(noop_recs, "player_0")
 
-    # noop baseline figures
+    # Load noop runs for all three probe layers
+    noop = _noop_cache_debate(base)
+    # Use layer-29 noop for the generic noop baseline figures
+    noop_p1_29, noop_p0_29, noop_has_chunks_29 = noop[29]
+
+    # noop baseline figures (layer 29 only — the generic reference)
     for (means, label, fname, agent_id) in [
-        (noop_p1, "player_1 (AGAINST) — noop baseline", "p1_noop.png", "player_1"),
-        (noop_p0, "player_0 (FOR) — noop baseline",     "p0_noop.png", "player_0"),
+        (noop_p1_29, "player_1 (AGAINST) — noop baseline", "p1_noop.png", "player_1"),
+        (noop_p0_29, "player_0 (FOR) — noop baseline",     "p0_noop.png", "player_0"),
     ]:
-        if noop_has_chunks:
+        if noop_has_chunks_29:
             all_traits = top_traits(means)
             fig, ax = plt.subplots(figsize=(14, 7))
+            recs_29, _ = _pick_noop(base, DEBATE_NOOP_BY_LAYER[29], DEBATE_NOOP_FLAT_ID)
             bg_ci = 0
             for trait in all_traits:
-                arr  = chunk_ts(noop_recs, lambda r, a=agent_id: r["agent_id"] == a, trait)
+                arr  = chunk_ts(recs_29, lambda r, a=agent_id: r["agent_id"] == a, trait)
                 xs   = _chunk_xs(arr)
                 mask = ~np.isnan(arr)
                 if not mask.any():
@@ -387,7 +459,6 @@ def debate_figures(logs_dir: str, out_dir: str):
         trait_raw = parse_target_trait(run_id)   # e.g. "charismatic_additive"
         if not trait_raw:
             continue
-        # strip "_additive" suffix to look up noop mean by base trait name
         base_trait = trait_raw.removesuffix("_additive")
         recs = load_records(run_dir)
         if not recs:
@@ -397,13 +468,17 @@ def debate_figures(logs_dir: str, out_dir: str):
             print(f"  skip (no chunks): {run_id}")
             continue
 
+        # Pick noop means from the layer matching this trait's probe layer
+        probe_layer = trait_probe_layer(base_trait, vectors_dir)
+        noop_p1, noop_p0, _ = noop.get(probe_layer, noop[29])
+
         color   = CAT[ci % len(CAT)]
         p1_mean = mean_for_agent(recs, "player_1")
         p0_mean = mean_for_agent(recs, "player_0")
 
         for (agent_id, means, noop_m, label, fname) in [
             ("player_1", p1_mean, noop_p1.get(base_trait),
-             f"player_1 — {base_trait} [additive] (steered)",
+             f"player_1 — {base_trait} [additive] (steered, probe layer {probe_layer})",
              f"p1_{base_trait}_additive.png"),
             ("player_0", p0_mean, noop_p0.get(base_trait),
              f"player_0 — {base_trait} [additive] run (unsteered)",
@@ -428,29 +503,28 @@ def mafia_figures(logs_dir: str, out_dir: str):
     base = os.path.join(logs_dir, "mafia")
     out  = os.path.join(out_dir, "mafia")
 
-    # noop — prefer new chunk-format run
-    noop_chunks_dir = os.path.join(base, MAFIA_NOOP_CHUNKS_ID)
-    noop_recs, noop_has_chunks = _pick_noop(
-        base, MAFIA_NOOP_CHUNKS_ID, MAFIA_NOOP_FLAT_ID
+    vectors_dir = os.path.expandvars(
+        "${PERSONA_VECTORS_ROOT}/bf16" if os.environ.get("PERSONA_VECTORS_ROOT")
+        else "C:/Users/ismyn/UNI/MPI/Thesis/PersVecGen/data/vector_extraction/persona/qwen3-14b/bf16"
     )
-    noop_wolf_map = load_wolf_map(
-        noop_chunks_dir if noop_has_chunks else os.path.join(base, MAFIA_NOOP_FLAT_ID)
-    )
-    noop_wolf_m, noop_vil_m = mean_wolf_villager(noop_recs, noop_wolf_map)
 
-    # noop baseline figures
+    # Load noop runs for all three probe layers
+    noop = _noop_cache_mafia(base)
+    noop_wolf_29, noop_vil_29, noop_wm_29, noop_recs_29, noop_has_chunks_29 = noop[29]
+
+    # noop baseline figures (layer 29 only — the generic reference)
     for (means, is_wolf, label, fname) in [
-        (noop_wolf_m, True,  "Wolf — noop baseline",     "wolf_noop.png"),
-        (noop_vil_m,  False, "Villager — noop baseline", "vil_noop.png"),
+        (noop_wolf_29, True,  "Wolf — noop baseline",     "wolf_noop.png"),
+        (noop_vil_29,  False, "Villager — noop baseline", "vil_noop.png"),
     ]:
-        if noop_has_chunks:
+        if noop_has_chunks_29:
             all_traits = top_traits(means)
             fig, ax = plt.subplots(figsize=(14, 7))
             bg_ci = 0
             for trait in all_traits:
                 arr  = chunk_ts(
-                    noop_recs,
-                    keep=lambda r, wm=noop_wolf_map, iw=is_wolf:
+                    noop_recs_29,
+                    keep=lambda r, wm=noop_wm_29, iw=is_wolf:
                         (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
                     trait=trait,
                 )
@@ -495,13 +569,17 @@ def mafia_figures(logs_dir: str, out_dir: str):
             print(f"  skip (no chunks): {run_id}")
             continue
 
+        # Pick noop means from the layer matching this trait's probe layer
+        probe_layer = trait_probe_layer(base_trait, vectors_dir)
+        noop_wolf_m, noop_vil_m, _, _, _ = noop.get(probe_layer, noop[29])
+
         wolf_map = load_wolf_map(run_dir)
         wolf_m, vil_m = mean_wolf_villager(recs, wolf_map)
         color = CAT[ci % len(CAT)]
 
         for (is_wolf, means, noop_m, label, fname) in [
             (True,  wolf_m, noop_wolf_m.get(base_trait),
-             f"Wolf — {base_trait} [additive] (steered)",
+             f"Wolf — {base_trait} [additive] (steered, probe layer {probe_layer})",
              f"wolf_{base_trait}_additive.png"),
             (False, vil_m,  noop_vil_m.get(base_trait),
              f"Villager — {base_trait} [additive] run (unsteered)",
