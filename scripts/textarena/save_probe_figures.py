@@ -67,55 +67,13 @@ OTHER_ALPHA = 0.55
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-# Noop run IDs keyed by probe layer.  Each steered run's probe layer is looked
-# up from the companion JSON metadata so the reference line is always from the
-# correct layer.  Falls back to the flat-format run if no chunk run exists yet.
-DEBATE_NOOP_BY_LAYER = {
-    10: "debate_noop_chunks_layer10_2p",
-    20: "debate_noop_chunks_layer20_2p",
-    29: "debate_noop_chunks_2p",
-}
-MAFIA_NOOP_BY_LAYER = {
-    10: "mafia_noop_chunks_layer10_8p",
-    20: "mafia_noop_chunks_layer20_8p",
-    29: "mafia_noop_chunks_8p",
-}
-DEBATE_NOOP_FLAT_ID = "debate_noop_probe_2p"
-MAFIA_NOOP_FLAT_ID  = "mafia_noop_probe_8p"
+PROBE_LAYERS = [10, 20, 29]   # all runs probe these layers simultaneously
+
+DEBATE_NOOP_CHUNKS_ID = "debate_noop_chunks_2p"
+DEBATE_NOOP_FLAT_ID   = "debate_noop_probe_2p"
+MAFIA_NOOP_CHUNKS_ID  = "mafia_noop_chunks_8p"
+MAFIA_NOOP_FLAT_ID    = "mafia_noop_probe_8p"
 TRAIT_RE = re.compile(r"debate_activation_p1_(.+)_2p|mafia_activation_wolf_(.+)_8p")
-
-# Per-trait best probe layer, loaded once from the companion JSON files.
-# Populated by _load_trait_layer_map() on first use.
-_TRAIT_LAYER_MAP: Dict[str, int] = {}
-
-
-def _load_trait_layer_map(vectors_dir: str) -> Dict[str, int]:
-    """Return {trait: best_layer_int} from PersVecGen companion JSON files."""
-    import pathlib
-    result: Dict[str, int] = {}
-    for jf in sorted(pathlib.Path(vectors_dir).glob("*.json")):
-        trait = jf.stem
-        try:
-            meta = json.load(open(str(jf)))
-            sweep = meta.get("sweep_scores", {})
-            if not sweep:
-                continue
-            def _delta(lk: str, sw=sweep) -> float:
-                sv = {float(k): float(v) for k, v in sw[lk].items()}
-                b = sv.get(0.0, min(sv.values()))
-                return max(sv.values()) - b
-            result[trait] = int(max(sweep.keys(), key=_delta))
-        except Exception:
-            continue
-    return result
-
-
-def trait_probe_layer(trait: str, vectors_dir: str) -> int:
-    """Return the optimal probe layer for a trait (cached after first call)."""
-    global _TRAIT_LAYER_MAP
-    if not _TRAIT_LAYER_MAP:
-        _TRAIT_LAYER_MAP = _load_trait_layer_map(vectors_dir)
-    return _TRAIT_LAYER_MAP.get(trait, 29)  # default to 29 if unknown
 
 # Big-Five / OCEAN traits — pinned to fixed colors so they're identifiable
 # across all plots regardless of sort order
@@ -135,14 +93,72 @@ def parse_target_trait(run_id: str) -> Optional[str]:
     return (m.group(1) or m.group(2)) if m else None
 
 
+_VECTORS_DIR = os.path.expandvars(
+    "${PERSONA_VECTORS_ROOT}/bf16"
+    if os.environ.get("PERSONA_VECTORS_ROOT")
+    else "C:/Users/ismyn/UNI/MPI/Thesis/PersVecGen/data/vector_extraction"
+       "/persona/qwen3-14b/bf16"
+)
+
+
+def _trait_steer_layer(trait: str) -> Optional[int]:
+    """Return the auto-resolved best steering layer for a trait (from companion JSON)."""
+    json_path = os.path.join(_VECTORS_DIR, f"{trait}.json")
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path) as f:
+            meta = json.load(f)
+        sweep = meta.get("sweep_scores", {})
+        if not sweep:
+            return None
+
+        def _delta(lk: str) -> float:
+            scores = {float(k): float(v) for k, v in sweep[lk].items()}
+            baseline = scores.get(0.0, min(scores.values()))
+            return max(scores.values()) - baseline
+
+        return int(max(sweep.keys(), key=_delta))
+    except Exception:
+        return None
+
+
 # ── data loading ──────────────────────────────────────────────────────────────
 
-def _extract_probe(rec: dict) -> Tuple[Dict, List]:
+def _extract_probe(rec: dict, layer: Optional[int] = None) -> Tuple[Dict, List]:
+    """Extract (mean_dict, chunks) for the given layer.
+
+    Handles three formats:
+      new multi-layer  — {"10": {mean, chunks}, "20": ..., "29": ...}
+      old single-layer — {mean: {...}, chunks: [...]}
+      oldest flat      — {trait: float, ...}
+
+    When layer is None and the record is multi-layer, the first available
+    layer's data is returned (for backward-compat callers that don't care
+    about layer).
+    """
     probe = rec.get("persona_probe") or {}
+
+    # New multi-layer format: top-level keys are stringified layer ints
+    if probe and all(k.isdigit() for k in probe):
+        if layer is not None:
+            ld = probe.get(str(layer), {})
+        else:
+            ld = next(iter(probe.values()), {})
+        return ld.get("mean", {}), ld.get("chunks", [])
+
+    # Old single-layer format
     if "mean" in probe and isinstance(probe["mean"], dict):
         return probe["mean"], probe.get("chunks", [])
+
+    # Oldest flat format
     flat = {k: v for k, v in probe.items() if isinstance(v, (int, float))}
     return flat, []
+
+
+def _has_multilayer(rec: dict) -> bool:
+    probe = rec.get("persona_probe") or {}
+    return bool(probe) and all(k.isdigit() for k in probe)
 
 
 def load_records(run_dir: str) -> List[dict]:
@@ -185,26 +201,28 @@ def load_wolf_map(run_dir: str) -> Dict[int, str]:
 
 # ── aggregation ───────────────────────────────────────────────────────────────
 
-def mean_for_agent(records: List[dict], agent_id: str) -> Dict[str, float]:
+def mean_for_agent(records: List[dict], agent_id: str,
+                   layer: Optional[int] = None) -> Dict[str, float]:
     s: Dict[str, float] = defaultdict(float)
     n = 0
     for rec in records:
         if rec["agent_id"] != agent_id:
             continue
-        mean_dict, _ = _extract_probe(rec)
+        mean_dict, _ = _extract_probe(rec, layer=layer)
         for t, v in mean_dict.items():
             s[t] += v
         n += 1
     return {t: v / n for t, v in s.items()} if n else {}
 
 
-def mean_wolf_villager(records: List[dict], wolf_map: Dict[int, str]
+def mean_wolf_villager(records: List[dict], wolf_map: Dict[int, str],
+                       layer: Optional[int] = None,
                        ) -> Tuple[Dict[str, float], Dict[str, float]]:
     ws: Dict[str, float] = defaultdict(float); wn = 0
     vs: Dict[str, float] = defaultdict(float); vn = 0
     for rec in records:
         ep, aid = rec.get("episode", -1), rec["agent_id"]
-        mean_dict, _ = _extract_probe(rec)
+        mean_dict, _ = _extract_probe(rec, layer=layer)
         if aid == wolf_map.get(ep):
             for t, v in mean_dict.items(): ws[t] += v
             wn += 1
@@ -217,6 +235,7 @@ def mean_wolf_villager(records: List[dict], wolf_map: Dict[int, str]
 
 
 def chunk_ts(records: List[dict], keep: callable, trait: str,
+             layer: Optional[int] = None,
              max_tokens: int = 8000, bin_size: int = 10) -> np.ndarray:
     """Cumulative-game chunk trajectory for records matching keep(rec)==True.
 
@@ -247,7 +266,7 @@ def chunk_ts(records: List[dict], keep: callable, trait: str,
         cum_offset = 0
         agent_buckets: Dict[int, List[float]] = _dd(list)
         for rec in agent_recs:
-            _, chunks = _extract_probe(rec)
+            _, chunks = _extract_probe(rec, layer=layer)
             for chunk in chunks:
                 tok  = chunk.get("token", 0)
                 ctok = cum_offset + tok
@@ -293,7 +312,7 @@ def _chunk_xs(arr: np.ndarray, bin_size: int = 10) -> np.ndarray:
 
 
 def _draw_chunk_ax(ax, records, keep, target_trait, other_traits,
-                   noop_mean, label, color):
+                   noop_mean, label, color, layer: Optional[int] = None):
     """Draw chunk trajectory for all traits + noop reference on an Axes.
 
     Rendering order (bottom → top):
@@ -309,7 +328,7 @@ def _draw_chunk_ax(ax, records, keep, target_trait, other_traits,
     # all other traits — thin, low alpha; OCEAN get pinned colors
     bg_ci = 0  # cycle index for non-OCEAN traits
     for trait in other_traits:
-        arr  = chunk_ts(records, keep, trait)
+        arr  = chunk_ts(records, keep, trait, layer=layer)
         xs   = _chunk_xs(arr)
         mask = ~np.isnan(arr)
         if not mask.any():
@@ -323,7 +342,7 @@ def _draw_chunk_ax(ax, records, keep, target_trait, other_traits,
                 lw=0.6, alpha=0.30, label=trait, zorder=2)
 
     # target trait — bold on top
-    arr  = chunk_ts(records, keep, target_trait)
+    arr  = chunk_ts(records, keep, target_trait, layer=layer)
     xs   = _chunk_xs(arr)
     mask = ~np.isnan(arr)
     if mask.any():
@@ -377,86 +396,110 @@ def _pick_noop(base: str, chunks_id: str, flat_id: str) -> Tuple[List[dict], boo
     return flat_recs, False
 
 
-def _noop_cache_debate(base: str) -> Dict[int, Tuple[Dict, Dict, bool]]:
-    """Return {layer: (noop_p1_means, noop_p0_means, has_chunks)} for all layers."""
-    cache: Dict[int, Tuple[Dict, Dict, bool]] = {}
-    for layer, chunks_id in DEBATE_NOOP_BY_LAYER.items():
-        recs, has_chunks = _pick_noop(base, chunks_id, DEBATE_NOOP_FLAT_ID)
-        cache[layer] = (
-            mean_for_agent(recs, "player_1"),
-            mean_for_agent(recs, "player_0"),
+def _noop_debate(base: str) -> Dict[int, Tuple[Dict, Dict, List, bool]]:
+    """Return {layer: (p1_means, p0_means, recs, has_chunks)} for all probe layers.
+
+    Loads a single noop run (multi-layer format) and extracts each layer's data.
+    """
+    recs, has_chunks = _pick_noop(base, DEBATE_NOOP_CHUNKS_ID, DEBATE_NOOP_FLAT_ID)
+    return {
+        layer: (
+            mean_for_agent(recs, "player_1", layer=layer),
+            mean_for_agent(recs, "player_0", layer=layer),
+            recs,
             has_chunks,
         )
-    return cache
+        for layer in PROBE_LAYERS
+    }
 
 
-def _noop_cache_mafia(base: str) -> Dict[int, Tuple[Dict, Dict, Dict, bool]]:
-    """Return {layer: (wolf_means, vil_means, wolf_map, has_chunks)} for all layers."""
-    cache: Dict[int, Tuple[Dict, Dict, Dict, bool]] = {}
-    for layer, chunks_id in MAFIA_NOOP_BY_LAYER.items():
-        recs, has_chunks = _pick_noop(base, chunks_id, MAFIA_NOOP_FLAT_ID)
-        wm = load_wolf_map(
-            os.path.join(base, chunks_id if has_chunks else MAFIA_NOOP_FLAT_ID)
+def _noop_mafia(base: str) -> Dict[int, Tuple[Dict, Dict, Dict, List, bool]]:
+    """Return {layer: (wolf_means, vil_means, wolf_map, recs, has_chunks)} for all probe layers."""
+    recs, has_chunks = _pick_noop(base, MAFIA_NOOP_CHUNKS_ID, MAFIA_NOOP_FLAT_ID)
+    noop_run_id = MAFIA_NOOP_CHUNKS_ID if has_chunks else MAFIA_NOOP_FLAT_ID
+    wm = load_wolf_map(os.path.join(base, noop_run_id))
+    return {
+        layer: (
+            *mean_wolf_villager(recs, wm, layer=layer),
+            wm,
+            recs,
+            has_chunks,
         )
-        wolf_m, vil_m = mean_wolf_villager(recs, wm)
-        cache[layer] = (wolf_m, vil_m, wm, recs, has_chunks)
-    return cache
+        for layer in PROBE_LAYERS
+    }
+
+
+def _draw_noop_chunk_subplots(axes, recs, agent_keep, noop_by_layer):
+    """Fill one subplot per PROBE_LAYER with noop chunk trajectories."""
+    for row, layer in enumerate(PROBE_LAYERS):
+        ax = axes[row]
+        p1_means, p0_means, _, _ = noop_by_layer[layer]
+        # pick whichever side this axis is for (caller's recs already filtered by agent_keep)
+        all_traits = top_traits(p1_means or p0_means)
+        bg_ci = 0
+        for trait in all_traits:
+            arr  = chunk_ts(recs, agent_keep, trait, layer=layer)
+            xs   = _chunk_xs(arr)
+            mask = ~np.isnan(arr)
+            if not mask.any():
+                continue
+            if trait in OCEAN_COLORS:
+                c = OCEAN_COLORS[trait]
+            else:
+                c = CAT[bg_ci % len(CAT)]
+                bg_ci += 1
+            ax.plot(xs[mask], arr[mask], color=c, lw=0.6, alpha=0.30,
+                    label=trait, zorder=2)
+        ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
+        ax.set_title(f"layer {layer}", pad=6)
+        ax.set_xlabel("Cumulative token position (across all turns)")
+        ax.set_ylabel("Projection / ||v||")
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
+        ax.legend(loc="upper right", fontsize=6.5, ncol=3,
+                  handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
+                  frameon=True, framealpha=0.85)
 
 
 def debate_figures(logs_dir: str, out_dir: str):
     base = os.path.join(logs_dir, "debate")
     out  = os.path.join(out_dir, "debate")
 
-    vectors_dir = os.path.expandvars(
-        "${PERSONA_VECTORS_ROOT}/bf16" if os.environ.get("PERSONA_VECTORS_ROOT")
-        else "C:/Users/ismyn/UNI/MPI/Thesis/PersVecGen/data/vector_extraction/persona/qwen3-14b/bf16"
-    )
+    noop = _noop_debate(base)
 
-    # Load noop runs for all three probe layers
-    noop = _noop_cache_debate(base)
-    # Use layer-29 noop for the generic noop baseline figures
-    noop_p1_29, noop_p0_29, noop_has_chunks_29 = noop[29]
-
-    # noop baseline figures (layer 29 only — the generic reference)
-    for (means, label, fname, agent_id) in [
-        (noop_p1_29, "player_1 (AGAINST) — noop baseline", "p1_noop.png", "player_1"),
-        (noop_p0_29, "player_0 (FOR) — noop baseline",     "p0_noop.png", "player_0"),
+    # noop baseline figures — 3-layer subplots
+    for (agent_id, label_prefix, fname) in [
+        ("player_1", "player_1 (AGAINST) — noop baseline", "p1_noop.png"),
+        ("player_0", "player_0 (FOR) — noop baseline",     "p0_noop.png"),
     ]:
-        if noop_has_chunks_29:
-            all_traits = top_traits(means)
-            fig, ax = plt.subplots(figsize=(14, 7))
-            recs_29, _ = _pick_noop(base, DEBATE_NOOP_BY_LAYER[29], DEBATE_NOOP_FLAT_ID)
-            bg_ci = 0
-            for trait in all_traits:
-                arr  = chunk_ts(recs_29, lambda r, a=agent_id: r["agent_id"] == a, trait)
-                xs   = _chunk_xs(arr)
-                mask = ~np.isnan(arr)
-                if not mask.any():
-                    continue
-                c = OCEAN_COLORS[trait] if trait in OCEAN_COLORS else CAT[bg_ci % len(CAT)]
-                if trait not in OCEAN_COLORS:
-                    bg_ci += 1
-                ax.plot(xs[mask], arr[mask], color=c,
-                        lw=0.6, alpha=0.30, label=trait, zorder=2)
-            ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
-            ax.set_title(label, pad=6)
-            ax.set_xlabel("Cumulative token position (across all turns)")
-            ax.set_ylabel("Projection / ||v||  (>= alpha when steered)")
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
-            ax.legend(loc="upper right", fontsize=6.5, ncol=3,
-                      handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
-                      frameon=True, framealpha=0.85)
+        _, _, noop_recs, has_chunks = noop[PROBE_LAYERS[0]]
+        if has_chunks:
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            _draw_noop_chunk_subplots(
+                axes, noop_recs,
+                agent_keep=lambda r, a=agent_id: r["agent_id"] == a,
+                noop_by_layer=noop,
+            )
+            fig.suptitle(f"Debate — {label_prefix}", fontsize=9,
+                         color="#9a9890", y=1.002)
         else:
-            fig, ax = plt.subplots(figsize=(7, 5))
-            _noop_bar_ax(ax, means, label + "\n(chunk data pending — re-run after overnight job)")
-        fig.suptitle("Debate — noop baseline", fontsize=9, color="#9a9890", y=1.0)
+            # No chunks yet — bar chart per layer in a row
+            fig, axes = plt.subplots(1, len(PROBE_LAYERS),
+                                     figsize=(7 * len(PROBE_LAYERS), 5))
+            for col, layer in enumerate(PROBE_LAYERS):
+                p1_m, p0_m, _, _ = noop[layer]
+                means = p1_m if agent_id == "player_1" else p0_m
+                _noop_bar_ax(axes[col], means,
+                             f"{label_prefix}\nlayer {layer}\n(chunk data pending)")
+            fig.suptitle(f"Debate — {label_prefix}", fontsize=9,
+                         color="#9a9890", y=1.002)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures — additive only
+    # per-experiment chunk figures — additive only, 3 layers each
     for ci, run_dir in enumerate(sorted(glob.glob(
             os.path.join(base, "debate_activation_p1_*_additive_2p")))):
         run_id    = os.path.basename(run_dir)
-        trait_raw = parse_target_trait(run_id)   # e.g. "charismatic_additive"
+        trait_raw = parse_target_trait(run_id)
         if not trait_raw:
             continue
         base_trait = trait_raw.removesuffix("_additive")
@@ -468,32 +511,32 @@ def debate_figures(logs_dir: str, out_dir: str):
             print(f"  skip (no chunks): {run_id}")
             continue
 
-        # Pick noop means from the layer matching this trait's probe layer
-        probe_layer = trait_probe_layer(base_trait, vectors_dir)
-        noop_p1, noop_p0, _ = noop.get(probe_layer, noop[29])
+        color = CAT[ci % len(CAT)]
+        steer_layer = _trait_steer_layer(base_trait)
+        steer_tag   = f"steered @ layer {steer_layer}" if steer_layer else "steered"
 
-        color   = CAT[ci % len(CAT)]
-        p1_mean = mean_for_agent(recs, "player_1")
-        p0_mean = mean_for_agent(recs, "player_0")
-
-        for (agent_id, means, noop_m, label, fname) in [
-            ("player_1", p1_mean, noop_p1.get(base_trait),
-             f"player_1 — {base_trait} [additive] (steered, probe layer {probe_layer})",
-             f"p1_{base_trait}_additive.png"),
-            ("player_0", p0_mean, noop_p0.get(base_trait),
-             f"player_0 — {base_trait} [additive] run (unsteered)",
-             f"p0_{base_trait}_additive.png"),
+        for (agent_id, is_steered, fname) in [
+            ("player_1", True,  f"p1_{base_trait}_additive.png"),
+            ("player_0", False, f"p0_{base_trait}_additive.png"),
         ]:
-            others = top_traits(means, exclude=base_trait)
-            fig, ax = plt.subplots(figsize=(14, 7))
-            _draw_chunk_ax(
-                ax, recs,
-                keep=lambda r, a=agent_id: r["agent_id"] == a,
-                target_trait=base_trait, other_traits=others,
-                noop_mean=noop_m, label=label, color=color,
-            )
-            fig.suptitle(f"Debate — {run_id}", fontsize=9,
-                         color="#9a9890", y=1.0)
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            for row, layer in enumerate(PROBE_LAYERS):
+                noop_p1, noop_p0, _, _ = noop[layer]
+                noop_m = (noop_p1 if agent_id == "player_1" else noop_p0).get(base_trait)
+                means  = mean_for_agent(recs, agent_id, layer=layer)
+                others = top_traits(means, exclude=base_trait)
+                role_tag = steer_tag if is_steered else "unsteered"
+                _draw_chunk_ax(
+                    axes[row], recs,
+                    keep=lambda r, a=agent_id: r["agent_id"] == a,
+                    target_trait=base_trait, other_traits=others,
+                    noop_mean=noop_m,
+                    label=f"{agent_id} [{role_tag}] — {base_trait} | probe layer {layer}",
+                    color=color, layer=layer,
+                )
+            fig.suptitle(f"Debate — {run_id}  [{steer_tag}]", fontsize=9,
+                         color="#9a9890", y=1.002)
             savefig(fig, os.path.join(out, fname))
 
 
@@ -503,57 +546,61 @@ def mafia_figures(logs_dir: str, out_dir: str):
     base = os.path.join(logs_dir, "mafia")
     out  = os.path.join(out_dir, "mafia")
 
-    vectors_dir = os.path.expandvars(
-        "${PERSONA_VECTORS_ROOT}/bf16" if os.environ.get("PERSONA_VECTORS_ROOT")
-        else "C:/Users/ismyn/UNI/MPI/Thesis/PersVecGen/data/vector_extraction/persona/qwen3-14b/bf16"
-    )
+    noop = _noop_mafia(base)
 
-    # Load noop runs for all three probe layers
-    noop = _noop_cache_mafia(base)
-    noop_wolf_29, noop_vil_29, noop_wm_29, noop_recs_29, noop_has_chunks_29 = noop[29]
-
-    # noop baseline figures (layer 29 only — the generic reference)
-    for (means, is_wolf, label, fname) in [
-        (noop_wolf_29, True,  "Wolf — noop baseline",     "wolf_noop.png"),
-        (noop_vil_29,  False, "Villager — noop baseline", "vil_noop.png"),
+    # noop baseline figures — 3-layer subplots
+    _, _, noop_wm, noop_recs, noop_has_chunks = noop[PROBE_LAYERS[0]]
+    for (is_wolf, label_prefix, fname) in [
+        (True,  "Wolf — noop baseline",     "wolf_noop.png"),
+        (False, "Villager — noop baseline", "vil_noop.png"),
     ]:
-        if noop_has_chunks_29:
-            all_traits = top_traits(means)
-            fig, ax = plt.subplots(figsize=(14, 7))
-            bg_ci = 0
-            for trait in all_traits:
-                arr  = chunk_ts(
-                    noop_recs_29,
-                    keep=lambda r, wm=noop_wm_29, iw=is_wolf:
-                        (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
-                    trait=trait,
-                )
-                xs   = _chunk_xs(arr)
-                mask = ~np.isnan(arr)
-                if not mask.any():
-                    continue
-                if trait in OCEAN_COLORS:
-                    c = OCEAN_COLORS[trait]
-                else:
-                    c = CAT[bg_ci % len(CAT)]
-                    bg_ci += 1
-                ax.plot(xs[mask], arr[mask], color=c,
-                        lw=0.6, alpha=0.30, label=trait, zorder=2)
-            ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
-            ax.set_title(label, pad=6)
-            ax.set_xlabel("Cumulative token position (across all turns)")
-            ax.set_ylabel("Projection / ||v||  (>= alpha when steered)")
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
-            ax.legend(loc="upper right", fontsize=6.5, ncol=3,
-                      handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
-                      frameon=True, framealpha=0.85)
+        agent_keep = lambda r, wm=noop_wm, iw=is_wolf: (
+            r["agent_id"] == wm.get(r.get("episode", -1))
+        ) == iw
+
+        if noop_has_chunks:
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            for row, layer in enumerate(PROBE_LAYERS):
+                ax = axes[row]
+                wolf_m, vil_m, _, _, _ = noop[layer]
+                means     = wolf_m if is_wolf else vil_m
+                all_traits = top_traits(means)
+                bg_ci = 0
+                for trait in all_traits:
+                    arr  = chunk_ts(noop_recs, agent_keep, trait, layer=layer)
+                    xs   = _chunk_xs(arr)
+                    mask = ~np.isnan(arr)
+                    if not mask.any():
+                        continue
+                    if trait in OCEAN_COLORS:
+                        c = OCEAN_COLORS[trait]
+                    else:
+                        c = CAT[bg_ci % len(CAT)]
+                        bg_ci += 1
+                    ax.plot(xs[mask], arr[mask], color=c, lw=0.6, alpha=0.30,
+                            label=trait, zorder=2)
+                ax.axhline(0, color="#c8c6be", lw=0.7, zorder=0)
+                ax.set_title(f"{label_prefix} | layer {layer}", pad=6)
+                ax.set_xlabel("Cumulative token position (across all turns)")
+                ax.set_ylabel("Projection / ||v||")
+                ax.xaxis.set_major_locator(ticker.MultipleLocator(250))
+                ax.legend(loc="upper right", fontsize=6.5, ncol=3,
+                          handlelength=1.4, columnspacing=1.0, labelspacing=0.35,
+                          frameon=True, framealpha=0.85)
         else:
-            fig, ax = plt.subplots(figsize=(7, 5))
-            _noop_bar_ax(ax, means, label + "\n(chunk data pending — re-run after overnight job)")
-        fig.suptitle("Mafia — noop baseline", fontsize=9, color="#9a9890", y=1.0)
+            fig, axes = plt.subplots(1, len(PROBE_LAYERS),
+                                     figsize=(7 * len(PROBE_LAYERS), 5))
+            for col, layer in enumerate(PROBE_LAYERS):
+                wolf_m, vil_m, _, _, _ = noop[layer]
+                means = wolf_m if is_wolf else vil_m
+                _noop_bar_ax(axes[col], means,
+                             f"{label_prefix}\nlayer {layer}\n(chunk data pending)")
+        fig.suptitle(f"Mafia — {label_prefix}", fontsize=9,
+                     color="#9a9890", y=1.002)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures — additive only
+    # per-experiment chunk figures — additive only, 3 layers each
     for ci, run_dir in enumerate(sorted(glob.glob(
             os.path.join(base, "mafia_activation_wolf_*_additive_8p")))):
         run_id    = os.path.basename(run_dir)
@@ -569,33 +616,33 @@ def mafia_figures(logs_dir: str, out_dir: str):
             print(f"  skip (no chunks): {run_id}")
             continue
 
-        # Pick noop means from the layer matching this trait's probe layer
-        probe_layer = trait_probe_layer(base_trait, vectors_dir)
-        noop_wolf_m, noop_vil_m, _, _, _ = noop.get(probe_layer, noop[29])
+        wolf_map    = load_wolf_map(run_dir)
+        color       = CAT[ci % len(CAT)]
+        steer_layer = _trait_steer_layer(base_trait)
+        steer_tag   = f"steered @ layer {steer_layer}" if steer_layer else "steered"
 
-        wolf_map = load_wolf_map(run_dir)
-        wolf_m, vil_m = mean_wolf_villager(recs, wolf_map)
-        color = CAT[ci % len(CAT)]
-
-        for (is_wolf, means, noop_m, label, fname) in [
-            (True,  wolf_m, noop_wolf_m.get(base_trait),
-             f"Wolf — {base_trait} [additive] (steered, probe layer {probe_layer})",
-             f"wolf_{base_trait}_additive.png"),
-            (False, vil_m,  noop_vil_m.get(base_trait),
-             f"Villager — {base_trait} [additive] run (unsteered)",
-             f"vil_{base_trait}_additive.png"),
+        for (is_wolf, role_label, fname) in [
+            (True,  f"wolf [{steer_tag}]",    f"wolf_{base_trait}_additive.png"),
+            (False, "villager [unsteered]",    f"vil_{base_trait}_additive.png"),
         ]:
-            others = top_traits(means, exclude=base_trait)
-            fig, ax = plt.subplots(figsize=(14, 7))
-            _draw_chunk_ax(
-                ax, recs,
-                keep=lambda r, wm=wolf_map, iw=is_wolf:
-                    (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
-                target_trait=base_trait, other_traits=others,
-                noop_mean=noop_m, label=label, color=color,
-            )
-            fig.suptitle(f"Mafia — {run_id}", fontsize=9,
-                         color="#9a9890", y=1.0)
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            for row, layer in enumerate(PROBE_LAYERS):
+                noop_wolf_m, noop_vil_m, _, _, _ = noop[layer]
+                noop_m = (noop_wolf_m if is_wolf else noop_vil_m).get(base_trait)
+                means  = mean_wolf_villager(recs, wolf_map, layer=layer)[0 if is_wolf else 1]
+                others = top_traits(means, exclude=base_trait)
+                _draw_chunk_ax(
+                    axes[row], recs,
+                    keep=lambda r, wm=wolf_map, iw=is_wolf:
+                        (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
+                    target_trait=base_trait, other_traits=others,
+                    noop_mean=noop_m,
+                    label=f"{role_label} — {base_trait} | probe layer {layer}",
+                    color=color, layer=layer,
+                )
+            fig.suptitle(f"Mafia — {run_id}  [{steer_tag}]", fontsize=9,
+                         color="#9a9890", y=1.002)
             savefig(fig, os.path.join(out, fname))
 
 

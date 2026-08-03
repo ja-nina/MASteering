@@ -40,8 +40,18 @@ def build_probe(probing_cfg: Optional[Dict[str, Any]]):
     if not probing_cfg or not probing_cfg.get("enabled"):
         return None
     from testbed.probing.persona_probe import PersonaProbe
-    layer = probing_cfg.get("layer", 20)
     template = probing_cfg.get("layer_path_template", "model.layers.{}")
+
+    # Prefer `layers: [10, 20, 29]` (multi-layer); fall back to `layer: N` (legacy).
+    if "layers" in probing_cfg:
+        return PersonaProbe(
+            vectors_dir=probing_cfg["vectors_dir"],
+            layers=probing_cfg["layers"],
+            layer_path_template=template,
+            window_tokens=probing_cfg.get("window_tokens", 10),
+            top_k=probing_cfg.get("top_k", 5),
+        )
+    layer = probing_cfg.get("layer", 20)
     return PersonaProbe(
         vectors_dir=probing_cfg["vectors_dir"],
         layer=layer,

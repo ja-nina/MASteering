@@ -1,27 +1,27 @@
 """Passive persona probing via residual-stream projections.
 
-Attaches a read-only forward hook to a decoder layer during model.generate()
-and accumulates a running-mean hidden state over the completion tokens.
-Projects that mean state onto all available PersVecGen trait vectors to score
-which personas the agent's output aligns with.
-
-Design goals
-────────────
-  • Zero extra inference — the hook piggybacks on generate() that is already
-    happening; it only performs dot products.
-  • O(1) memory — uses an EMA running mean, never stores per-token tensors.
-  • Qualitative output — top-K trait labels per completion, not raw numbers.
-  • Adaptable — works for any game; just point vectors_dir at the right precision
-    directory for the model being run.
+Attaches read-only forward hooks to one or more decoder layers during
+model.generate() and accumulates running-mean hidden states over the
+completion tokens.  Projects each layer's mean state onto all available
+PersVecGen trait vectors.
 
 Config (in YAML):
     probing:
       enabled:             true
       vectors_dir:         ${PERSONA_VECTORS_ROOT}/bf16
-      layer:               20          # int key inside PersVecGen .pt dicts
+      layers:              [10, 20, 29]   # probe ALL three simultaneously
       layer_path_template: "model.layers.{}"
-      window_tokens:       10          # EMA window size (0 = global mean)
-      top_k:               5           # traits reported per step
+      window_tokens:       10
+      top_k:               5
+
+Backward compat: a single ``layer: N`` key is treated as ``layers: [N]``.
+
+Output format per completion (stored in episode JSONL under "persona_probe"):
+    {
+      "10": {"mean": {trait: float, ...}, "chunks": [{token, scores}, ...]},
+      "20": {...},
+      "29": {...}
+    }
 """
 from __future__ import annotations
 
@@ -33,9 +33,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 class PersonaProbe:
     """Score every agent completion against all persona trait vectors.
 
+    All ``layers`` are probed simultaneously within a single generate() call —
+    one forward hook per layer, sharing the same vector set.
+
     Attributes
     ----------
-    layer_path   dot-path used to register the hook, e.g. "model.layers.20"
+    layers       list of layer integers being probed
+    layer_paths  corresponding dot-paths for hook registration
     n_traits     number of trait vectors loaded
     """
 
@@ -43,21 +47,32 @@ class PersonaProbe:
         self,
         vectors_dir: str,
         layer: int = 20,
+        layers: Optional[List[int]] = None,
         layer_path: Optional[str] = None,
+        layer_path_template: str = "model.layers.{}",
         window_tokens: int = 10,
         top_k: int = 5,
     ) -> None:
         """
-        vectors_dir     directory of <trait>.pt files (env-var expanded)
-        layer           int key inside PersVecGen .pt dicts (e.g. 20)
-        layer_path      dot-path for hook registration; defaults to
-                        "model.layers.<layer>"
-        window_tokens   EMA window size over generated tokens
-                        (0 = cumulative mean over full completion)
-        top_k           number of top traits to surface in qualitative output
+        vectors_dir          directory of <trait>.pt files (env-var expanded)
+        layers               list of layer ints to probe (e.g. [10, 20, 29])
+        layer                single-layer fallback for backward compat
+        layer_path_template  format string for hook registration
+        window_tokens        chunk size in generated tokens (0 = global mean only)
+        top_k                number of top traits to surface in qualitative output
         """
-        self.layer = layer
-        self.layer_path = layer_path or f"model.layers.{layer}"
+        if layers is not None:
+            self.layers = list(layers)
+        else:
+            self.layers = [layer]
+
+        self.layer_path_template = layer_path_template
+        self.layer_paths = [layer_path_template.format(l) for l in self.layers]
+
+        # Keep single-layer shims for code that checks .layer / .layer_path
+        self.layer      = self.layers[0]
+        self.layer_path = self.layer_paths[0]
+
         self.window_tokens = window_tokens
         self.top_k = top_k
         self._vectors = self._load_all(os.path.expandvars(vectors_dir))
@@ -65,10 +80,11 @@ class PersonaProbe:
     # ── Loading ────────────────────────────────────────────────────────────
 
     def _load_all(self, vectors_dir: str) -> Dict[str, Tuple["torch.Tensor", float]]:
-        """Load all .pt trait vectors at self.layer; store (v_hat, norm) pairs.
+        """Load all .pt trait vectors; store (v_hat, norm) pairs.
 
-        Scores are computed as (h · v_hat) / norm = (h · v) / ‖v‖².
-        After adaptive steering with coefficient α this reads ≥ α.
+        Vectors are loaded once and shared across all probed layers — each
+        layer's hidden state is projected onto the same set of unit vectors.
+        The layer index used for loading is the first entry in self.layers.
         """
         import torch
 
@@ -78,11 +94,12 @@ class PersonaProbe:
             loaded = torch.load(
                 str(pt_file), map_location="cpu", weights_only=False
             )
-            v = loaded[self.layer] if isinstance(loaded, dict) else loaded
+            # Use the first probe layer as the load key (all layers share vectors)
+            v = loaded[self.layers[0]] if isinstance(loaded, dict) else loaded
             v = v.float()
             norm = v.norm().item()
             if norm > 0:
-                vecs[trait] = (v / norm, norm)  # (unit vector, original norm)
+                vecs[trait] = (v / norm, norm)
         return vecs
 
     @property
@@ -91,88 +108,92 @@ class PersonaProbe:
 
     # ── Hook factory ───────────────────────────────────────────────────────
 
-    def make_hook(self) -> Tuple[Callable, Callable]:
-        """Return (hook_fn, get_result_fn) for one generate() call.
+    def make_hook(self) -> Tuple[List[Tuple[str, Callable]], Callable]:
+        """Return ([(layer_path, hook_fn), ...], get_result_fn).
 
-        hook_fn       — read-only forward hook to register on the probe layer
-        get_result_fn — call after generate() to retrieve:
+        Register every (layer_path, hook_fn) pair with _HookSession.
+        Call get_result_fn() after generate() to retrieve:
+
             {
-              "mean":   {trait: float, ...},   # Welford mean over full completion
-              "chunks": [                       # snapshot every window_tokens tokens
-                  {"token": 10, "scores": {trait: float, ...}},
-                  {"token": 20, "scores": {trait: float, ...}},
-                  ...
-              ]
+              "10": {"mean": {trait: float}, "chunks": [{token, scores}, ...]},
+              "20": {...},
+              "29": {...}
             }
-
-        "mean" is the per-completion summary used for episode aggregation.
-        "chunks" is the full intra-completion time-series: one entry per
-        window_tokens generated tokens, showing how persona projections
-        evolve across the generation — including partial final chunks.
         """
-        state: Dict = {
-            "n": 0,
-            "mean": None,       # Welford running mean over all tokens
-            "chunk_sum": None,  # sum accumulator for current chunk
-            "chunk_n": 0,       # tokens in current chunk
-            "chunks": [],       # completed chunk snapshots
+        # One independent state dict per layer
+        states: Dict[int, Dict] = {
+            l: {
+                "n": 0,
+                "mean": None,
+                "chunk_sum": None,
+                "chunk_n": 0,
+                "chunks": [],
+            }
+            for l in self.layers
         }
         w = self.window_tokens if self.window_tokens > 0 else None
 
-        def _hook(module, inputs, output):
-            h = output[0] if isinstance(output, tuple) else output
-            last = h[:, -1, :].detach().float().mean(dim=0)  # [hidden_dim]
+        def _make_layer_hook(layer_int: int):
+            st = states[layer_int]
 
-            # overall Welford mean
-            n = state["n"] + 1
-            state["n"] = n
-            if state["mean"] is None:
-                state["mean"] = last.clone()
-            else:
-                state["mean"] = state["mean"] + (last - state["mean"]) / n
+            def _hook(module, inputs, output):
+                h = output[0] if isinstance(output, tuple) else output
+                last = h[:, -1, :].detach().float().mean(dim=0)
 
-            # chunk accumulation — simple sum, divide when flushing
-            if w is not None:
-                if state["chunk_sum"] is None:
-                    state["chunk_sum"] = last.clone()
-                    state["chunk_n"] = 1
+                n = st["n"] + 1
+                st["n"] = n
+                if st["mean"] is None:
+                    st["mean"] = last.clone()
                 else:
-                    state["chunk_sum"] = state["chunk_sum"] + last
-                    state["chunk_n"] += 1
+                    st["mean"] = st["mean"] + (last - st["mean"]) / n
 
-                if state["chunk_n"] >= w:
-                    chunk_mean = state["chunk_sum"] / state["chunk_n"]
-                    state["chunks"].append({
-                        "token": n,
+                if w is not None:
+                    if st["chunk_sum"] is None:
+                        st["chunk_sum"] = last.clone()
+                        st["chunk_n"] = 1
+                    else:
+                        st["chunk_sum"] = st["chunk_sum"] + last
+                        st["chunk_n"] += 1
+
+                    if st["chunk_n"] >= w:
+                        chunk_mean = st["chunk_sum"] / st["chunk_n"]
+                        st["chunks"].append({
+                            "token": n,
+                            "scores": self._project(chunk_mean),
+                        })
+                        st["chunk_sum"] = None
+                        st["chunk_n"] = 0
+
+            return _hook
+
+        hooks = [
+            (self.layer_path_template.format(l), _make_layer_hook(l))
+            for l in self.layers
+        ]
+
+        def _get_result() -> Dict[str, Dict]:
+            result = {}
+            for l in self.layers:
+                st = states[l]
+                chunks = list(st["chunks"])
+                if st["chunk_sum"] is not None and st["chunk_n"] > 0:
+                    chunk_mean = st["chunk_sum"] / st["chunk_n"]
+                    chunks.append({
+                        "token": st["n"],
                         "scores": self._project(chunk_mean),
                     })
-                    state["chunk_sum"] = None
-                    state["chunk_n"] = 0
+                mean_scores = (
+                    self._project(st["mean"]) if st["mean"] is not None else {}
+                )
+                result[str(l)] = {"mean": mean_scores, "chunks": chunks}
+            return result
 
-        def _get_result() -> Dict:
-            chunks = list(state["chunks"])
-            # flush any partial final chunk so no tokens are lost
-            if state["chunk_sum"] is not None and state["chunk_n"] > 0:
-                chunk_mean = state["chunk_sum"] / state["chunk_n"]
-                chunks.append({
-                    "token": state["n"],
-                    "scores": self._project(chunk_mean),
-                })
-            mean_scores = (
-                self._project(state["mean"]) if state["mean"] is not None else {}
-            )
-            return {"mean": mean_scores, "chunks": chunks}
-
-        return _hook, _get_result
+        return hooks, _get_result
 
     # ── Projection helper ─────────────────────────────────────────────────
 
     def _project(self, h: "torch.Tensor") -> Dict[str, float]:
-        """Project hidden state onto each trait vector; score = (h · v̂) / ‖v‖.
-
-        Equivalent to (h · v) / ‖v‖². After adaptive steering with coefficient α,
-        the steered agent's score is guaranteed to be ≥ α for the target trait.
-        """
+        """Project hidden state onto each trait vector; score = (h·v̂)/‖v‖."""
         return {
             trait: float((h * v_hat.to(h.device)).sum()) / v_norm
             for trait, (v_hat, v_norm) in self._vectors.items()
@@ -183,10 +204,8 @@ class PersonaProbe:
     def top_traits(
         self, scores: Dict[str, float], k: Optional[int] = None
     ) -> List[Tuple[str, float]]:
-        """Return top-k (trait, score) pairs sorted by projection (descending)."""
         k = k if k is not None else self.top_k
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
     def qualitative_labels(self, scores: Dict[str, float]) -> List[str]:
-        """Human-readable trait names for the top-k projections."""
         return [t.replace("-", " ") for t, _ in self.top_traits(scores)]

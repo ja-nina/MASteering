@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-119%20
+#SBATCH --array=0-99%20
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/additive_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/additive_%A_%a.err
 #SBATCH -t 04:00:00
@@ -11,7 +11,7 @@
 # ════════════════════════════════════════════════════════════════════════════
 #  Additive steering sweep — 16 traits × 2 games + 2 noop-chunk controls
 #  coefficient: 1.25, mode: additive
-#  24 configs × 5 shards = 120 tasks  |  %20 concurrent
+#  20 configs × 5 shards = 100 tasks  |  %20 concurrent
 # ════════════════════════════════════════════════════════════════════════════
 #
 # Configs
@@ -35,12 +35,8 @@
 # 15   mafia   trustworthiness
 # 16   mafia   apathetic
 # 17   mafia   angry
-# 18   debate  [CONTROL noop+chunks layer29]
-# 19   mafia   [CONTROL noop+chunks layer29]
-# 20   debate  [CONTROL noop+chunks layer10]
-# 21   mafia   [CONTROL noop+chunks layer10]
-# 22   debate  [CONTROL noop+chunks layer20]
-# 23   mafia   [CONTROL noop+chunks layer20]
+# 18   debate  [CONTROL noop+chunks — probes layers 10,20,29]
+# 19   mafia   [CONTROL noop+chunks — probes layers 10,20,29]
 # ───────────────────────────────────────────────────────────────────────────
 #
 # Submit:
@@ -76,13 +72,9 @@ CONFIGS=(
     "config/games/mafia/mafia_activation_wolf_trustworthiness_additive_8p.yaml"    # 15
     "config/games/mafia/mafia_activation_wolf_apathetic_additive_8p.yaml"          # 16
     "config/games/mafia/mafia_activation_wolf_angry_additive_8p.yaml"              # 17
-    # ── Noop baselines with chunk probe (one per probe layer) ────────────────
-    "config/games/debate/debate_noop_chunks_2p.yaml"                               # 18  layer 29
-    "config/games/mafia/mafia_noop_chunks_8p.yaml"                                 # 19  layer 29
-    "config/games/debate/debate_noop_chunks_layer10_2p.yaml"                       # 20  layer 10
-    "config/games/mafia/mafia_noop_chunks_layer10_8p.yaml"                         # 21  layer 10
-    "config/games/debate/debate_noop_chunks_layer20_2p.yaml"                       # 22  layer 20
-    "config/games/mafia/mafia_noop_chunks_layer20_8p.yaml"                         # 23  layer 20
+    # ── Noop baselines (probes all layers 10,20,29 simultaneously) ───────────
+    "config/games/debate/debate_noop_chunks_2p.yaml"                               # 18
+    "config/games/mafia/mafia_noop_chunks_8p.yaml"                                 # 19
 )
 
 CONFIG="${CONFIGS[$CONFIG_IDX]}"
