@@ -29,9 +29,16 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
 
         def evaluate(self, context: str) -> str:
             from openai import OpenAI
+            api_key = (os.environ.get("OPENROUTER_API_KEY")
+                       or os.environ.get("OPENAI_API_KEY"))
+            if not api_key:
+                raise RuntimeError(
+                    "Fixed jury requires OPENROUTER_API_KEY or OPENAI_API_KEY "
+                    "to be set in the environment."
+                )
             client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
-                api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                api_key=api_key,
             )
             votes = []
             for _ in range(self.jury_size):
@@ -46,7 +53,6 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
                         temperature=0.0,
                     )
                     text = resp.choices[0].message.content.strip()
-                    # pick whichever option appears first in the response
                     matched = next(
                         (o for o in self.options if o.lower() in text.lower()),
                         random.choice(self.options),
@@ -54,8 +60,8 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
                     votes.append(matched)
                 except Exception:
                     votes.append(random.choice(self.options))
-            # majority vote
-            return max(set(votes), key=votes.count)
+            # return normalized vote dict matching OpenRouterJury's interface
+            return {o: votes.count(o) / len(votes) for o in self.options}
 
     FixedJury.__name__ = f"FixedJury[{model_name}]"
     return FixedJury
