@@ -1,17 +1,10 @@
-# Debate-v0 — AGAINST side (player_1) steered toward epistemic-humility
-#
-# Research question: does self-doubt and conceding uncertainty hurt player_1's
-# ability to hold its position? Predicts more "I might be wrong" hedging,
-# potentially weakening the adversarial argument — or surprisingly, coming
-# across as more credible and persuasive to a neutral judge.
-#
-# Mode: adaptive, coefficient: 1.25 (mid-sweep)
-
 run_id: debate_activation_p1_epistemic-humility_2p
 game:
   family: textarena
   id: Debate-v0
-  env_kwargs: {}
+  env_kwargs:
+    jury_model: meta-llama/llama-3.3-70b-instruct
+    jury_size: 1
 episodes: 50
 model:
   backend: transformers
@@ -31,12 +24,12 @@ steering:
     player_1:
       vector_path: ${PERSONA_VECTORS_ROOT}/bf16/epistemic-humility.pt
       coefficient: 1.25
-      layer_path_template: "model.layers.{}"
+      layer_path_template: model.layers.{}
 probing:
   enabled: true
   vectors_dir: ${PERSONA_VECTORS_ROOT}/bf16
   layer: 20
-  layer_path_template: "model.layers.{}"
+  layer_path_template: model.layers.{}
   window_tokens: 10
   top_k: 5
 logging:

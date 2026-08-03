@@ -1,17 +1,10 @@
-# Debate-v0 — AGAINST side (player_1) steered toward goal-oriented
-#
-# Research question: does explicit outcome focus sharpen argumentation?
-# A goal-oriented stance predicts tighter structure, less digression,
-# and potentially better win rates — or over-focused, rigid rhetoric that
-# ignores the opponent's strongest points.
-#
-# Mode: adaptive, coefficient: 1.25 (mid-sweep)
-
 run_id: debate_activation_p1_goal-oriented_2p
 game:
   family: textarena
   id: Debate-v0
-  env_kwargs: {}
+  env_kwargs:
+    jury_model: meta-llama/llama-3.3-70b-instruct
+    jury_size: 1
 episodes: 50
 model:
   backend: transformers
@@ -31,12 +24,12 @@ steering:
     player_1:
       vector_path: ${PERSONA_VECTORS_ROOT}/bf16/goal-oriented.pt
       coefficient: 1.25
-      layer_path_template: "model.layers.{}"
+      layer_path_template: model.layers.{}
 probing:
   enabled: true
   vectors_dir: ${PERSONA_VECTORS_ROOT}/bf16
   layer: 20
-  layer_path_template: "model.layers.{}"
+  layer_path_template: model.layers.{}
   window_tokens: 10
   top_k: 5
 logging:
