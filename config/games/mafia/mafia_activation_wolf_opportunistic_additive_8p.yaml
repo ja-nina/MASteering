@@ -1,0 +1,37 @@
+# Additive steering — generated from mafia_activation_wolf_opportunistic_8p.yaml
+run_id: mafia_activation_wolf_opportunistic_additive_8p
+game:
+  family: textarena
+  id: SecretMafia-v0
+  env_kwargs: {}
+episodes: 50
+model:
+  backend: transformers
+  model_id: Qwen/Qwen3-14B
+  enable_thinking: false
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  min_p: 0.0
+agents:
+  count: 8
+  concurrency: sequential
+  max_parse_retries: 5
+steering:
+  default: role_aware_activation
+  target_roles:
+  - mafia
+  default_config:
+    vector_path: ${PERSONA_VECTORS_ROOT}/bf16/opportunistic.pt
+    coefficient: 1.25
+    layer_path_template: model.layers.{}
+  mode: additive
+probing:
+  enabled: true
+  vectors_dir: ${PERSONA_VECTORS_ROOT}/bf16
+  layer: 20
+  layer_path_template: model.layers.{}
+  window_tokens: 10
+  top_k: 5
+logging:
+  dir: logs/mafia/

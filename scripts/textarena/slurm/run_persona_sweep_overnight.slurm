@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-69%14
+#SBATCH --array=0-79%16
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/sweep_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/sweep_%A_%a.err
 #SBATCH -t 04:00:00
@@ -37,8 +37,10 @@
 #  9   debate  sarcastic               confrontation helps or hurts?
 # 10   debate  goal-oriented           outcome focus sharpens argumentation?
 # 11   debate  ethical [POSITIVE]      moral integrity: credibility boost or pulling punches?
-# 12   mafia   [CONTROL noop+probe]    re-run control for this episode count
-# 13   debate  [CONTROL noop+probe]    re-run control for this episode count
+# 12   mafia   [CONTROL noop+probe]    re-run control (old format, no chunks)
+# 13   debate  [CONTROL noop+probe]    re-run control (old format, no chunks)
+# 14   mafia   [CONTROL noop+chunks]   fresh noop with chunk time-series ← new
+# 15   debate  [CONTROL noop+chunks]   fresh noop with chunk time-series ← new
 # ───────────────────────────────────────────────────────────────────────────
 #
 # Analyse results after completion:
@@ -83,9 +85,12 @@ CONFIGS=(
     "config/games/debate/debate_activation_p1_sarcastic_2p.yaml"         #  9
     "config/games/debate/debate_activation_p1_goal-oriented_2p.yaml"     # 10
     "config/games/debate/debate_activation_p1_ethical_2p.yaml"           # 11
-    # ── Controls (noop + probe) ─────────────────────────────────────────────
+    # ── Controls (noop + probe, old format) ────────────────────────────────
     "config/games/mafia/mafia_noop_probe_8p.yaml"                        # 12
     "config/games/debate/debate_noop_probe_2p.yaml"                      # 13
+    # ── Controls (noop + probe, new format with chunks) ─────────────────────
+    "config/games/mafia/mafia_noop_chunks_8p.yaml"                       # 14
+    "config/games/debate/debate_noop_chunks_2p.yaml"                     # 15
 )
 
 CONFIG="${CONFIGS[$CONFIG_IDX]}"

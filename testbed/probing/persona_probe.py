@@ -64,11 +64,15 @@ class PersonaProbe:
 
     # ── Loading ────────────────────────────────────────────────────────────
 
-    def _load_all(self, vectors_dir: str) -> Dict[str, "torch.Tensor"]:
-        """Load and pre-normalise all .pt trait vectors at self.layer."""
+    def _load_all(self, vectors_dir: str) -> Dict[str, Tuple["torch.Tensor", float]]:
+        """Load all .pt trait vectors at self.layer; store (v_hat, norm) pairs.
+
+        Scores are computed as (h · v_hat) / norm = (h · v) / ‖v‖².
+        After adaptive steering with coefficient α this reads ≥ α.
+        """
         import torch
 
-        vecs: Dict[str, "torch.Tensor"] = {}
+        vecs: Dict[str, Tuple["torch.Tensor", float]] = {}
         for pt_file in sorted(pathlib.Path(vectors_dir).glob("*.pt")):
             trait = pt_file.stem
             loaded = torch.load(
@@ -76,9 +80,9 @@ class PersonaProbe:
             )
             v = loaded[self.layer] if isinstance(loaded, dict) else loaded
             v = v.float()
-            norm = v.norm()
+            norm = v.norm().item()
             if norm > 0:
-                vecs[trait] = v / norm  # pre-normalised: dot product = cosine sim
+                vecs[trait] = (v / norm, norm)  # (unit vector, original norm)
         return vecs
 
     @property
@@ -164,11 +168,14 @@ class PersonaProbe:
     # ── Projection helper ─────────────────────────────────────────────────
 
     def _project(self, h: "torch.Tensor") -> Dict[str, float]:
-        """Project a hidden-state vector onto all trait unit vectors → scores."""
-        h_norm = h / (h.norm() + 1e-8)
+        """Project hidden state onto each trait vector; score = (h · v̂) / ‖v‖.
+
+        Equivalent to (h · v) / ‖v‖². After adaptive steering with coefficient α,
+        the steered agent's score is guaranteed to be ≥ α for the target trait.
+        """
         return {
-            trait: float((h_norm * v_hat.to(h.device)).sum())
-            for trait, v_hat in self._vectors.items()
+            trait: float((h * v_hat.to(h.device)).sum()) / v_norm
+            for trait, (v_hat, v_norm) in self._vectors.items()
         }
 
     # ── Qualitative helpers ────────────────────────────────────────────────
