@@ -129,8 +129,8 @@ class TransformersPolicy:
 
         get_scores = None
         if self.probe is not None:
-            probe_hook, get_scores = self.probe.make_hook()
-            hooks.append((self.probe.layer_path, probe_hook))
+            probe_hooks, get_scores = self.probe.make_hook()
+            hooks.extend(probe_hooks)
 
         if hooks:
             with _HookSession(self.model, hooks):
