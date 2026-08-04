@@ -197,3 +197,23 @@ def test_plot_probe_shades_none_end():
     fig = plot_probe(token_strings, probe_data, schedule, layer=10, traits=["sycophantic"])
     # Just check it doesn't raise and returns a figure
     assert fig is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 6 tests — steering_demo
+# ---------------------------------------------------------------------------
+
+def test_parse_schedule_from_rows():
+    """_parse_schedule converts Dataframe rows into ScheduleEntry list."""
+    from notebooks.steering_demo import _parse_schedule
+
+    rows = [
+        ["sycophantic", "29", "0", "",   "1.25", "additive"],
+        ["angry",       "20", "10", "50", "0.8",  "adaptive"],
+    ]
+    entries = _parse_schedule(rows)
+    assert len(entries) == 2
+    assert entries[0].end is None        # blank end → None
+    assert entries[1].end == 50
+    assert entries[0].layer == 29
+    assert entries[1].mode == "adaptive"
