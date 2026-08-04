@@ -1,6 +1,6 @@
 """Activation steering: add a steering vector into the residual stream via a hook.
 
-Two modes (controlled by SteeringSpec.mode):
+Three modes (controlled by SteeringSpec.mode):
 
   additive  — unconditionally adds coefficient * vector to the hidden state at
               every token position. This is the standard CAA / ActAdd approach.
@@ -11,6 +11,13 @@ Two modes (controlled by SteeringSpec.mode):
               formula used in PersVecGen's steering.py (see that repo for derivation).
               Prevents overshooting: a token already at or beyond the target gets
               zero correction.
+
+  rotation  — ORBIT-style norm-preserving rotation (Aparin & Gaintseva 2606.06735;
+              Nguyen et al. 2606.22357). Rotates h toward v by θ = coefficient
+              radians within the plane spanned by (h, v). Preserves ||h|| exactly,
+              so the output logit distribution is not disrupted by norm shift.
+              Typical range: 0.05 – 0.5 rad. Note: this is NOT the same scale as
+              additive/adaptive coefficients; 0.3 rad ≈ 17° rotation.
 
 Vector files:
   .npy  — plain numpy array, loaded as a 1-D float32 tensor.
@@ -49,6 +56,7 @@ def make_steering_hook(vector, coefficient: float,
     Handles modules whose output is a plain Tensor or a tuple whose first
     element is the hidden-state Tensor (as in all HF decoder blocks).
     """
+    import math
     import torch
 
     vec = vector if hasattr(vector, "to") else torch.tensor(vector)
@@ -71,6 +79,42 @@ def make_steering_hook(vector, coefficient: float,
                           else correction.clamp(max=0))
             steered = hidden + correction * v_hat
             return (steered,) + tuple(output[1:]) if isinstance(output, tuple) else steered
+
+    elif mode == "rotation":
+        # ORBIT-style norm-preserving rotation in the (h, v) plane.
+        # coefficient = θ in radians. Preserves ||h|| at every token.
+        _cos_t = math.cos(float(coefficient))
+        _sin_t = math.sin(float(coefficient))
+
+        def hook(module, inputs, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            v = vec.to(hidden.dtype).to(hidden.device)
+
+            v_norm = v.norm()
+            if v_norm < 1e-8:
+                return output
+            v_hat = v / v_norm  # [d]
+
+            h_norm = hidden.norm(dim=-1, keepdim=True)          # [b, s, 1]
+            h_hat = hidden / h_norm.clamp(min=1e-8)             # [b, s, d]
+
+            # Gram-Schmidt: component of v̂ perpendicular to ĥ
+            dot = (h_hat * v_hat).sum(dim=-1, keepdim=True)     # [b, s, 1]
+            v_perp = v_hat - dot * h_hat                        # [b, s, d]
+            v_perp_n = v_perp.norm(dim=-1, keepdim=True)        # [b, s, 1]
+
+            v_perp_hat = v_perp / v_perp_n.clamp(min=1e-8)
+
+            # Rotate ĥ by θ toward v̂ within the (h, v) plane
+            h_rotated = h_norm * (_cos_t * h_hat + _sin_t * v_perp_hat)
+
+            # Where h ∥ v the perpendicular is undefined — leave h unchanged
+            h_new = torch.where(v_perp_n < 1e-6, hidden, h_rotated)
+
+            if isinstance(output, tuple):
+                return (h_new,) + tuple(output[1:])
+            return h_new
+
     else:
         # additive: unconditionally adds coefficient * vector
         def hook(module, inputs, output):

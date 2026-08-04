@@ -229,3 +229,72 @@ def test_parse_schedule_skips_short_rows():
     entries = _parse_schedule(rows)
     assert len(entries) == 1
     assert entries[0].trait == "sycophantic"
+
+
+# ---------------------------------------------------------------------------
+# Rotation mode tests
+# ---------------------------------------------------------------------------
+
+def test_rotation_hook_preserves_norm():
+    """Rotation mode must preserve the hidden-state norm exactly."""
+    import math
+    from testbed.steering.activation import make_steering_hook
+
+    d = 16
+    vec = torch.randn(d)
+    hidden = torch.randn(1, 1, d)
+    original_norm = hidden.norm(dim=-1)
+
+    hook = make_steering_hook(vec, coefficient=0.3, mode="rotation")
+    result = hook(None, None, (hidden,))
+    result_norm = result[0].norm(dim=-1)
+
+    assert torch.allclose(original_norm, result_norm, atol=1e-5), (
+        f"Norm changed: {original_norm.item():.6f} → {result_norm.item():.6f}"
+    )
+
+
+def test_rotation_hook_moves_toward_vector():
+    """After rotation by θ > 0, cosine similarity with v should increase."""
+    import math
+    from testbed.steering.activation import make_steering_hook
+
+    d = 64
+    torch.manual_seed(0)
+    vec = torch.randn(d)
+    hidden = torch.randn(1, 1, d)
+
+    v_hat = vec / vec.norm()
+    h_hat_before = hidden / hidden.norm(dim=-1, keepdim=True)
+    cos_before = (h_hat_before * v_hat).sum().item()
+
+    hook = make_steering_hook(vec, coefficient=0.3, mode="rotation")
+    result = hook(None, None, (hidden,))
+    h_hat_after = result[0] / result[0].norm(dim=-1, keepdim=True)
+    cos_after = (h_hat_after * v_hat).sum().item()
+
+    assert cos_after > cos_before, (
+        f"Cosine with v should increase after rotation: {cos_before:.4f} → {cos_after:.4f}"
+    )
+
+
+def test_rotation_steering_in_build_hooks():
+    """_build_hooks rotation branch should preserve hidden-state norm."""
+    from notebooks.steering_core import _build_hooks
+
+    d = 8
+    counter = {"t": 0}
+    vec = torch.randn(d)
+    schedule = [ScheduleEntry("sycophantic", layer=29, start=0, end=None,
+                              coeff=0.3, mode="rotation")]
+    vectors = {"sycophantic": {29: vec}}
+    hooks, _ = _build_hooks(schedule, vectors, [], [], counter)
+
+    hidden = torch.randn(1, 1, d)
+    original_norm = hidden.norm().item()
+    result = hooks[0][1](None, None, (hidden,))
+    result_norm = result[0].norm().item()
+
+    assert abs(original_norm - result_norm) < 1e-4, (
+        f"Norm changed: {original_norm:.6f} → {result_norm:.6f}"
+    )

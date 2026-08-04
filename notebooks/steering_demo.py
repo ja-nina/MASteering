@@ -187,8 +187,8 @@ def generate_callback(
 # ---------------------------------------------------------------------------
 
 _DEFAULT_SCHEDULE = [
-    ["sycophantic", 29, 0, "", 1.25, "additive"],
-    ["angry",       29, 30, "", 0.8, "additive"],
+    ["sycophantic", 29, 0, "", 0.3,  "rotation"],   # 0.3 rad ≈ 17° norm-preserving rotation
+    ["angry",       29, 30, "", 0.2, "rotation"],    # try "additive" / "adaptive" to compare
 ]
 
 with gr.Blocks(title="Steering Lab") as demo:

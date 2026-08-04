@@ -202,6 +202,23 @@ def _build_hooks(
                         if e.mode == "additive":
                             delta = e.coeff * v
                             additive_sum = delta if additive_sum is None else additive_sum + delta
+                        elif e.mode == "rotation":
+                            # ORBIT-style norm-preserving rotation. e.coeff = θ (radians).
+                            import math
+                            v_norm = v.norm()
+                            if v_norm < 1e-8:
+                                continue
+                            v_hat = v / v_norm
+                            h_norm = hidden.norm(dim=-1, keepdim=True)
+                            h_hat = hidden / h_norm.clamp(min=1e-8)
+                            dot = (h_hat * v_hat).sum(dim=-1, keepdim=True)
+                            v_perp = v_hat - dot * h_hat
+                            v_perp_n = v_perp.norm(dim=-1, keepdim=True)
+                            v_perp_hat = v_perp / v_perp_n.clamp(min=1e-8)
+                            cos_t = math.cos(float(e.coeff))
+                            sin_t = math.sin(float(e.coeff))
+                            h_rotated = h_norm * (cos_t * h_hat + sin_t * v_perp_hat)
+                            hidden = torch.where(v_perp_n < 1e-6, hidden, h_rotated)
                         else:  # adaptive
                             norm = v.norm()
                             if norm == 0:
