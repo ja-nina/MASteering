@@ -142,19 +142,31 @@ def counts(rewards: List[float], cats: List[float]) -> Dict[float, int]:
 
 # ── debate figure ─────────────────────────────────────────────────────────────
 
-ADDITIVE_COLOR = "#5b8dd9"  # blue tint to distinguish additive bars
+ADDITIVE_COLOR  = "#5b8dd9"   # blue tint for additive bars
+ROTATION_COLOR  = "#9c59c6"   # purple for rotation bars
+
+
+def _mode_of(label: str, additive_keys: set, rotation_keys: set) -> str:
+    if label in rotation_keys:
+        return "rotation"
+    if label in additive_keys:
+        return "additive"
+    return "adaptive"
 
 
 def plot_debate_outcomes(conditions: Dict[str, List[float]],
                          noop_label: str, out_path: str,
-                         additive_keys: set | None = None) -> None:
+                         additive_keys: set | None = None,
+                         rotation_keys: set | None = None) -> None:
     """Horizontal stacked-proportion bars, sorted by win rate, with CI + stars.
 
-    additive_keys: set of condition labels that use additive steering (drawn
-    with hatching to distinguish from adaptive/solid bars).
+    additive_keys: labels using additive steering (/// hatching).
+    rotation_keys: labels using rotation steering (xxx hatching + purple).
     """
     if additive_keys is None:
         additive_keys = set()
+    if rotation_keys is None:
+        rotation_keys = set()
     cats = [1.0, 0.0, -1.0]
     noop_rw  = conditions[noop_label]
     noop_cnt = counts(noop_rw, cats)
@@ -185,7 +197,7 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
             _, p = chi2_vs_noop(cnt, noop_cnt, cats)
         rows_data.append(dict(label=label, n=n, wr=wr, dr=dr, lr=lr,
                               ci_lo=lo, ci_hi=hi, p=p,
-                              additive=label in additive_keys))
+                              mode=_mode_of(label, additive_keys, rotation_keys)))
 
     ys = np.arange(n_rows)
     h  = 0.58
@@ -198,9 +210,11 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
     # Horizontal stacked bars
     for i, d in enumerate(rows_data):
         y     = ys[i]
-        hatch = "///" if d["additive"] else None
+        mode  = d["mode"]
+        hatch = {"additive": "///", "rotation": "xxx"}.get(mode)
         kw    = dict(hatch=hatch, linewidth=0 if not hatch else 0.5)
-        ax.barh(y, d["wr"], h, color=WIN_COLOR,  zorder=2, **kw)
+        win_c = {"rotation": ROTATION_COLOR}.get(mode, WIN_COLOR)
+        ax.barh(y, d["wr"], h, color=win_c,   zorder=2, **kw)
         ax.barh(y, d["dr"], h, left=d["wr"],
                 color=DRAW_COLOR, zorder=2, **kw)
         ax.barh(y, d["lr"], h, left=d["wr"] + d["dr"],
@@ -256,7 +270,7 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
     ax.set_xlim(0, 1.0)
     ax.set_xlabel("Proportion of episodes", labelpad=7)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
-    ax.set_title("Debate  —  player_1 (AGAINST) outcomes by steering trait  [additive]",
+    ax.set_title("Debate  —  player_1 (AGAINST) outcomes by steering trait",
                  pad=12, loc="left", color=INK)
 
     for spine in ax.spines.values():
@@ -267,9 +281,11 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
     ax.grid(axis="y", visible=False)
 
     legend_patches = [
-        mpatches.Patch(color=WIN_COLOR,  label="Win  (player_1)"),
-        mpatches.Patch(color=DRAW_COLOR, label="Draw"),
-        mpatches.Patch(color=LOSS_COLOR, label="Loss"),
+        mpatches.Patch(color=WIN_COLOR,     label="Win — adaptive"),
+        mpatches.Patch(color=WIN_COLOR,     label="Win — additive",  hatch="///"),
+        mpatches.Patch(color=ROTATION_COLOR,label="Win — rotation",  hatch="xxx"),
+        mpatches.Patch(color=DRAW_COLOR,    label="Draw"),
+        mpatches.Patch(color=LOSS_COLOR,    label="Loss"),
     ]
     ax.legend(handles=legend_patches, loc="lower right",
               ncol=3, frameon=True, framealpha=0.92,
@@ -292,14 +308,17 @@ def plot_debate_outcomes(conditions: Dict[str, List[float]],
 
 def plot_mafia_outcomes(conditions: Dict[str, List[float]],
                         noop_label: str, out_path: str,
-                        additive_keys: set | None = None) -> None:
+                        additive_keys: set | None = None,
+                        rotation_keys: set | None = None) -> None:
     """Horizontal dot-plot of wolf win rate, CI bands, Fisher significance.
 
-    additive_keys: set of condition labels that use additive steering (drawn
-    with open markers to distinguish from adaptive/filled dots).
+    additive_keys: labels with additive steering (open circle marker).
+    rotation_keys: labels with rotation steering (diamond marker, purple).
     """
     if additive_keys is None:
         additive_keys = set()
+    if rotation_keys is None:
+        rotation_keys = set()
     cats     = [1.0, -1.0]
     noop_rw  = conditions[noop_label]
     noop_cnt = counts(noop_rw, cats)
@@ -328,7 +347,7 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
                 [[cnt[1.0], cnt[-1.0]], [noop_cnt[1.0], noop_cnt[-1.0]]]
             )
         rows_data.append(dict(label=label, n=n, wr=wr, ci_lo=lo, ci_hi=hi, p=p,
-                              additive=label in additive_keys))
+                              mode=_mode_of(label, additive_keys, rotation_keys)))
 
     ys = np.arange(n_rows)
 
@@ -337,10 +356,20 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
     ax.set_facecolor("#ffffff")
     ax.set_axisbelow(True)
 
+    _MODE_MARKER = {"adaptive": "o", "additive": "o", "rotation": "D"}
+    _MODE_FILL   = {
+        "adaptive": lambda c: dict(color=c, linewidths=0),
+        "additive": lambda c: dict(facecolors="none", edgecolors=c, linewidths=1.8),
+        "rotation": lambda c: dict(color=c, linewidths=0),
+    }
+
     for i, d in enumerate(rows_data):
         y     = ys[i]
         is_np = d["label"] == noop_label
-        color = NOOP_COLOR if is_np else WIN_COLOR
+        mode  = d["mode"]
+        color = (NOOP_COLOR if is_np
+                 else ROTATION_COLOR if mode == "rotation"
+                 else WIN_COLOR)
 
         # CI band
         ax.barh(y, d["ci_hi"] - d["ci_lo"], 0.15,
@@ -348,9 +377,10 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
         ax.plot([d["ci_lo"], d["ci_hi"]], [y, y],
                 color=color, lw=1.8, alpha=0.55, zorder=3)
 
-        # Dot
-        ax.scatter(d["wr"], y, s=70, marker="o",
-                   color=color, zorder=4, linewidths=0)
+        # Dot (shape/fill encodes mode)
+        marker = "o" if is_np else _MODE_MARKER[mode]
+        fill   = dict(color=NOOP_COLOR, linewidths=0) if is_np else _MODE_FILL[mode](color)
+        ax.scatter(d["wr"], y, s=70, marker=marker, zorder=4, **fill)
 
         # Value label
         ax.text(d["ci_hi"] + 0.012, y, f"{d['wr']:.0%}",
@@ -388,15 +418,20 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
     ax.set_xlim(0, min(1.0, x_max))
     ax.set_xlabel("Wolf win rate", labelpad=7)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
-    ax.set_title("Mafia  —  wolf win rate by steering trait  [additive]",
+    ax.set_title("Mafia  —  wolf win rate by steering trait",
                  pad=12, loc="left", color=INK)
 
     from matplotlib.lines import Line2D
     legend_handles = [
         Line2D([0], [0], marker="o", color="w", markerfacecolor=WIN_COLOR,
-               markersize=8, label="Steered (additive)"),
+               markersize=8, label="Adaptive (●)"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="none",
+               markeredgecolor=WIN_COLOR, markeredgewidth=1.8,
+               markersize=8, label="Additive (○)"),
+        Line2D([0], [0], marker="D", color="w", markerfacecolor=ROTATION_COLOR,
+               markersize=8, label="Rotation (◆)"),
         Line2D([0], [0], color=NOOP_COLOR, lw=1.4, ls="--",
-               label=f"noop baseline  ({noop_wr:.0%})"),
+               label=f"noop  ({noop_wr:.0%})"),
     ]
     ax.legend(handles=legend_handles, loc="lower right", frameon=True,
               framealpha=0.92, edgecolor=GRID_C, facecolor=SURFACE, fontsize=8.5)
@@ -409,7 +444,7 @@ def plot_mafia_outcomes(conditions: Dict[str, List[float]],
     ax.grid(axis="y", visible=False)
 
     ax.text(0, -0.06,
-            "Filled circle = adaptive  |  Open diamond = additive  |  Line: 95% Wilson CI",
+            "●=adaptive  ○=additive  ◆=rotation  |  Line: 95% Wilson CI",
             transform=ax.transAxes, fontsize=7, color=INK_MUTED)
     ax.text(1.0, -0.06, "* p<.05   (Fisher's exact vs noop)",
             transform=ax.transAxes, fontsize=7, color=INK_MUTED, ha="right")
@@ -453,19 +488,40 @@ def main():
         trait = m.group(1)
         rw = load_debate_outcomes(run_dir)
         if rw:
-            label = trait
+            label = f"{trait} (add)"
             debate_cond[label] = rw
             debate_additive_keys.add(label)
             cnt = counts(rw, [1.0, 0.0, -1.0])
             n   = len(rw)
-            print(f"  {label:35s}  n={n}  "
+            print(f"  {label:40s}  n={n}  "
+                  f"win={cnt[1.0]/n:.0%} draw={cnt[0.0]/n:.0%} "
+                  f"loss={cnt[-1.0]/n:.0%}")
+
+    # Rotation: debate_activation_p1_{trait}_rotation_2p
+    debate_rotation_keys: set = set()
+    for run_dir in sorted(glob.glob(
+            os.path.join(debate_base, "debate_activation_p1_*_rotation_2p"))):
+        m = re.search(r"debate_activation_p1_(.+)_rotation_2p$",
+                      os.path.basename(run_dir))
+        if not m:
+            continue
+        trait = m.group(1)
+        rw = load_debate_outcomes(run_dir)
+        if rw:
+            label = f"{trait} (rot)"
+            debate_cond[label] = rw
+            debate_rotation_keys.add(label)
+            cnt = counts(rw, [1.0, 0.0, -1.0])
+            n   = len(rw)
+            print(f"  {label:40s}  n={n}  "
                   f"win={cnt[1.0]/n:.0%} draw={cnt[0.0]/n:.0%} "
                   f"loss={cnt[-1.0]/n:.0%}")
 
     if "noop" in debate_cond and len(debate_cond) > 1:
         plot_debate_outcomes(debate_cond, "noop",
                              os.path.join(args.out_dir, "debate", "outcomes.png"),
-                             additive_keys=debate_additive_keys)
+                             additive_keys=debate_additive_keys,
+                             rotation_keys=debate_rotation_keys)
 
     # ── Mafia ─────────────────────────────────────────────────────────────────
     print("=== Mafia ===")
@@ -492,17 +548,36 @@ def main():
         trait = m.group(1)
         rw = load_mafia_wolf_outcomes(run_dir)
         if rw:
-            label = trait
+            label = f"{trait} (add)"
             mafia_cond[label] = rw
             mafia_additive_keys.add(label)
             cnt = counts(rw, [1.0, -1.0])
             n   = len(rw)
-            print(f"  {label:35s}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
+            print(f"  {label:40s}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
+
+    # Rotation: mafia_activation_wolf_{trait}_rotation_8p
+    mafia_rotation_keys: set = set()
+    for run_dir in sorted(glob.glob(
+            os.path.join(mafia_base, "mafia_activation_wolf_*_rotation_8p"))):
+        m = re.search(r"mafia_activation_wolf_(.+)_rotation_8p$",
+                      os.path.basename(run_dir))
+        if not m:
+            continue
+        trait = m.group(1)
+        rw = load_mafia_wolf_outcomes(run_dir)
+        if rw:
+            label = f"{trait} (rot)"
+            mafia_cond[label] = rw
+            mafia_rotation_keys.add(label)
+            cnt = counts(rw, [1.0, -1.0])
+            n   = len(rw)
+            print(f"  {label:40s}  n={n}  wolf_win={cnt[1.0]/n:.0%}")
 
     if "noop" in mafia_cond and len(mafia_cond) > 1:
         plot_mafia_outcomes(mafia_cond, "noop",
                             os.path.join(args.out_dir, "mafia", "outcomes.png"),
-                            additive_keys=mafia_additive_keys)
+                            additive_keys=mafia_additive_keys,
+                            rotation_keys=mafia_rotation_keys)
 
     print("Done.")
 
