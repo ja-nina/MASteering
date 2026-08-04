@@ -257,7 +257,7 @@ with gr.Blocks(title="Steering Lab") as demo:
 def launch(share: bool = False, port: int = 7860):
     global model, tokenizer, vectors, ALL_TRAITS
 
-    VECTORS_DIR = os.path.expandvars("${PERSONA_VECTORS_ROOT}/bf16")
+    VECTORS_DIR = os.path.expandvars("${PERSONA_VECTORS_ROOT}/4bit")
     MODEL_ID = "Qwen/Qwen3-14B"
 
     log.info("Loading model %s …", MODEL_ID)
