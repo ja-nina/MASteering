@@ -41,11 +41,13 @@ def _parse_schedule(rows: List[List]) -> List[ScheduleEntry]:
     for row in rows:
         if not row or not row[0]:
             continue
+        if len(row) < 6:
+            continue
         trait = str(row[0]).strip()
         layer = int(row[1])
         start = int(row[2])
         end_raw = str(row[3]).strip() if row[3] not in (None, "") else ""
-        end: Optional[int] = int(end_raw) if end_raw else None
+        end: Optional[int] = int(float(end_raw)) if end_raw else None
         coeff = float(row[4])
         mode = str(row[5]).strip() if row[5] else "additive"
         entries.append(ScheduleEntry(trait, layer, start, end, coeff, mode))

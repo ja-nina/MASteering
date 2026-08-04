@@ -217,3 +217,15 @@ def test_parse_schedule_from_rows():
     assert entries[1].end == 50
     assert entries[0].layer == 29
     assert entries[1].mode == "adaptive"
+
+
+def test_parse_schedule_skips_short_rows():
+    from notebooks.steering_demo import _parse_schedule
+    rows = [
+        ["sycophantic", "29", "0", "", "1.25", "additive"],  # valid
+        ["angry"],  # too short, should be skipped
+        [],  # empty, should be skipped
+    ]
+    entries = _parse_schedule(rows)
+    assert len(entries) == 1
+    assert entries[0].trait == "sycophantic"

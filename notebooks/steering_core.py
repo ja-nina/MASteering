@@ -167,6 +167,10 @@ def _build_hooks(
                 t = token_counter["t"]
                 hidden = output[0] if isinstance(output, tuple) else output
 
+                # skip prefill pass (seq_len > 1 = entire prompt processed at once)
+                if hidden.shape[1] > 1:
+                    return output
+
                 # ── steering ────────────────────────────────────────────────
                 active = [
                     e for e in entries
