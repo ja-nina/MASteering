@@ -37,19 +37,29 @@ def _parse_schedule(rows: List[List]) -> List[ScheduleEntry]:
     Row format: [trait, layer, start, end, coeff, mode]
     Blank or None `end` cell → ScheduleEntry.end = None (steer to end).
     """
+    import math
+
     entries = []
     for row in rows:
         if not row or not row[0]:
             continue
         if len(row) < 6:
             continue
+        # Gradio sends NaN for empty numeric cells; skip those rows
         trait = str(row[0]).strip()
-        layer = int(row[1])
-        start = int(row[2])
-        end_raw = str(row[3]).strip() if row[3] not in (None, "") else ""
-        end: Optional[int] = int(float(end_raw)) if end_raw else None
-        coeff = float(row[4])
-        mode = str(row[5]).strip() if row[5] else "additive"
+        if not trait or trait.lower() == "nan":
+            continue
+        try:
+            layer = int(float(row[1]))
+            start = int(float(row[2]))
+            end_raw = str(row[3]).strip() if row[3] not in (None, "") else ""
+            if end_raw.lower() in ("nan", "inf"):
+                end_raw = ""
+            end: Optional[int] = int(float(end_raw)) if end_raw else None
+            coeff = float(row[4])
+            mode = str(row[5]).strip() if row[5] else "additive"
+        except (ValueError, TypeError):
+            continue
         entries.append(ScheduleEntry(trait, layer, start, end, coeff, mode))
     return entries
 
