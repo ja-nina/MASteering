@@ -66,6 +66,11 @@ def _episode_env_kwargs(cfg: RunConfig, ep: int) -> dict:
     if cfg.game_family == "symbolic":
         if "seed" not in kwargs:
             kwargs["seed"] = zlib.crc32(f"{cfg.run_id}:{ep}".encode()) & 0xFFFFFFFF
+    elif cfg.game_family == "textarena":
+        if "seed" not in kwargs:
+            # Intentionally run-ID-independent: all runs see the same topic,
+            # side-assignment, and role-assignment for each episode index.
+            kwargs["seed"] = zlib.crc32(f"ta_episode:{ep}".encode()) & 0xFFFFFFFF
     return kwargs
 
 

@@ -72,6 +72,8 @@ class TextArenaAdapter:
                  _env=None, **env_kwargs: Any) -> None:
         self.env_id    = env_id
         self.num_players = num_players
+        # Extract seed before storing; ta.make() doesn't accept it.
+        self._seed: Optional[int] = env_kwargs.pop("seed", None)
         self._env_kwargs = env_kwargs
         self._env = _env  # inject for tests; otherwise built in reset()
         self.context = RenderContext()
@@ -95,10 +97,17 @@ class TextArenaAdapter:
         return f"player_{pid}"
 
     def reset(self) -> None:
+        # Seed Python's global random before TextArena env.reset() so that
+        # topic/side/role selection (which use random.choice/shuffle before
+        # the seed reaches state.reset) are deterministic and identical across
+        # all runs sharing the same episode index.
+        if self._seed is not None:
+            import random as _random
+            _random.seed(self._seed)
         if self._env is None:
             import textarena as ta
             self._env = ta.make(env_id=self.env_id, **self._resolve_env_kwargs())
-        self._env.reset(num_players=self.num_players)
+        self._env.reset(num_players=self.num_players, seed=self._seed)
         self.context = RenderContext()
         self._current_pid = None
 
