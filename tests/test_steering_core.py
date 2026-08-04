@@ -66,3 +66,101 @@ def test_load_model_returns_tuple(monkeypatch):
     from notebooks.steering_core import load_model
     model, tok = load_model("fake/model", bits=None)
     assert tok is fake_tok
+
+
+# ---------------------------------------------------------------------------
+# Task 3 tests — hook machinery
+# ---------------------------------------------------------------------------
+import torch.nn as nn
+
+
+class _FakeDecoder(nn.Module):
+    """Two-layer fake transformer decoder for hook testing."""
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.ModuleList([nn.Linear(8, 8, bias=False) for _ in range(30)])
+        self.embed = nn.Embedding(100, 8)
+
+    def forward(self, input_ids, **kwargs):
+        h = self.embed(input_ids)
+        for layer in self.layers:
+            h = layer(h)
+        return (h,)   # mimic HF output tuple
+
+
+def test_token_counter_increments():
+    """Token counter should equal number of generate() calls made."""
+    from notebooks.steering_core import _build_hooks
+
+    counter = {"t": 0}
+    schedule = [ScheduleEntry("sycophantic", layer=10, start=0, end=None, coeff=1.0)]
+    vectors = {"sycophantic": {10: torch.zeros(8)}}
+    probe_traits = ["sycophantic"]
+    probe_layers = [10]
+
+    hooks, probe_store = _build_hooks(schedule, vectors, probe_traits, probe_layers, counter)
+    # Simulate 3 forward passes through layer 10
+    fake_module = nn.Linear(8, 8, bias=False)
+    fake_output = (torch.zeros(1, 1, 8),)
+    hook_fn = hooks[0][1]
+    for _ in range(3):
+        hook_fn(fake_module, None, fake_output)
+    assert counter["t"] == 3
+
+
+def test_additive_steering_applied():
+    """Additive hook should add coeff*vec to hidden state when in window."""
+    from notebooks.steering_core import _build_hooks
+
+    counter = {"t": 0}
+    vec = torch.ones(8)
+    schedule = [ScheduleEntry("sycophantic", layer=29, start=0, end=None, coeff=2.0)]
+    vectors = {"sycophantic": {29: vec}}
+    probe_traits = []
+    probe_layers = []
+
+    hooks, _ = _build_hooks(schedule, vectors, probe_traits, probe_layers, counter)
+    fake_module = nn.Linear(8, 8, bias=False)
+    hidden = torch.zeros(1, 1, 8)
+    result = hooks[0][1](fake_module, None, (hidden,))
+    # should add 2.0 * ones(8)
+    assert torch.allclose(result[0], hidden + 2.0 * vec)
+
+
+def test_steering_not_applied_outside_window():
+    """Hook should not steer when t is outside [start, end)."""
+    from notebooks.steering_core import _build_hooks
+
+    counter = {"t": 5}  # already past the window
+    vec = torch.ones(8)
+    schedule = [ScheduleEntry("sycophantic", layer=29, start=0, end=3, coeff=2.0)]
+    vectors = {"sycophantic": {29: vec}}
+    probe_traits = []
+    probe_layers = []
+
+    hooks, _ = _build_hooks(schedule, vectors, probe_traits, probe_layers, counter)
+    fake_module = nn.Linear(8, 8, bias=False)
+    hidden = torch.zeros(1, 1, 8)
+    result = hooks[0][1](fake_module, None, (hidden,))
+    assert torch.allclose(result[0], hidden)  # unchanged
+
+
+def test_probe_records_scores():
+    """Probe hook should append one score dict per token per layer."""
+    from notebooks.steering_core import _build_hooks
+
+    counter = {"t": 0}
+    vec = torch.ones(8) / (8 ** 0.5)  # unit vector
+    schedule = []
+    vectors = {"sycophantic": {10: vec * 4.0}}  # will be used by probe too
+    probe_traits = ["sycophantic"]
+    probe_layers = [10]
+
+    hooks, probe_store = _build_hooks(schedule, vectors, probe_traits, probe_layers, counter)
+    fake_module = nn.Linear(8, 8, bias=False)
+    hidden = torch.ones(1, 1, 8)
+    hooks[0][1](fake_module, None, (hidden,))
+
+    assert 10 in probe_store
+    assert len(probe_store[10]) == 1
+    assert "sycophantic" in probe_store[10][0]

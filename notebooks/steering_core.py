@@ -105,3 +105,187 @@ def load_model(
 
     model.eval()
     return model, tokenizer
+
+
+# ---------------------------------------------------------------------------
+# Hook construction
+# ---------------------------------------------------------------------------
+
+def _resolve_submodule(model, dotted_name: str):
+    obj = model
+    for part in dotted_name.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _build_hooks(
+    schedule: List[ScheduleEntry],
+    vectors: Dict[str, Dict[int, torch.Tensor]],
+    probe_traits: List[str],
+    probe_layers: List[int],
+    token_counter: Dict[str, int],
+) -> Tuple[List[Tuple[str, callable]], Dict[int, List[Dict[str, float]]]]:
+    """Build all forward hooks and return (hook_list, probe_store).
+
+    hook_list   — list of (layer_dotpath, hook_fn) pairs ready for registration
+    probe_store — {layer_int: []} — caller reads this after generation
+    """
+    # Determine tick layer: highest int across schedule + probe layers
+    all_layers = set(e.layer for e in schedule) | set(probe_layers)
+    tick_layer = max(all_layers) if all_layers else None
+
+    # Group schedule entries by layer
+    by_layer: Dict[int, List[ScheduleEntry]] = {}
+    for entry in schedule:
+        by_layer.setdefault(entry.layer, []).append(entry)
+
+    # Pre-load probe vectors: {trait: {layer: (v_hat, norm)}}
+    probe_vecs: Dict[str, Dict[int, Tuple[torch.Tensor, float]]] = {}
+    for trait in probe_traits:
+        probe_vecs[trait] = {}
+        for pl in probe_layers:
+            if trait in vectors and pl in vectors[trait]:
+                v = vectors[trait][pl].float()
+                norm = v.norm().item()
+                probe_vecs[trait][pl] = (v / norm if norm > 0 else v, norm)
+
+    probe_store: Dict[int, List[Dict[str, float]]] = {pl: [] for pl in probe_layers}
+
+    hook_list: List[Tuple[str, callable]] = []
+
+    # Collect all layers that need a hook (steering layers ∪ probe layers)
+    all_hook_layers = set(by_layer.keys()) | set(probe_layers)
+
+    for layer_int in sorted(all_hook_layers):
+        layer_path = f"model.layers.{layer_int}"
+        entries = by_layer.get(layer_int, [])
+        is_tick = (layer_int == tick_layer)
+        pl = layer_int if layer_int in probe_layers else None
+
+        def _make_hook(entries=entries, pl=pl, is_tick=is_tick, layer_int=layer_int):
+            def hook(module, inputs, output):
+                t = token_counter["t"]
+                hidden = output[0] if isinstance(output, tuple) else output
+
+                # ── steering ────────────────────────────────────────────────
+                active = [
+                    e for e in entries
+                    if e.start <= t and (e.end is None or t < e.end)
+                ]
+                if active:
+                    additive_sum = None
+                    for e in active:
+                        if e.layer not in vectors.get(e.trait, {}):
+                            continue
+                        v = vectors[e.trait][e.layer].float().to(hidden.device).to(hidden.dtype)
+                        if e.mode == "additive":
+                            delta = e.coeff * v
+                            additive_sum = delta if additive_sum is None else additive_sum + delta
+                        else:  # adaptive
+                            norm = v.norm()
+                            if norm == 0:
+                                continue
+                            v_hat = v / norm
+                            target = e.coeff * norm
+                            proj = (hidden * v_hat).sum(dim=-1, keepdim=True)
+                            correction = target - proj
+                            correction = (
+                                correction.clamp(min=0) if e.coeff >= 0
+                                else correction.clamp(max=0)
+                            )
+                            hidden = hidden + correction * v_hat
+
+                    if additive_sum is not None:
+                        hidden = hidden + additive_sum.to(hidden.device).to(hidden.dtype)
+
+                # ── probing ──────────────────────────────────────────────────
+                if pl is not None:
+                    scores: Dict[str, float] = {}
+                    for trait, layer_vecs in probe_vecs.items():
+                        if pl in layer_vecs:
+                            v_hat, norm = layer_vecs[pl]
+                            v_hat = v_hat.to(hidden.device).to(hidden.dtype)
+                            h_mean = hidden.float().mean(dim=1).squeeze(0)
+                            score = float((h_mean * v_hat.float()).sum()) / norm if norm > 0 else 0.0
+                            scores[trait] = score
+                    probe_store[pl].append(scores)
+
+                # ── tick ─────────────────────────────────────────────────────
+                if is_tick:
+                    token_counter["t"] += 1
+
+                if isinstance(output, tuple):
+                    return (hidden,) + tuple(output[1:])
+                return hidden
+
+            return hook
+
+        hook_list.append((layer_path, _make_hook()))
+
+    return hook_list, probe_store
+
+
+# ---------------------------------------------------------------------------
+# Generation
+# ---------------------------------------------------------------------------
+
+def run_generation(
+    model,
+    tokenizer,
+    prompt: str,
+    schedule: List[ScheduleEntry],
+    vectors: Dict[str, Dict[int, torch.Tensor]],
+    probe_traits: List[str],
+    probe_layers: List[int],
+    max_new_tokens: int = 256,
+    enable_thinking: bool = False,
+) -> Tuple[str, List[str], Dict[int, List[Dict[str, float]]]]:
+    """Run steered generation and return (text, token_strings, probe_data)."""
+    messages = [{"role": "user", "content": prompt}]
+    text_input = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=enable_thinking,
+    )
+    if enable_thinking:
+        text_input += "<think>\n"
+
+    inputs = tokenizer(text_input, return_tensors="pt").to(model.device)
+    input_len = inputs["input_ids"].shape[1]
+
+    token_counter = {"t": 0}
+    hook_list, probe_store = _build_hooks(
+        schedule, vectors, probe_traits, probe_layers, token_counter
+    )
+
+    # Register hooks
+    handles = []
+    for layer_path, hook_fn in hook_list:
+        module = _resolve_submodule(model, layer_path)
+        handles.append(module.register_forward_hook(hook_fn))
+
+    try:
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+    finally:
+        for h in handles:
+            h.remove()
+
+    gen_ids = out[0][input_len:]
+
+    if enable_thinking:
+        text = tokenizer.decode(gen_ids, skip_special_tokens=False)
+        eos = tokenizer.eos_token or ""
+        text = text.rstrip().removesuffix(eos).rstrip()
+    else:
+        text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+
+    token_strings = [tokenizer.decode([tid]) for tid in gen_ids.tolist()]
+
+    return text, token_strings, probe_store
