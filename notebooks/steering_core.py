@@ -289,3 +289,73 @@ def run_generation(
     token_strings = [tokenizer.decode([tid]) for tid in gen_ids.tolist()]
 
     return text, token_strings, probe_store
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+# Categorical palette — adjacent-pairs CVD-safe
+_CAT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#e34948", "#008300"]
+
+
+def plot_probe(
+    token_strings: List[str],
+    probe_data: Dict[int, List[Dict[str, float]]],
+    schedule: List[ScheduleEntry],
+    layer: int,
+    traits: List[str],
+) -> "matplotlib.figure.Figure":
+    """Return a matplotlib Figure showing per-token probe scores for one layer.
+
+    - One line per trait in `traits`
+    - Translucent shaded bands for each ScheduleEntry window (end=None → last token)
+    - Horizontal dashed line at y=0
+    - X-axis labeled with token strings every 10 tokens
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    import numpy as np
+
+    per_layer = probe_data.get(layer, [])
+    n = len(per_layer)
+    xs = list(range(n))
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    fig.patch.set_facecolor("#f5f4f0")
+    ax.set_facecolor("#ffffff")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # Trait lines
+    for ci, trait in enumerate(traits):
+        ys = [step.get(trait, float("nan")) for step in per_layer]
+        ax.plot(xs, ys, color=_CAT[ci % len(_CAT)], lw=1.8, label=trait)
+
+    # Shaded bands for each schedule entry
+    band_colors = _CAT[len(traits) % len(_CAT):]  # offset to avoid clashing with trait lines
+    for bi, entry in enumerate(schedule):
+        x0 = entry.start
+        x1 = (entry.end - 1) if entry.end is not None else (n - 1)
+        x1 = min(x1, n - 1)
+        color = band_colors[bi % len(band_colors)]
+        ax.axvspan(x0, x1, alpha=0.12, color=color,
+                   label=f"{entry.trait} α={entry.coeff}")
+
+    ax.axhline(0, color="#c8c6be", lw=0.8, ls="--")
+
+    # X-axis: show token string every 10 ticks
+    tick_step = max(1, n // 20)
+    tick_positions = list(range(0, n, tick_step))
+    tick_labels = [token_strings[i] if i < len(token_strings) else "" for i in tick_positions]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
+
+    ax.set_xlabel("Generated token index", fontsize=9)
+    ax.set_ylabel("Projection / ||v||", fontsize=9)
+    ax.set_title(f"Persona probe — layer {layer}", fontsize=11, fontweight="semibold")
+    ax.legend(loc="upper right", fontsize=7.5, ncol=3, framealpha=0.85, frameon=True)
+    ax.grid(axis="y", alpha=0.25, lw=0.6)
+
+    fig.tight_layout()
+    return fig

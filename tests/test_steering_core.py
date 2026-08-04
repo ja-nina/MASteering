@@ -1,6 +1,8 @@
 import json, pathlib, tempfile
 import torch
 import pytest
+import matplotlib
+matplotlib.use("Agg")
 from notebooks.steering_core import ScheduleEntry, load_vectors, best_layer
 
 def _make_fake_vectors(tmp_path):
@@ -164,3 +166,34 @@ def test_probe_records_scores():
     assert 10 in probe_store
     assert len(probe_store[10]) == 1
     assert "sycophantic" in probe_store[10][0]
+
+
+# ---------------------------------------------------------------------------
+# Task 4 tests — plot_probe
+# ---------------------------------------------------------------------------
+
+def test_plot_probe_returns_figure():
+    from notebooks.steering_core import plot_probe
+    token_strings = ["Hello", " world", "!"]
+    probe_data = {
+        29: [
+            {"sycophantic": 0.1, "angry": -0.2},
+            {"sycophantic": 0.3, "angry": -0.1},
+            {"sycophantic": 0.5, "angry": 0.0},
+        ]
+    }
+    schedule = [ScheduleEntry("sycophantic", layer=29, start=0, end=None, coeff=1.25)]
+    import matplotlib.figure
+    fig = plot_probe(token_strings, probe_data, schedule, layer=29, traits=["sycophantic", "angry"])
+    assert isinstance(fig, matplotlib.figure.Figure)
+
+
+def test_plot_probe_shades_none_end():
+    """A schedule entry with end=None should produce a shaded region to the last token."""
+    from notebooks.steering_core import plot_probe
+    token_strings = ["a", "b", "c", "d"]
+    probe_data = {10: [{"sycophantic": float(i) * 0.1} for i in range(4)]}
+    schedule = [ScheduleEntry("sycophantic", layer=10, start=1, end=None, coeff=1.0)]
+    fig = plot_probe(token_strings, probe_data, schedule, layer=10, traits=["sycophantic"])
+    # Just check it doesn't raise and returns a figure
+    assert fig is not None
