@@ -314,8 +314,6 @@ def plot_probe(
     - X-axis labeled with token strings every 10 tokens
     """
     import matplotlib.pyplot as plt
-    import matplotlib.ticker as mticker
-    import numpy as np
 
     per_layer = probe_data.get(layer, [])
     n = len(per_layer)
