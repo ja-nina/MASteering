@@ -278,9 +278,16 @@ def run_generation(
     probe_layers: List[int],
     max_new_tokens: int = 256,
     enable_thinking: bool = False,
+    system_prompt: str = "",
+    temperature: float = 1.0,
+    do_sample: bool = False,
 ) -> Tuple[str, List[str], Dict[int, List[Dict[str, float]]]]:
     """Run steered generation and return (text, token_strings, probe_data)."""
-    messages = [{"role": "user", "content": prompt}]
+    messages = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
+    messages.append({"role": "user", "content": prompt})
+
     text_input = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -298,20 +305,22 @@ def run_generation(
         schedule, vectors, probe_traits, probe_layers, token_counter
     )
 
-    # Register hooks
     handles = []
     for layer_path, hook_fn in hook_list:
         module = _resolve_submodule(model, layer_path)
         handles.append(module.register_forward_hook(hook_fn))
 
+    gen_kwargs: dict = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    if do_sample:
+        gen_kwargs["temperature"] = temperature
+
     try:
         with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            out = model.generate(**inputs, **gen_kwargs)
     finally:
         for h in handles:
             h.remove()
@@ -338,56 +347,42 @@ def run_generation(
 _CAT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#e34948", "#008300"]
 
 
-def plot_probe(
+def _draw_probe_ax(
+    ax,
     token_strings: List[str],
-    probe_data: Dict[int, List[Dict[str, float]]],
+    per_layer: List[Dict[str, float]],
     schedule: List[ScheduleEntry],
     layer: int,
     traits: List[str],
-) -> "matplotlib.figure.Figure":
-    """Return a matplotlib Figure showing per-token probe scores for one layer.
-
-    - One line per trait in `traits`
-    - Translucent shaded bands for each ScheduleEntry window (end=None → last token)
-    - Horizontal dashed line at y=0
-    - X-axis labeled with token strings every 10 tokens
-    """
-    import matplotlib.pyplot as plt
-
-    per_layer = probe_data.get(layer, [])
+):
+    """Draw a single probe-layer subplot onto `ax`."""
     n = len(per_layer)
     xs = list(range(n))
 
-    fig, ax = plt.subplots(figsize=(14, 5))
-    fig.patch.set_facecolor("#f5f4f0")
     ax.set_facecolor("#ffffff")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Trait lines
     for ci, trait in enumerate(traits):
         ys = [step.get(trait, float("nan")) for step in per_layer]
         ax.plot(xs, ys, color=_CAT[ci % len(_CAT)], lw=1.8, label=trait)
 
-    # Shaded bands for each schedule entry
-    band_colors = _CAT[len(traits) % len(_CAT):]  # offset to avoid clashing with trait lines
+    band_colors = _CAT[len(traits) % len(_CAT):]
     for bi, entry in enumerate(schedule):
         x0 = entry.start
-        x1 = (entry.end - 1) if entry.end is not None else (n - 1)
+        x1 = (entry.end - 1) if entry.end is not None else max(n - 1, 0)
         x1 = min(x1, n - 1)
-        color = band_colors[bi % len(band_colors)]
-        ax.axvspan(x0, x1, alpha=0.12, color=color,
-                   label=f"{entry.trait} α={entry.coeff}")
+        if x1 >= x0:
+            ax.axvspan(x0, x1, alpha=0.12, color=band_colors[bi % len(band_colors)],
+                       label=f"{entry.trait} α={entry.coeff}")
 
     ax.axhline(0, color="#c8c6be", lw=0.8, ls="--")
 
-    # Auto-scale y with 20% padding so lines are never flush with the edge
     ax.autoscale(axis="y")
     ylo, yhi = ax.get_ylim()
-    margin = max(abs(yhi - ylo) * 0.2, 1.0)   # at least ±1 so empty plots aren't zero-height
+    margin = max(abs(yhi - ylo) * 0.2, 1.0)
     ax.set_ylim(ylo - margin, yhi + margin)
 
-    # X-axis: show token string every ~20 positions
     tick_step = max(1, n // 20)
     tick_positions = list(range(0, n, tick_step))
     tick_labels = [token_strings[i] if i < len(token_strings) else "" for i in tick_positions]
@@ -395,10 +390,45 @@ def plot_probe(
     ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
 
     ax.set_xlabel("Generated token index", fontsize=9)
-    ax.set_ylabel("h · v̂  (projection onto steering direction)", fontsize=9)
+    ax.set_ylabel("h · v̂", fontsize=9)
     ax.set_title(f"Persona probe — layer {layer}", fontsize=11)
     ax.legend(loc="upper right", fontsize=7.5, ncol=3, framealpha=0.85, frameon=True)
     ax.grid(axis="y", alpha=0.25, lw=0.6)
+
+
+def plot_probe(
+    token_strings: List[str],
+    probe_data: Dict[int, List[Dict[str, float]]],
+    schedule: List[ScheduleEntry],
+    traits: List[str],
+    layer: Optional[int] = None,
+    layers: Optional[List[int]] = None,
+) -> "matplotlib.figure.Figure":
+    """Return a matplotlib Figure showing per-token probe scores.
+
+    Pass `layers` (list) to show one subplot per layer stacked vertically.
+    Pass `layer` (single int) for a single-panel figure (backward compat).
+    """
+    import matplotlib.pyplot as plt
+
+    if layers is None:
+        layers = [layer] if layer is not None else sorted(probe_data.keys())
+
+    n_layers = len(layers)
+    fig, axes = plt.subplots(n_layers, 1,
+                             figsize=(14, 4 * n_layers),
+                             squeeze=False)
+    fig.patch.set_facecolor("#f5f4f0")
+
+    for row, lyr in enumerate(layers):
+        _draw_probe_ax(
+            axes[row, 0],
+            token_strings,
+            probe_data.get(lyr, []),
+            schedule,
+            lyr,
+            traits,
+        )
 
     fig.tight_layout()
     return fig

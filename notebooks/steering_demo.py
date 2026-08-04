@@ -109,25 +109,28 @@ def _fig_to_pil(fig) -> Image.Image:
 
 
 def generate_callback(
+    system_prompt: str,
     prompt: str,
     schedule_df,
     probe_traits_selected: List[str],
-    probe_layer,          # may arrive as int or str from Gradio Radio
+    probe_layers_selected: List,   # list of ints from CheckboxGroup
     max_new_tokens: int,
+    temperature: float,
+    do_sample: bool,
     enable_thinking: bool,
 ):
     log.info("=== generate_callback invoked ===")
-    log.info("  prompt[:80]  = %r", prompt[:80])
-    log.info("  probe_layer  = %r (type=%s)", probe_layer, type(probe_layer).__name__)
-    log.info("  max_tokens   = %s  thinking=%s", max_new_tokens, enable_thinking)
+    log.info("  system_prompt[:60] = %r", system_prompt[:60])
+    log.info("  prompt[:80]        = %r", prompt[:80])
+    log.info("  probe_layers       = %r", probe_layers_selected)
+    log.info("  max_tokens=%s  temp=%s  do_sample=%s  thinking=%s",
+             max_new_tokens, temperature, do_sample, enable_thinking)
     log.info("  model loaded = %s", model is not None)
     log.info("  vectors keys = %s", sorted(vectors.keys()) if vectors else "EMPTY")
 
     try:
-        # ── cast probe_layer to int (Gradio Radio may return str) ──────────
-        probe_layer_int = int(probe_layer)
+        probe_layers_int = sorted(int(l) for l in (probe_layers_selected or [29]))
 
-        # ── parse schedule ──────────────────────────────────────────────────
         raw_rows = schedule_df.values.tolist() if hasattr(schedule_df, "values") else schedule_df
         log.info("  raw DataFrame rows (%d total):", len(raw_rows))
         for j, r in enumerate(raw_rows):
@@ -138,48 +141,43 @@ def generate_callback(
         for e in schedule:
             log.info("    %r", e)
 
-        # ── probe traits ────────────────────────────────────────────────────
         if not probe_traits_selected:
-            # Fallback: traits from schedule, or all traits at the probe layer
             probe_traits_selected = list({e.trait for e in schedule})
             if not probe_traits_selected:
                 probe_traits_selected = [
-                    t for t in ALL_TRAITS if probe_layer_int in vectors.get(t, {})
+                    t for t in ALL_TRAITS
+                    if any(pl in vectors.get(t, {}) for pl in probe_layers_int)
                 ][:6]
         log.info("  probe_traits (after fallback) = %r", probe_traits_selected)
-        log.info("  probe_traits = %r", probe_traits_selected)
-        log.info("  probe_layer  = %d", probe_layer_int)
 
-        # ── generate ────────────────────────────────────────────────────────
         log.info("  calling run_generation …")
         text, token_strings, probe_data = run_generation(
             model, tokenizer, prompt,
             schedule=schedule,
             vectors=vectors,
             probe_traits=probe_traits_selected,
-            probe_layers=[probe_layer_int],
+            probe_layers=probe_layers_int,
             max_new_tokens=int(max_new_tokens),
             enable_thinking=bool(enable_thinking),
+            system_prompt=system_prompt,
+            temperature=float(temperature),
+            do_sample=bool(do_sample),
         )
-        log.info("  generation done — %d tokens", len(token_strings))
-        log.info("  probe_data layers: %s", list(probe_data.keys()))
-        for pl, records in probe_data.items():
-            log.info("    layer %d: %d records, sample[0]=%r", pl, len(records),
-                     records[0] if records else None)
+        n_tok = len(token_strings)
+        log.info("  generation done — %d tokens", n_tok)
 
-        # ── plot ────────────────────────────────────────────────────────────
         fig = plot_probe(
             token_strings, probe_data, schedule,
-            layer=probe_layer_int,
             traits=probe_traits_selected,
+            layers=probe_layers_int,
         )
         log.info("  plot done, returning output")
-        return text, _fig_to_pil(fig)
+        stats = f"{n_tok} tokens generated"
+        return text, stats, _fig_to_pil(fig)
 
     except Exception:
         log.error("generate_callback CRASHED:\n%s", traceback.format_exc())
-        # Return a plain error message so Gradio shows something
-        return f"[ERROR — see steering_demo.log]\n\n{traceback.format_exc()}", None
+        return f"[ERROR — see steering_demo.log]\n\n{traceback.format_exc()}", "", None
 
 
 # ---------------------------------------------------------------------------
@@ -191,57 +189,117 @@ _DEFAULT_SCHEDULE = [
     ["angry",       29, 30, "", 0.8, "additive"],
 ]
 
-with gr.Blocks(title="Steering Lab") as demo:
-    gr.Markdown("## Activation Steering Lab — Qwen3-14B 4-bit")
-    with gr.Row():
-        with gr.Column(scale=1):
-            prompt_box = gr.Textbox(
-                label="Prompt",
-                value="You are a player in the Mafia game. Your role is Mafia. Describe your strategy.",
-                lines=4,
-            )
-            schedule_table = gr.Dataframe(
-                headers=["trait", "layer", "start", "end (blank=∞)", "coeff", "mode"],
-                datatype=["str", "number", "number", "str", "number", "str"],
-                value=_DEFAULT_SCHEDULE,
-                row_count=(4, "dynamic"),
-                col_count=(6, "fixed"),
-                label="Steering schedule",
-            )
-            probe_traits_box = gr.CheckboxGroup(
-                choices=[],
-                value=[],
-                label="Probe traits (leave blank to auto-select from schedule/vectors)",
-            )
-            probe_layer_radio = gr.Radio(
-                choices=[10, 20, 29],
-                value=29,
-                label="Probe layer",
-            )
-            max_tokens_slider = gr.Slider(
-                minimum=64, maximum=512, step=32, value=256,
-                label="Max new tokens",
-            )
-            thinking_checkbox = gr.Checkbox(
-                value=False,
-                label="Enable reasoning (<think> mode)",
-            )
-            generate_btn = gr.Button("Generate", variant="primary")
+_SYSTEM_PRESETS = {
+    "Mafia wolf": (
+        "You are a player in the Mafia game. Your secret role is Mafia. "
+        "Your goal is to eliminate villagers without being detected. "
+        "Be strategic, blend in, and deflect suspicion."
+    ),
+    "Debate — Affirmative": (
+        "You are the Affirmative debater. Argue persuasively IN FAVOUR of the motion. "
+        "Use evidence, analogies, and rhetorical skill."
+    ),
+    "Debate — Negative": (
+        "You are the Negative debater. Argue persuasively AGAINST the motion. "
+        "Challenge assumptions and expose weaknesses in the opposing view."
+    ),
+    "Neutral assistant": "",
+}
 
+with gr.Blocks(title="Steering Lab", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("## Activation Steering Lab — Qwen3-14B 4-bit")
+
+    with gr.Row():
+        # ── LEFT COLUMN: inputs ───────────────────────────────────────────
         with gr.Column(scale=1):
-            output_text = gr.Textbox(label="Generated text", lines=12)
-            output_plot = gr.Image(label="Probe scores", type="pil")
+
+            with gr.Group():
+                gr.Markdown("### Prompt")
+                preset_dropdown = gr.Dropdown(
+                    choices=list(_SYSTEM_PRESETS.keys()),
+                    value=None,
+                    label="System prompt preset",
+                    info="Fills the system prompt box below.",
+                )
+                system_prompt_box = gr.Textbox(
+                    label="System prompt (optional)",
+                    placeholder="Leave blank for no system prompt.",
+                    lines=3,
+                )
+                prompt_box = gr.Textbox(
+                    label="User message",
+                    value="You are a player in the Mafia game. Your role is Mafia. Describe your strategy.",
+                    lines=4,
+                )
+
+            with gr.Group():
+                gr.Markdown("### Steering schedule")
+                schedule_table = gr.Dataframe(
+                    headers=["trait", "layer", "start", "end (blank=∞)", "coeff", "mode"],
+                    datatype=["str", "number", "number", "str", "number", "str"],
+                    value=_DEFAULT_SCHEDULE,
+                    row_count=(4, "dynamic"),
+                    col_count=(6, "fixed"),
+                    label=None,
+                )
+
+            with gr.Accordion("Probe settings", open=True):
+                probe_traits_box = gr.CheckboxGroup(
+                    choices=[],
+                    value=[],
+                    label="Traits to probe (blank = auto from schedule)",
+                )
+                probe_layers_check = gr.CheckboxGroup(
+                    choices=[10, 20, 29],
+                    value=[10, 20, 29],
+                    label="Probe layers (one subplot per layer)",
+                )
+
+            with gr.Accordion("Generation settings", open=False):
+                max_tokens_slider = gr.Slider(
+                    minimum=64, maximum=1024, step=32, value=256,
+                    label="Max new tokens",
+                )
+                do_sample_checkbox = gr.Checkbox(
+                    value=False,
+                    label="Sampling (uncheck = greedy)",
+                )
+                temperature_slider = gr.Slider(
+                    minimum=0.1, maximum=2.0, step=0.05, value=0.7,
+                    label="Temperature (only used when sampling)",
+                    interactive=True,
+                )
+                thinking_checkbox = gr.Checkbox(
+                    value=False,
+                    label="Enable reasoning (<think> mode)",
+                )
+
+            generate_btn = gr.Button("Generate", variant="primary", size="lg")
+
+        # ── RIGHT COLUMN: outputs ─────────────────────────────────────────
+        with gr.Column(scale=1):
+            output_stats = gr.Textbox(label="Stats", lines=1, interactive=False)
+            output_text  = gr.Textbox(label="Generated text", lines=14)
+            output_plot  = gr.Image(label="Probe scores (one panel per layer)", type="pil")
+
+    # Wire preset dropdown → system prompt box
+    def _apply_preset(preset_name):
+        return _SYSTEM_PRESETS.get(preset_name, "")
+
+    preset_dropdown.change(fn=_apply_preset, inputs=preset_dropdown,
+                           outputs=system_prompt_box)
 
     generate_btn.click(
         fn=generate_callback,
         inputs=[
-            prompt_box, schedule_table, probe_traits_box,
-            probe_layer_radio, max_tokens_slider, thinking_checkbox,
+            system_prompt_box, prompt_box, schedule_table,
+            probe_traits_box, probe_layers_check,
+            max_tokens_slider, temperature_slider,
+            do_sample_checkbox, thinking_checkbox,
         ],
-        outputs=[output_text, output_plot],
+        outputs=[output_text, output_stats, output_plot],
     )
 
-    # Populate trait checkboxes when a browser connects (after launch() loads vectors)
     @demo.load(outputs=probe_traits_box)
     def _populate_traits():
         defaults = [t for t in ["sycophantic", "angry", "ethical", "trustworthiness"]
