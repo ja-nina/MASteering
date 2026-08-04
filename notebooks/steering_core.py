@@ -396,7 +396,7 @@ def plot_probe(
 
     ax.set_xlabel("Generated token index", fontsize=9)
     ax.set_ylabel("h · v̂  (projection onto steering direction)", fontsize=9)
-    ax.set_title(f"Persona probe — layer {layer}", fontsize=11, fontweight="semibold")
+    ax.set_title(f"Persona probe — layer {layer}", fontsize=11)
     ax.legend(loc="upper right", fontsize=7.5, ncol=3, framealpha=0.85, frameon=True)
     ax.grid(axis="y", alpha=0.25, lw=0.6)
 
