@@ -65,3 +65,43 @@ def best_layer(trait: str, vectors_dir: str) -> Optional[int]:
         return max(scores.values()) - baseline
 
     return int(max(sweep.keys(), key=_delta))
+
+
+# ---------------------------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------------------------
+
+def load_model(
+    model_id: str = "Qwen/Qwen3-14B",
+    bits: Optional[int] = 4,
+) -> Tuple[object, object]:
+    """Load model and tokenizer.
+
+    bits=4  — BitsAndBytesConfig 4-bit NF4 (requires bitsandbytes + CUDA)
+    bits=None — bf16, no quantization
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    if bits == 4:
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            quantization_config=bnb_cfg,
+            device_map="auto",
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+
+    model.eval()
+    return model, tokenizer

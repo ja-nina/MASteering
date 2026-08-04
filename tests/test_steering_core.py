@@ -45,3 +45,24 @@ def test_best_layer_missing_json(tmp_path):
     _make_fake_vectors(tmp_path)
     # angry has no .json companion
     assert best_layer("angry", str(tmp_path)) is None
+
+def test_load_model_returns_tuple(monkeypatch):
+    """Stub out the heavy HF calls so this test runs without a GPU."""
+    import types
+
+    fake_tok = object()
+    fake_model = types.SimpleNamespace(eval=lambda: None)
+
+    import transformers
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: fake_tok
+    )
+    monkeypatch.setattr(
+        transformers.AutoModelForCausalLM,
+        "from_pretrained",
+        lambda *a, **k: fake_model,
+    )
+
+    from notebooks.steering_core import load_model
+    model, tok = load_model("fake/model", bits=None)
+    assert tok is fake_tok
