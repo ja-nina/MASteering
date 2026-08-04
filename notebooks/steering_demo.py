@@ -265,7 +265,7 @@ def launch(share: bool = False, port: int = 7860, vectors_dir: str = ""):
     else:
         raw = os.environ.get("PERSONA_VECTORS_ROOT", "")
         if raw:
-            VECTORS_DIR = os.path.join(raw, "bf16")
+            VECTORS_DIR = os.path.join(raw, "4bit")
         else:
             VECTORS_DIR = ""
     log.info("PERSONA_VECTORS_ROOT env = %r", os.environ.get("PERSONA_VECTORS_ROOT", "<not set>"))
