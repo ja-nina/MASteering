@@ -36,14 +36,28 @@ def load_vectors(vectors_dir: str) -> Dict[str, Dict[int, torch.Tensor]]:
     Returns {trait_name: {layer_int: tensor}}.
     Plain-tensor files (not dicts) are stored as {-1: tensor}.
     """
+    import logging
+    _log = logging.getLogger("steering_core")
+    p = pathlib.Path(vectors_dir)
+    _log.info("load_vectors: scanning %s (exists=%s)", p, p.exists())
+    if p.exists():
+        all_files = list(p.iterdir())
+        _log.info("load_vectors: directory contains %d entries: %s",
+                  len(all_files), [f.name for f in all_files[:20]])
+    pt_files = sorted(p.glob("*.pt"))
+    _log.info("load_vectors: found %d .pt files", len(pt_files))
     result: Dict[str, Dict[int, torch.Tensor]] = {}
-    for pt_path in sorted(pathlib.Path(vectors_dir).glob("*.pt")):
+    for pt_path in pt_files:
         trait = pt_path.stem
         loaded = torch.load(str(pt_path), map_location="cpu", weights_only=False)
         if isinstance(loaded, dict):
+            layer_keys = list(loaded.keys())
             result[trait] = {int(k): v.float() for k, v in loaded.items()}
+            _log.info("  loaded trait=%r layers=%s", trait, [int(k) for k in layer_keys])
         else:
             result[trait] = {-1: loaded.float()}
+            _log.info("  loaded trait=%r as plain tensor", trait)
+    _log.info("load_vectors: total traits loaded = %d", len(result))
     return result
 
 
