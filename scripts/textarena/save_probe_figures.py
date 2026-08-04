@@ -60,7 +60,8 @@ plt.rcParams.update({
 
 # Validated categorical palette (adjacent-pairs safe)
 CAT = ["#2a78d6","#eb6834","#1baf7a","#eda100","#e87ba4","#008300","#4a3aa7","#e34948"]
-NOOP_COLOR  = "#9a9890"
+NOOP_COLOR      = "#9a9890"
+ROTATION_COLOR  = "#9c59c6"
 TARGET_LW   = 2.2
 OTHER_LW    = 1.1
 OTHER_ALPHA = 0.55
@@ -495,7 +496,7 @@ def debate_figures(logs_dir: str, out_dir: str):
                          color="#9a9890", y=1.002)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures — additive only, 3 layers each
+    # per-experiment chunk figures — additive, 3 layers each
     for ci, run_dir in enumerate(sorted(glob.glob(
             os.path.join(base, "debate_activation_p1_*_additive_2p")))):
         run_id    = os.path.basename(run_dir)
@@ -536,6 +537,49 @@ def debate_figures(logs_dir: str, out_dir: str):
                     color=color, layer=layer,
                 )
             fig.suptitle(f"Debate — {run_id}  [{steer_tag}]", fontsize=9,
+                         color="#9a9890", y=1.002)
+            savefig(fig, os.path.join(out, fname))
+
+    # per-experiment chunk figures — rotation, 3 layers each
+    for _ci, run_dir in enumerate(sorted(glob.glob(
+            os.path.join(base, "debate_activation_p1_*_rotation_2p")))):
+        run_id    = os.path.basename(run_dir)
+        trait_raw = parse_target_trait(run_id)
+        if not trait_raw:
+            continue
+        base_trait = trait_raw.removesuffix("_rotation")
+        recs = load_records(run_dir)
+        if not recs:
+            continue
+        has_chunks = any(len(_extract_probe(r)[1]) > 0 for r in recs[:10])
+        if not has_chunks:
+            print(f"  skip (no chunks): {run_id}")
+            continue
+
+        steer_layer = _trait_steer_layer(base_trait)
+        steer_tag   = f"steered @ layer {steer_layer}" if steer_layer else "steered"
+
+        for (agent_id, is_steered, fname) in [
+            ("player_1", True,  f"p1_{base_trait}_rotation.png"),
+            ("player_0", False, f"p0_{base_trait}_rotation.png"),
+        ]:
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            for row, layer in enumerate(PROBE_LAYERS):
+                noop_p1, noop_p0, _, _ = noop[layer]
+                noop_m = (noop_p1 if agent_id == "player_1" else noop_p0).get(base_trait)
+                means  = mean_for_agent(recs, agent_id, layer=layer)
+                others = top_traits(means, exclude=base_trait)
+                role_tag = steer_tag if is_steered else "unsteered"
+                _draw_chunk_ax(
+                    axes[row], recs,
+                    keep=lambda r, a=agent_id: r["agent_id"] == a,
+                    target_trait=base_trait, other_traits=others,
+                    noop_mean=noop_m,
+                    label=f"{agent_id} [{role_tag}] — {base_trait} | probe layer {layer}",
+                    color=ROTATION_COLOR, layer=layer,
+                )
+            fig.suptitle(f"Debate — {run_id}  [{steer_tag}] (rotation)", fontsize=9,
                          color="#9a9890", y=1.002)
             savefig(fig, os.path.join(out, fname))
 
@@ -600,7 +644,7 @@ def mafia_figures(logs_dir: str, out_dir: str):
                      color="#9a9890", y=1.002)
         savefig(fig, os.path.join(out, fname))
 
-    # per-experiment chunk figures — additive only, 3 layers each
+    # per-experiment chunk figures — additive, 3 layers each
     for ci, run_dir in enumerate(sorted(glob.glob(
             os.path.join(base, "mafia_activation_wolf_*_additive_8p")))):
         run_id    = os.path.basename(run_dir)
@@ -642,6 +686,50 @@ def mafia_figures(logs_dir: str, out_dir: str):
                     color=color, layer=layer,
                 )
             fig.suptitle(f"Mafia — {run_id}  [{steer_tag}]", fontsize=9,
+                         color="#9a9890", y=1.002)
+            savefig(fig, os.path.join(out, fname))
+
+    # per-experiment chunk figures — rotation, 3 layers each
+    for _ci, run_dir in enumerate(sorted(glob.glob(
+            os.path.join(base, "mafia_activation_wolf_*_rotation_8p")))):
+        run_id    = os.path.basename(run_dir)
+        trait_raw = parse_target_trait(run_id)
+        if not trait_raw:
+            continue
+        base_trait = trait_raw.removesuffix("_rotation")
+        recs = load_records(run_dir)
+        if not recs:
+            continue
+        has_chunks = any(len(_extract_probe(r)[1]) > 0 for r in recs[:10])
+        if not has_chunks:
+            print(f"  skip (no chunks): {run_id}")
+            continue
+
+        wolf_map    = load_wolf_map(run_dir)
+        steer_layer = _trait_steer_layer(base_trait)
+        steer_tag   = f"steered @ layer {steer_layer}" if steer_layer else "steered"
+
+        for (is_wolf, role_label, fname) in [
+            (True,  f"wolf [{steer_tag}]",    f"wolf_{base_trait}_rotation.png"),
+            (False, "villager [unsteered]",    f"vil_{base_trait}_rotation.png"),
+        ]:
+            fig, axes = plt.subplots(len(PROBE_LAYERS), 1,
+                                     figsize=(14, 6 * len(PROBE_LAYERS)))
+            for row, layer in enumerate(PROBE_LAYERS):
+                noop_wolf_m, noop_vil_m, _, _, _ = noop[layer]
+                noop_m = (noop_wolf_m if is_wolf else noop_vil_m).get(base_trait)
+                means  = mean_wolf_villager(recs, wolf_map, layer=layer)[0 if is_wolf else 1]
+                others = top_traits(means, exclude=base_trait)
+                _draw_chunk_ax(
+                    axes[row], recs,
+                    keep=lambda r, wm=wolf_map, iw=is_wolf:
+                        (r["agent_id"] == wm.get(r.get("episode", -1))) == iw,
+                    target_trait=base_trait, other_traits=others,
+                    noop_mean=noop_m,
+                    label=f"{role_label} — {base_trait} | probe layer {layer}",
+                    color=ROTATION_COLOR, layer=layer,
+                )
+            fig.suptitle(f"Mafia — {run_id}  [{steer_tag}] (rotation)", fontsize=9,
                          color="#9a9890", y=1.002)
             savefig(fig, os.path.join(out, fname))
 
