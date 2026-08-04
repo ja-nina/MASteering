@@ -277,9 +277,9 @@ def launch(share: bool = False, port: int = 7860, vectors_dir: str = ""):
             "Set PERSONA_VECTORS_ROOT env var or pass --vectors-dir PATH to the script."
         )
 
-    log.info("Loading model %s …", MODEL_ID)
+    log.info("Loading model %s (4-bit NF4 quantisation) …", MODEL_ID)
     model, tokenizer = load_model(MODEL_ID, bits=4)
-    log.info("Model loaded.")
+    log.info("Model loaded (4-bit).")
 
     log.info("Loading vectors from %r …", VECTORS_DIR)
     vectors = load_vectors(VECTORS_DIR)

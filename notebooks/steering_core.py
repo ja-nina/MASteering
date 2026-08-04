@@ -224,10 +224,11 @@ def _build_hooks(
                     scores: Dict[str, float] = {}
                     for trait, layer_vecs in probe_vecs.items():
                         if pl in layer_vecs:
-                            v_hat, norm = layer_vecs[pl]
+                            v_hat, _norm = layer_vecs[pl]
                             v_hat = v_hat.to(hidden.device).to(hidden.dtype)
                             h_mean = hidden.float().mean(dim=1).squeeze(0)
-                            score = float((h_mean * v_hat.float()).sum()) / norm if norm > 0 else 0.0
+                            # projection onto unit steering direction (not double-normalised)
+                            score = float((h_mean * v_hat.float()).sum())
                             scores[trait] = score
                     probe_store[pl].append(scores)
 
@@ -363,7 +364,13 @@ def plot_probe(
 
     ax.axhline(0, color="#c8c6be", lw=0.8, ls="--")
 
-    # X-axis: show token string every 10 ticks
+    # Auto-scale y with 20% padding so lines are never flush with the edge
+    ax.autoscale(axis="y")
+    ylo, yhi = ax.get_ylim()
+    margin = max(abs(yhi - ylo) * 0.2, 1.0)   # at least ±1 so empty plots aren't zero-height
+    ax.set_ylim(ylo - margin, yhi + margin)
+
+    # X-axis: show token string every ~20 positions
     tick_step = max(1, n // 20)
     tick_positions = list(range(0, n, tick_step))
     tick_labels = [token_strings[i] if i < len(token_strings) else "" for i in tick_positions]
@@ -371,7 +378,7 @@ def plot_probe(
     ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
 
     ax.set_xlabel("Generated token index", fontsize=9)
-    ax.set_ylabel("Projection / ||v||", fontsize=9)
+    ax.set_ylabel("h · v̂  (projection onto steering direction)", fontsize=9)
     ax.set_title(f"Persona probe — layer {layer}", fontsize=11, fontweight="semibold")
     ax.legend(loc="upper right", fontsize=7.5, ncol=3, framealpha=0.85, frameon=True)
     ax.grid(axis="y", alpha=0.25, lw=0.6)
