@@ -171,8 +171,18 @@ class ActivationSteering:
         else:
             self.default_config = None
 
-    def _cfg_for(self, agent_id: str) -> Optional[Dict]:
-        return self.per_agent.get(agent_id) or self.default_config
+    def _cfg_for(self, agent_id) -> Optional[Dict]:
+        # TextArena passes integer player IDs (0, 1, …); YAML configs use "player_N" strings.
+        # Try the raw key first, then the normalised form, so both conventions work.
+        candidates = [agent_id]
+        if isinstance(agent_id, int):
+            candidates.append(f"player_{agent_id}")
+        elif isinstance(agent_id, str) and agent_id.isdigit():
+            candidates.append(f"player_{agent_id}")
+        for key in candidates:
+            if key in self.per_agent:
+                return self.per_agent[key]
+        return self.default_config
 
     def apply_to_prompt(self, system_prompt: str, user_prompt: str,
                         agent_id: str) -> Tuple[str, str]:

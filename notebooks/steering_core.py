@@ -36,14 +36,28 @@ def load_vectors(vectors_dir: str) -> Dict[str, Dict[int, torch.Tensor]]:
     Returns {trait_name: {layer_int: tensor}}.
     Plain-tensor files (not dicts) are stored as {-1: tensor}.
     """
+    import logging
+    _log = logging.getLogger("steering_core")
+    p = pathlib.Path(vectors_dir)
+    _log.info("load_vectors: scanning %s (exists=%s)", p, p.exists())
+    if p.exists():
+        all_files = list(p.iterdir())
+        _log.info("load_vectors: directory contains %d entries: %s",
+                  len(all_files), [f.name for f in all_files[:20]])
+    pt_files = sorted(p.glob("*.pt"))
+    _log.info("load_vectors: found %d .pt files", len(pt_files))
     result: Dict[str, Dict[int, torch.Tensor]] = {}
-    for pt_path in sorted(pathlib.Path(vectors_dir).glob("*.pt")):
+    for pt_path in pt_files:
         trait = pt_path.stem
         loaded = torch.load(str(pt_path), map_location="cpu", weights_only=False)
         if isinstance(loaded, dict):
+            layer_keys = list(loaded.keys())
             result[trait] = {int(k): v.float() for k, v in loaded.items()}
+            _log.info("  loaded trait=%r layers=%s", trait, [int(k) for k in layer_keys])
         else:
             result[trait] = {-1: loaded.float()}
+            _log.info("  loaded trait=%r as plain tensor", trait)
+    _log.info("load_vectors: total traits loaded = %d", len(result))
     return result
 
 
@@ -210,10 +224,11 @@ def _build_hooks(
                     scores: Dict[str, float] = {}
                     for trait, layer_vecs in probe_vecs.items():
                         if pl in layer_vecs:
-                            v_hat, norm = layer_vecs[pl]
+                            v_hat, _norm = layer_vecs[pl]
                             v_hat = v_hat.to(hidden.device).to(hidden.dtype)
                             h_mean = hidden.float().mean(dim=1).squeeze(0)
-                            score = float((h_mean * v_hat.float()).sum()) / norm if norm > 0 else 0.0
+                            # projection onto unit steering direction (not double-normalised)
+                            score = float((h_mean * v_hat.float()).sum())
                             scores[trait] = score
                     probe_store[pl].append(scores)
 
@@ -349,7 +364,13 @@ def plot_probe(
 
     ax.axhline(0, color="#c8c6be", lw=0.8, ls="--")
 
-    # X-axis: show token string every 10 ticks
+    # Auto-scale y with 20% padding so lines are never flush with the edge
+    ax.autoscale(axis="y")
+    ylo, yhi = ax.get_ylim()
+    margin = max(abs(yhi - ylo) * 0.2, 1.0)   # at least ±1 so empty plots aren't zero-height
+    ax.set_ylim(ylo - margin, yhi + margin)
+
+    # X-axis: show token string every ~20 positions
     tick_step = max(1, n // 20)
     tick_positions = list(range(0, n, tick_step))
     tick_labels = [token_strings[i] if i < len(token_strings) else "" for i in tick_positions]
@@ -357,7 +378,7 @@ def plot_probe(
     ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
 
     ax.set_xlabel("Generated token index", fontsize=9)
-    ax.set_ylabel("Projection / ||v||", fontsize=9)
+    ax.set_ylabel("h · v̂  (projection onto steering direction)", fontsize=9)
     ax.set_title(f"Persona probe — layer {layer}", fontsize=11)
     ax.legend(loc="upper right", fontsize=7.5, ncol=3, framealpha=0.85, frameon=True)
     ax.grid(axis="y", alpha=0.25, lw=0.6)

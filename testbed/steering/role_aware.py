@@ -72,9 +72,11 @@ class RoleAwareActivationSteering(ActivationSteering):
     # Protocol implementation
     # ------------------------------------------------------------------
 
-    def steering_spec(self, agent_id: str) -> Optional[SteeringSpec]:
+    def steering_spec(self, agent_id) -> Optional[SteeringSpec]:
         """Return spec only for agents whose role was matched this episode."""
-        if agent_id not in self._active_agents:
+        # Normalise int agent IDs to "player_N" to match what _discover_roles stored.
+        normalised = f"player_{agent_id}" if isinstance(agent_id, int) else str(agent_id)
+        if normalised not in self._active_agents and agent_id not in self._active_agents:
             return None
         # Delegate to parent using default_config (per_agent is always empty here).
         return super().steering_spec(agent_id)

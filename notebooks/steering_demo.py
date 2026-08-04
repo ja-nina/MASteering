@@ -254,20 +254,41 @@ with gr.Blocks(title="Steering Lab") as demo:
 # Entry point — model loads here, not at module level
 # ---------------------------------------------------------------------------
 
-def launch(share: bool = False, port: int = 7860):
+def launch(share: bool = False, port: int = 7860, vectors_dir: str = ""):
     global model, tokenizer, vectors, ALL_TRAITS
 
     VECTORS_DIR = os.path.expandvars("${PERSONA_VECTORS_ROOT}/4bit")
     MODEL_ID = "Qwen/Qwen3-14B"
 
-    log.info("Loading model %s …", MODEL_ID)
-    model, tokenizer = load_model(MODEL_ID, bits=4)
-    log.info("Model loaded.")
+    # Resolve vectors directory: CLI arg > env var > error
+    if vectors_dir:
+        VECTORS_DIR = vectors_dir
+    else:
+        raw = os.environ.get("PERSONA_VECTORS_ROOT", "")
+        if raw:
+            VECTORS_DIR = os.path.join(raw, "4bit")
+        else:
+            VECTORS_DIR = ""
+    log.info("PERSONA_VECTORS_ROOT env = %r", os.environ.get("PERSONA_VECTORS_ROOT", "<not set>"))
+    log.info("VECTORS_DIR resolved to: %r", VECTORS_DIR)
 
-    log.info("Loading vectors from %s …", VECTORS_DIR)
+    if not VECTORS_DIR:
+        log.error("No vectors directory! Set PERSONA_VECTORS_ROOT or pass --vectors-dir.")
+        raise RuntimeError(
+            "Set PERSONA_VECTORS_ROOT env var or pass --vectors-dir PATH to the script."
+        )
+
+    log.info("Loading model %s (4-bit NF4 quantisation) …", MODEL_ID)
+    model, tokenizer = load_model(MODEL_ID, bits=4)
+    log.info("Model loaded (4-bit).")
+
+    log.info("Loading vectors from %r …", VECTORS_DIR)
     vectors = load_vectors(VECTORS_DIR)
     ALL_TRAITS = sorted(vectors.keys())
-    log.info("Vectors loaded: %d traits — %s", len(ALL_TRAITS), ALL_TRAITS)
+    if ALL_TRAITS:
+        log.info("Vectors loaded: %d traits — %s", len(ALL_TRAITS), ALL_TRAITS)
+    else:
+        log.error("VECTORS EMPTY after loading from %r — check path and .pt files!", VECTORS_DIR)
 
     # probe_traits_box is populated via demo.load() when each browser session connects
     log.info("Launching Gradio (share=%s, port=%d)", share, port)
@@ -278,5 +299,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument(
+        "--vectors-dir",
+        default="",
+        help="Path to the bf16 vectors directory (overrides PERSONA_VECTORS_ROOT/bf16)",
+    )
     args = parser.parse_args()
-    launch(share=args.share, port=args.port)
+    launch(share=args.share, port=args.port, vectors_dir=args.vectors_dir)
