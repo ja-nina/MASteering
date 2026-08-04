@@ -6,6 +6,9 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")  # must be before any pyplot import; needed on headless servers
+
 import torch
 
 

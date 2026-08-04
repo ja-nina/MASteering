@@ -140,7 +140,13 @@ def generate_callback(
 
         # ── probe traits ────────────────────────────────────────────────────
         if not probe_traits_selected:
+            # Fallback: traits from schedule, or all traits at the probe layer
             probe_traits_selected = list({e.trait for e in schedule})
+            if not probe_traits_selected:
+                probe_traits_selected = [
+                    t for t in ALL_TRAITS if probe_layer_int in vectors.get(t, {})
+                ][:6]
+        log.info("  probe_traits (after fallback) = %r", probe_traits_selected)
         log.info("  probe_traits = %r", probe_traits_selected)
         log.info("  probe_layer  = %d", probe_layer_int)
 
@@ -203,9 +209,9 @@ with gr.Blocks(title="Steering Lab") as demo:
                 label="Steering schedule",
             )
             probe_traits_box = gr.CheckboxGroup(
-                choices=[],   # populated after model loads
+                choices=[],
                 value=[],
-                label="Probe traits",
+                label="Probe traits (leave blank to auto-select from schedule/vectors)",
             )
             probe_layer_radio = gr.Radio(
                 choices=[10, 20, 29],
@@ -235,6 +241,14 @@ with gr.Blocks(title="Steering Lab") as demo:
         outputs=[output_text, output_plot],
     )
 
+    # Populate trait checkboxes when a browser connects (after launch() loads vectors)
+    @demo.load(outputs=probe_traits_box)
+    def _populate_traits():
+        defaults = [t for t in ["sycophantic", "angry", "ethical", "trustworthiness"]
+                    if t in ALL_TRAITS]
+        log.info("demo.load: populating traits — choices=%s  defaults=%s", ALL_TRAITS, defaults)
+        return gr.update(choices=ALL_TRAITS, value=defaults)
+
 
 # ---------------------------------------------------------------------------
 # Entry point — model loads here, not at module level
@@ -255,13 +269,7 @@ def launch(share: bool = False, port: int = 7860):
     ALL_TRAITS = sorted(vectors.keys())
     log.info("Vectors loaded: %d traits — %s", len(ALL_TRAITS), ALL_TRAITS)
 
-    # Update probe traits checkboxes with actual trait list
-    probe_traits_box.choices = ALL_TRAITS
-    probe_traits_box.value = [
-        t for t in ["sycophantic", "angry", "ethical", "trustworthiness"]
-        if t in ALL_TRAITS
-    ]
-
+    # probe_traits_box is populated via demo.load() when each browser session connects
     log.info("Launching Gradio (share=%s, port=%d)", share, port)
     demo.launch(share=share, server_port=port)
 
