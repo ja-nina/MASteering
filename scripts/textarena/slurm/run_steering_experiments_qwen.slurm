@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-39%10
+#SBATCH --array=0-29%10
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/steering_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/steering_%A_%a.err
 #SBATCH -t 10:00:00
@@ -11,13 +11,12 @@
 # Persona vector steering experiments + probed controls.
 #
 # Encoding: task_id = config_index * NUM_SHARDS + shard
-# 4 configs × 10 shards = 40 tasks; 10 concurrent max (%10).
+# 3 configs × 10 shards = 30 tasks; 10 concurrent max (%10).
 #
 # Config index → experiment:
 #   0  mafia  steered (wolf → opportunistic, adaptive)
 #   1  mafia  control (noop + probe)
-#   2  debate steered (player_1 AGAINST → assertive, adaptive)
-#   3  debate control (noop + probe)
+#   2  debate control (noop + probe)
 #
 # Submit:
 #   sbatch scripts/textarena/slurm/run_steering_experiments_qwen.slurm
@@ -27,11 +26,6 @@
 #       --steered logs/mafia/mafia_activation_wolf_opportunistic_8p \
 #       --control logs/mafia/mafia_noop_probe_8p \
 #       --out reports/mafia_probe_analysis.txt
-#
-#   python scripts/textarena/analyze_persona_probes.py \
-#       --steered logs/debate/debate_activation_p1_assertive_2p \
-#       --control logs/debate/debate_noop_probe_2p \
-#       --out reports/debate_probe_analysis.txt
 
 set -euo pipefail
 
@@ -45,8 +39,7 @@ SHARD=$(( SLURM_ARRAY_TASK_ID % NUM_SHARDS ))
 CONFIGS=(
     "config/games/mafia/mafia_activation_wolf_opportunistic_8p.yaml"   # 0
     "config/games/mafia/mafia_noop_probe_8p.yaml"                      # 1
-    "config/games/debate/debate_activation_p1_assertive_2p.yaml"       # 2
-    "config/games/debate/debate_noop_probe_2p.yaml"                    # 3
+    "config/games/debate/debate_noop_probe_2p.yaml"                    # 2
 )
 
 CONFIG="${CONFIGS[$CONFIG_IDX]}"
