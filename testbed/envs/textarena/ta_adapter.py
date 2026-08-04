@@ -125,6 +125,45 @@ class TextArenaAdapter:
             info = {**(info or {}), "close_info": close_info}
         return StepResult(rewards=rewards, done=done, info=info or {})
 
+    @property
+    def player_roles(self) -> Dict[str, str]:
+        """Return {player_N: role_str} for the current episode.
+
+        Reads `player_roles` from the wrapped TextArena env and normalises
+        integer keys to "player_N" strings.  This is intentionally `player_roles`
+        (the per-seat assignment dict) rather than `roles` (the role-description
+        catalogue that SecretMafia also exposes under that name).
+
+        Returns {} when the game hasn't been reset yet or doesn't expose roles.
+        """
+        if self._env is None:
+            return {}
+        # Primary: per-seat assignment dict on the env itself (e.g. SecretMafia)
+        pr = getattr(self._env, "player_roles", None)
+        if isinstance(pr, dict) and pr:
+            # Guard against games that put role-description dicts under player_roles
+            first_val = next(iter(pr.values()))
+            if not isinstance(first_val, dict):
+                return {
+                    (f"player_{k}" if isinstance(k, int) else str(k)): str(v)
+                    for k, v in pr.items()
+                }
+        # Fallback: game_state dict stored on a `state` sub-object
+        state = getattr(self._env, "state", None)
+        if state is not None:
+            gs = getattr(state, "game_state", None)
+            if isinstance(gs, dict):
+                for key in ("player_roles", "role_assignments"):
+                    val = gs.get(key)
+                    if isinstance(val, dict) and val:
+                        first_val = next(iter(val.values()))
+                        if not isinstance(first_val, dict):
+                            return {
+                                (f"player_{k}" if isinstance(k, int) else str(k)): str(v)
+                                for k, v in val.items()
+                            }
+        return {}
+
     def close(self) -> Dict[str, float]:
         if self.context.last_rewards:
             return dict(self.context.last_rewards)
