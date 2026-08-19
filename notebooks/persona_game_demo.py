@@ -138,8 +138,7 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
     """Drive all agent turns until human's turn or game end (must be called within lock)."""
     chart_html = "<p>Play a turn to see projection.</p>"
     while not _STATE.done:
-        obs_str, info = _STATE.env.get_observation()
-        current_player = info.get("player_id", _HUMAN_ID)
+        current_player, obs_str = _STATE.env.get_observation()
         if current_player == _HUMAN_ID:
             break
         # Non-human slot: auto-generate
@@ -189,8 +188,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         if _STATE.policy is not None and _STATE.steering is not None:
             _update_persona(persona_values, layers, hook)
 
-        obs_str, info = env.get_observation()
-        current_player = info.get("player_id", _HUMAN_ID)
+        current_player, obs_str = env.get_observation()
         _STATE.transcript.append(f"[Env] {obs_str}")
 
         if current_player != _HUMAN_ID and not _STATE.done:
