@@ -49,6 +49,56 @@ _GAME_PLAYERS = {
 
 _HUMAN_ID = 0
 
+_GAME_INSTRUCTIONS = {
+    "DontSayIt-v0": (
+        "**Don't Say It** — 2 players. "
+        "You each have a secret word the other must not say. "
+        "Converse naturally and try to *trick* your opponent into saying your secret word "
+        "while avoiding saying theirs. First to say the other's secret word loses."
+    ),
+    "SimpleNegotiation-v0": (
+        "**Simple Negotiation** — 2 players. "
+        "You and the agent each have private item valuations. "
+        "Exchange offers by typing a proposed split (e.g. 'I propose: A=2, B=1'). "
+        "Reach a deal you both accept, or walk away. Higher personal value wins."
+    ),
+    "Taboo-v0": (
+        "**Taboo** — 2 players. "
+        "One player gives clues to get the other to guess a secret word, "
+        "without using any of the listed forbidden words. "
+        "Type your clue or guess each turn."
+    ),
+    "TruthAndDeception-v0": (
+        "**Truth & Deception** — 2 players. "
+        "One player knows the truth; the other tries to uncover it through questions. "
+        "The informed player may lie. Ask probing questions or answer strategically."
+    ),
+    "CharacterConclave-v0": (
+        "**Character Conclave** — 3 players. "
+        "Each player is assigned a secret character role. Through discussion, "
+        "identify who is who before others identify you. "
+        "Stay in character and vote strategically."
+    ),
+    "Diplomacy-v0": (
+        "**Diplomacy** — 3 players. "
+        "Negotiate alliances and issue orders. "
+        "Coordinate or betray — only one player can win. "
+        "Submit your orders and negotiations each round."
+    ),
+    "Negotiation-v0": (
+        "**Negotiation** — 2 players. "
+        "Divide a set of items between yourself and the agent. "
+        "Each item has a hidden value to each party. "
+        "Propose splits and counter-offer until you agree or time runs out."
+    ),
+    "SecretMafia-v0": (
+        "**Secret Mafia** — 5 players. "
+        "You are player 0. Mafia members know each other; civilians do not. "
+        "During the day phase: discuss and vote to eliminate a suspect. "
+        "At night: Mafia chooses a target. Civilians win by eliminating all Mafia."
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # State
@@ -279,6 +329,13 @@ def main(argv=None):
     _STATE.probe = probe
     _STATE.steering = steering
 
+    def _instructions_html(game_id: str) -> str:
+        text = _GAME_INSTRUCTIONS.get(game_id, "Select a game to see instructions.")
+        # convert **bold** markers to <strong>
+        import re
+        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+        return f'<div style="padding:8px;border-left:3px solid #888;font-size:0.9em">{text}</div>'
+
     # Build Gradio UI
     with gr.Blocks(title="Persona Game Demo") as demo:
         gr.Markdown("## SVD Persona Steering — Human vs. Agent")
@@ -286,6 +343,10 @@ def main(argv=None):
         with gr.Row():
             # ── Left: transcript ─────────────────────────────────────────────
             with gr.Column(scale=2):
+                instructions = gr.HTML(
+                    label="Game instructions",
+                    value=_instructions_html(args.game),
+                )
                 transcript = gr.HTML(label="Transcript", value="<p>Select a game and click Start.</p>")
                 human_input = gr.Textbox(label="Your move", placeholder="Type your action…")
                 send_btn = gr.Button("Send")
@@ -316,11 +377,14 @@ def main(argv=None):
 
         # ── Event handlers ────────────────────────────────────────────────────
 
+        def _on_game_change(game_id):
+            return _instructions_html(game_id)
+
         def _on_start(game_id, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
             _update_persona(persona, layers, hook_type)
             t, c = _start_game(game_id, persona, hook_type, layers)
-            return t, c
+            return _instructions_html(game_id), t, c
 
         def _on_send(text, layer_str, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
@@ -335,10 +399,12 @@ def main(argv=None):
 
         slider_list = [sliders[s] for s in sorted(all_slugs)]
 
+        game_sel.change(fn=_on_game_change, inputs=[game_sel], outputs=[instructions])
+
         start_btn.click(
             fn=_on_start,
             inputs=[game_sel, hook_sel] + slider_list,
-            outputs=[transcript, chart],
+            outputs=[instructions, transcript, chart],
         )
         send_btn.click(
             fn=_on_send,
