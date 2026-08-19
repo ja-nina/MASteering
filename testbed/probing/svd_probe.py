@@ -54,10 +54,6 @@ class SVDPersonaProbe:
         layer: int = 18,   # backward-compat fallback; use `layers` instead
     ) -> None:
         import torch
-        if layers is not None:
-            self.layers = list(layers)
-        else:
-            self.layers = [layer]
 
         if hook not in SUBMODULE_SUFFIXES:
             raise ValueError(f"hook must be one of {list(SUBMODULE_SUFFIXES)}; got {hook!r}")
@@ -69,6 +65,11 @@ class SVDPersonaProbe:
 
         basis = torch.load(os.path.expandvars(basis_path),
                            map_location="cpu", weights_only=False)
+
+        if layers is not None:
+            self.layers = list(layers)
+        else:
+            self.layers = sorted(basis["Vk"].keys())  # default: all layers in basis
 
         # Basis/hook consistency guard
         if basis.get("hook") and basis["hook"] != hook:

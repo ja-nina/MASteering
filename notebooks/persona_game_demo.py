@@ -232,16 +232,20 @@ def main(argv=None):
     parser.add_argument("--basis",  required=True)
     parser.add_argument("--hook",   default="attn",
                         choices=["attn", "mlp", "both", "residual"])
-    parser.add_argument("--layers", default="10,18,27")
+    parser.add_argument("--layers", default=None,
+                        help="Comma-separated layer ints; defaults to all layers in basis")
     parser.add_argument("--game",   default="SimpleNegotiation-v0")
     parser.add_argument("--share",  action="store_true")
     args = parser.parse_args(argv)
 
-    layers = [int(x) for x in args.layers.split(",")]
-
     # Load basis to extract trait names for sliders
     basis = torch.load(args.basis, map_location="cpu", weights_only=False)
     all_slugs: List[str] = basis["all_slugs"]
+
+    layers: Optional[List[int]] = (
+        [int(x) for x in args.layers.split(",")] if args.layers
+        else sorted(basis["Vk"].keys())  # all layers in basis by default
+    )
 
     # Build probe (monitor)
     probe = SVDPersonaProbe(

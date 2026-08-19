@@ -118,7 +118,7 @@ class SVDSteering:
         persona = cfg.get("persona", {})
         coefficient = float(cfg.get("coefficient", 1.0))
         hook_type = cfg.get("hook", "attn")
-        layers = list(cfg.get("layers", [18]))
+        layers = list(cfg["layers"]) if "layers" in cfg else sorted(self._Vk.keys())
 
         result: List[Tuple[str, Callable]] = []
         for layer in layers:
