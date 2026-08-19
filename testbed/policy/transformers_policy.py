@@ -117,7 +117,11 @@ class TransformersPolicy:
         # Build the list of hooks to register: steering (if active) + probe (always)
         hooks = []
 
-        if steering is not None and steering.method == "activation":
+        # SVDSteering path — duck-typed: any steering object with apply_hooks()
+        if self.steering is not None and hasattr(self.steering, "apply_hooks"):
+            svd_hooks = self.steering.apply_hooks(agent_id, self.model)
+            hooks.extend(svd_hooks)
+        elif steering is not None and steering.method == "activation":
             if self.steering is None:
                 raise ValueError("Activation steering requested but no steering "
                                  "method bound to the policy.")
