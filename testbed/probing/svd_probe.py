@@ -14,7 +14,9 @@ Config (in YAML):
       window_tokens: 10
       top_k:         5
 
-Output per turn (stored in episode JSONL under "svd_probe"):
+Output per turn (stored in episode JSONL under "persona_probe", the same key used
+by PersonaProbe — the exact key depends on how the orchestrator/logger stores
+_last_probe):
     {
       "18": {"z": [0.82, -0.31, ...], "top_traits": [["agreeable", 0.71], ...]},
       "27": {...}
@@ -45,11 +47,11 @@ class SVDPersonaProbe:
         self,
         basis_path: str,
         layers: Optional[List[int]] = None,
-        layer: int = 18,
         hook: str = "attn",
         layer_path_template: str = "model.layers.{}",
         window_tokens: int = 10,
         top_k: int = 5,
+        layer: int = 18,   # backward-compat fallback; use `layers` instead
     ) -> None:
         import torch
         if layers is not None:
@@ -67,6 +69,14 @@ class SVDPersonaProbe:
 
         basis = torch.load(os.path.expandvars(basis_path),
                            map_location="cpu", weights_only=False)
+
+        # Basis/hook consistency guard
+        if basis.get("hook") and basis["hook"] != hook:
+            raise ValueError(
+                f"Basis was built with hook={basis['hook']!r} but probe is configured "
+                f"for hook={hook!r}. Rebuild the basis with --hook {hook} or change probe hook."
+            )
+
         self._slugs: List[str] = basis["slugs"]
         self._Vk: Dict[int, "torch.Tensor"] = basis["Vk"]    # {layer: [k, d]}
         self._C: Dict[int, "torch.Tensor"] = basis["C"]       # {layer: [N_dedup, k]}

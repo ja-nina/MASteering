@@ -56,8 +56,23 @@ class SVDSteering:
         self._Vk: Dict[int, "torch.Tensor"] = basis["Vk"]   # {layer: [k, d]}
         self._C: Dict[int, "torch.Tensor"] = basis["C"]     # {layer: [N_dedup, k]}
 
+        # Basis/hook consistency guard: per-agent hook must match basis hook
+        # (unless the agent requests "both", which is an explicit multi-hook opt-in).
+        basis_hook = basis.get("hook")
+        normalized_per_agent: Dict = {str(k): v for k, v in (per_agent or {}).items()}
+        if basis_hook:
+            for agent_id, cfg in normalized_per_agent.items():
+                agent_hook = cfg.get("hook")
+                if agent_hook and agent_hook != "both" and agent_hook != basis_hook:
+                    import warnings
+                    warnings.warn(
+                        f"Basis was built with hook={basis_hook!r} but agent {agent_id!r} is "
+                        f"configured for hook={agent_hook!r}. Consider rebuilding the basis "
+                        f"with --hook {agent_hook} or changing the agent hook."
+                    )
+
         # TextArena passes integer player IDs; YAML uses "player_N" strings
-        self._per_agent: Dict = {str(k): v for k, v in (per_agent or {}).items()}
+        self._per_agent: Dict = normalized_per_agent
         self._default_config = default_config
 
     def _cfg_for(self, agent_id) -> Optional[Dict]:
@@ -120,6 +135,14 @@ class SVDSteering:
                 raise ValueError(f"Unknown hook type {hook_type!r}")
 
         return result
+
+    def apply_to_prompt(self, system_prompt: str, user_prompt: str, agent_id: str):
+        """SVD steering leaves text untouched; steering is done via activation hooks."""
+        return system_prompt, user_prompt
+
+    def steering_spec(self, agent_id: str):
+        """SVD path is handled in TransformersPolicy.act() via apply_hooks()."""
+        return None
 
     def on_episode_start(self, env) -> None:
         pass

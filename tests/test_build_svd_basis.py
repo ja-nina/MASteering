@@ -102,3 +102,37 @@ def test_run_build_end_to_end(tmp_path):
     assert "Vk" in basis and "C" in basis
     # All dedup slugs are in all_slugs
     assert set(basis["slugs"]).issubset(set(basis["all_slugs"]))
+
+
+def test_round_trip_basis_to_probe_and_steering(tmp_path):
+    """run_build output is consumable by SVDPersonaProbe and SVDSteering."""
+    from testbed.probing.svd_probe import SVDPersonaProbe
+    from testbed.steering.svd_steering import SVDSteering
+
+    std_dir = tmp_path / "std"
+    std_dir.mkdir()
+    for slug in ["agreeable", "dominant", "curious"]:
+        _make_raw(std_dir, slug, n_layers=2, n_prompts=3, d=6)
+
+    out_path = tmp_path / "basis.pt"
+    run_build(std_dir=std_dir, amoral_dir=None, hook="attn", model="test",
+              ref_layer=0, merge_threshold=0.90, rank=None, out_path=out_path)
+
+    # Probe: make_hook should return the right number of pairs
+    probe = SVDPersonaProbe(basis_path=str(out_path), layers=[0, 1], hook="attn")
+    hooks, get_result = probe.make_hook()
+    assert len(hooks) == 2
+    assert all(".self_attn.o_proj" in path for path, _ in hooks)
+
+    # Steering: _build_injection returns a d-dimensional vector
+    steering = SVDSteering(
+        basis_path=str(out_path),
+        per_agent={"player_0": {"hook": "attn", "layers": [0], "coefficient": 1.0,
+                                "persona": {"agreeable": 1.0}}},
+    )
+    g = steering._build_injection({"agreeable": 1.0}, layer=0)
+    assert g.shape == (6,)  # d=6
+
+    # apply_hooks returns correct count
+    hooks_list = steering.apply_hooks("player_0", None)
+    assert len(hooks_list) == 1

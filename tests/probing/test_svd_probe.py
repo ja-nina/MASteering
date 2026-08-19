@@ -12,7 +12,6 @@ def _make_toy_basis(tmp_path, n_dedup=3, k=2, d=4, n_layers=2):
     Vk = {l: torch.linalg.qr(torch.randn(d, k))[0].T for l in layers}  # [k, d]
     C = {l: torch.randn(n_dedup, k) for l in layers}  # [N_dedup, k]
     basis = {
-        "hook": "attn",
         "model": "test",
         "slugs": ["agreeable", "dominant", "curious"],
         "all_slugs": ["agreeable", "dominant", "curious"],

@@ -9,7 +9,7 @@ Launch:
 
 Three-panel layout:
     Left:   game transcript + human text input + Send button
-    Centre: SVD projection bar chart (z coordinates, top-2 trait labels per bar)
+    Centre: SVD projection bar chart (PC-indexed bars) + top-5 trait list
     Right:  game selector, layer dropdown, hook type, persona sliders, Apply button
 """
 from __future__ import annotations
@@ -35,8 +35,19 @@ _GAMES = [
     "TruthAndDeception-v0", "CharacterConclave-v0",
     "Diplomacy-v0", "Negotiation-v0", "SecretMafia-v0",
 ]
+
+_GAME_PLAYERS = {
+    "DontSayIt-v0": 2,
+    "SimpleNegotiation-v0": 2,
+    "Taboo-v0": 2,
+    "TruthAndDeception-v0": 2,
+    "CharacterConclave-v0": 3,
+    "Diplomacy-v0": 3,
+    "Negotiation-v0": 2,
+    "SecretMafia-v0": 5,
+}
+
 _HUMAN_ID = 0
-_AGENT_ID = 1
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +58,6 @@ class DemoState:
     """Mutable demo state. Not thread-safe; Gradio is single-threaded per session."""
     def __init__(self):
         self.env = None
-        self.obs = None
         self.done = False
         self.transcript: List[str] = []
         self.last_z: Optional[List[float]] = None
@@ -66,19 +76,16 @@ _STATE = DemoState()
 # ---------------------------------------------------------------------------
 
 def _make_bar_chart_html(z: List[float], top_traits: List[List], title: str = "") -> str:
-    """Return an HTML bar chart for SVD z-coordinates."""
+    """Return HTML: PC-indexed bar chart for SVD z-coordinates + top-trait text list."""
     if not z:
         return "<p>No projection data yet.</p>"
-    k = len(z)
-    bar_w = max(300, k * 24)
     max_abs = max(abs(v) for v in z) or 1.0
     bars = []
     for i, val in enumerate(z):
         pct_pos = val / max_abs  # [-1, 1]
-        label = top_traits[i][0] if i < len(top_traits) else f"PC{i}"
+        label = f"PC{i}"
         color = "#4a90d9" if val >= 0 else "#e05a5a"
         width_px = int(abs(pct_pos) * 80)
-        margin_px = 80 - width_px if val < 0 else 80
         bars.append(
             f'<div style="display:flex;align-items:center;gap:4px;margin:2px 0">'
             f'<span style="font-size:11px;width:90px;text-align:right;color:#888">{label}</span>'
@@ -88,9 +95,20 @@ def _make_bar_chart_html(z: List[float], top_traits: List[List], title: str = ""
             f'<span style="font-size:10px;color:#666">{val:.2f}</span>'
             f'</div>'
         )
+    # Top-k nearest traits as a numbered text list below the bars
+    trait_items = "".join(
+        f'<li style="font-size:11px">{rank}. {slug} ({score:.2f})</li>'
+        for rank, (slug, score) in enumerate(top_traits[:5], start=1)
+    )
+    trait_list = (
+        f'<div style="margin-top:8px"><b style="font-size:11px">Top traits:</b>'
+        f'<ol style="margin:2px 0;padding-left:18px">{trait_items}</ol></div>'
+        if trait_items else ""
+    )
     return (
         f'<div style="font-size:12px;font-weight:600;margin-bottom:8px">{title}</div>'
         + "".join(bars)
+        + trait_list
     )
 
 
@@ -98,93 +116,109 @@ def _make_bar_chart_html(z: List[float], top_traits: List[List], title: str = ""
 # Game control
 # ---------------------------------------------------------------------------
 
-def _start_game(game_id: str, persona_values: Dict[str, float],
-                hook: str, layers: List[int]) -> Tuple[str, str]:
-    """Initialise or re-initialise the TextArena env and agent."""
-    global _STATE
-    with _STATE.lock:
-        env = ta.make(game_id)
-        obs, info = env.reset(num_players=2)
-        _STATE.env = env
-        _STATE.obs = obs
-        _STATE.done = False
-        _STATE.transcript = [f"[Game started: {game_id}]"]
-        _STATE.last_z = None
-        _STATE.last_top_traits = []
-
-        # Build SVD steering from current sliders
-        if _STATE.policy is not None and _STATE.steering is not None:
-            _update_persona(persona_values, layers, hook)
-
-        obs_text = obs.get(_HUMAN_ID, obs.get(str(_HUMAN_ID), ""))
-        _STATE.transcript.append(f"[Env] {obs_text}")
-        transcript_html = "<br>".join(_STATE.transcript)
-        chart_html = "<p>Play a turn to see projection.</p>"
-    return transcript_html, chart_html
-
-
 def _update_persona(persona_values: Dict[str, float], layers: List[int], hook: str) -> None:
     """Recompute injection vectors from slider state (no model reload)."""
     if _STATE.steering is None or _STATE.policy is None:
         return
+    # Drive all non-human slots with the same steered policy
+    num_players = _STATE.env.num_players if _STATE.env is not None else 2
     _STATE.steering._per_agent = {
-        str(_AGENT_ID): {
+        str(pid): {
             "hook": hook,
             "layers": layers,
             "coefficient": 1.0,
             "persona": persona_values,
         }
+        for pid in range(1, num_players)
     }
 
 
+def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]:
+    """Drive all agent turns until human's turn or game end (must be called within lock)."""
+    chart_html = "<p>Play a turn to see projection.</p>"
+    while not _STATE.done:
+        obs_str, info = _STATE.env.get_observation()
+        current_player = info.get("player_id", _HUMAN_ID)
+        if current_player == _HUMAN_ID:
+            break
+        # Non-human slot: auto-generate
+        system_prompt = "You are a competitive game player. Respond concisely."
+        action, _ = _STATE.policy.act(
+            system_prompt=system_prompt,
+            user_prompt=str(obs_str),
+            agent_id=str(current_player),
+            steering=None,  # SVDSteering handled via apply_hooks inside act()
+        )
+        _STATE.transcript.append(f"[Agent {current_player}] {action}")
+        done, _info = _STATE.env.step(action)
+        _STATE.done = done
+        if done:
+            _STATE.transcript.append("[Game over]")
+            chart_html = "<p>Game over.</p>"
+            break
+        # Update chart if probe_layer requested
+        if probe_layer is not None and _STATE.policy._last_probe:
+            layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
+            z = layer_data.get("z", None)
+            top_traits = layer_data.get("top_traits", [])
+            if z:
+                _STATE.last_z = z
+                _STATE.last_top_traits = top_traits
+                chart_html = _make_bar_chart_html(
+                    z, top_traits, title=f"SVD projection (layer {probe_layer})"
+                )
+    return "<br>".join(_STATE.transcript), chart_html
+
+
+def _start_game(game_id: str, persona_values: Dict[str, float],
+                hook: str, layers: List[int]) -> Tuple[str, str]:
+    """Initialise or re-initialise the TextArena env and agent."""
+    global _STATE
+    with _STATE.lock:
+        num_players = _GAME_PLAYERS.get(game_id, 2)
+        env = ta.make(game_id)
+        env.reset(num_players=num_players)
+        _STATE.env = env
+        _STATE.done = False
+        _STATE.transcript = [f"[Game started: {game_id}]"]
+        _STATE.last_z = None
+        _STATE.last_top_traits = []
+
+        if _STATE.policy is not None and _STATE.steering is not None:
+            _update_persona(persona_values, layers, hook)
+
+        obs_str, info = env.get_observation()
+        current_player = info.get("player_id", _HUMAN_ID)
+        _STATE.transcript.append(f"[Env] {obs_str}")
+
+        if current_player != _HUMAN_ID and not _STATE.done:
+            transcript_html, chart_html = _auto_play_agents_until_human(probe_layer=None)
+        else:
+            transcript_html = "<br>".join(_STATE.transcript)
+            chart_html = "<p>Play a turn to see projection.</p>"
+
+    return transcript_html, chart_html
+
+
 def _human_turn(human_text: str, probe_layer: int) -> Tuple[str, str]:
-    """Process one human action and one agent response."""
+    """Process one human action then auto-play agents until human's turn again."""
     global _STATE
     with _STATE.lock:
         if _STATE.env is None or _STATE.done:
             return "Start a game first.", "<p>No game running.</p>"
 
-        # 1. Step the env with human action
-        obs, rewards, done, info = _STATE.env.step({_HUMAN_ID: human_text})
+        # 1. Step the env with the human's action (step takes a plain string)
+        done, _info = _STATE.env.step(human_text)
         _STATE.transcript.append(f"[You] {human_text}")
-
-        if done:
-            _STATE.done = True
-            _STATE.transcript.append(f"[Game over] {rewards}")
-            return "<br>".join(_STATE.transcript), "<p>Game over.</p>"
-
-        # 2. Agent turn
-        agent_obs = obs.get(_AGENT_ID, obs.get(str(_AGENT_ID), ""))
-        system_prompt = "You are a competitive game player. Respond concisely."
-        action, _ = _STATE.policy.act(
-            system_prompt=system_prompt,
-            user_prompt=str(agent_obs),
-            agent_id=str(_AGENT_ID),
-            steering=None,  # SVDSteering handled via self.steering.apply_hooks
-        )
-        _STATE.transcript.append(f"[Agent] {action}")
-
-        # 3. Step env with agent action
-        obs, rewards, done, info = _STATE.env.step({_AGENT_ID: action})
         _STATE.done = done
 
         if done:
-            _STATE.transcript.append(f"[Game over] {rewards}")
+            _STATE.transcript.append("[Game over]")
+            return "<br>".join(_STATE.transcript), "<p>Game over.</p>"
 
-        # 4. Extract SVD projection from probe
-        z = None
-        top_traits: List[List] = []
-        if _STATE.policy._last_probe:
-            layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
-            z = layer_data.get("z", None)
-            top_traits = layer_data.get("top_traits", [])
-        _STATE.last_z = z
-        _STATE.last_top_traits = top_traits
+        # 2. Auto-play agents until it's the human's turn again
+        transcript_html, chart_html = _auto_play_agents_until_human(probe_layer)
 
-        chart_html = _make_bar_chart_html(
-            z or [], top_traits, title=f"SVD projection (layer {probe_layer})"
-        )
-        transcript_html = "<br>".join(_STATE.transcript)
     return transcript_html, chart_html
 
 
@@ -221,7 +255,7 @@ def main(argv=None):
     steering = SVDSteering(
         basis_path=args.basis,
         per_agent={
-            str(_AGENT_ID): {
+            "1": {
                 "hook": args.hook,
                 "layers": layers,
                 "coefficient": 1.0,
@@ -284,9 +318,9 @@ def main(argv=None):
             t, c = _start_game(game_id, persona, hook_type, layers)
             return t, c
 
-        def _on_send(text, layer_str, *slider_vals):
+        def _on_send(text, layer_str, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
-            _update_persona(persona, layers, args.hook)
+            _update_persona(persona, layers, hook_type)
             t, c = _human_turn(text, int(layer_str))
             return t, c, ""
 
@@ -304,7 +338,7 @@ def main(argv=None):
         )
         send_btn.click(
             fn=_on_send,
-            inputs=[human_input, probe_layer] + slider_list,
+            inputs=[human_input, probe_layer, hook_sel] + slider_list,
             outputs=[transcript, chart, human_input],
         )
         apply_btn.click(fn=_on_apply, inputs=slider_list, outputs=[chart])

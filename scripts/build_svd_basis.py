@@ -254,7 +254,7 @@ def run_build(
         "effective_rank": eff_rank,
     }, str(out_path))
     n_merged = len(present_slugs) - len(dedup_slugs)
-    print(f"[done] {len(present_slugs)} traits → {len(dedup_slugs)} after dedup "
+    print(f"[done] {len(present_slugs)} traits -> {len(dedup_slugs)} after dedup "
           f"({n_merged} merged); basis saved to {out_path}")
 
 

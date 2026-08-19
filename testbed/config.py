@@ -32,6 +32,14 @@ def build_steering(cfg: Dict[str, Any]):
             default_config=default_config,
             mode=mode,
         )
+    if method == "svd":
+        from testbed.steering.svd_steering import SVDSteering
+        return SVDSteering(
+            basis_path=cfg["basis_path"],
+            per_agent=cfg.get("per_agent", {}),
+            default_config=cfg.get("default_config"),
+            mode=cfg.get("mode", "additive"),
+        )
     raise ValueError(f"Unknown steering method: {method!r}")
 
 
@@ -39,6 +47,18 @@ def build_probe(probing_cfg: Optional[Dict[str, Any]]):
     """Build a PersonaProbe if probing is enabled in the config, else None."""
     if not probing_cfg or not probing_cfg.get("enabled"):
         return None
+
+    if probing_cfg.get("mode") == "svd":
+        from testbed.probing.svd_probe import SVDPersonaProbe
+        return SVDPersonaProbe(
+            basis_path=probing_cfg["basis_path"],
+            layers=probing_cfg.get("layers", [18]),
+            hook=probing_cfg.get("hook", "attn"),
+            layer_path_template=probing_cfg.get("layer_path_template", "model.layers.{}"),
+            window_tokens=probing_cfg.get("window_tokens", 10),
+            top_k=probing_cfg.get("top_k", 5),
+        )
+
     from testbed.probing.persona_probe import PersonaProbe
     template = probing_cfg.get("layer_path_template", "model.layers.{}")
 
