@@ -44,10 +44,10 @@ Build an SVD-based persona steering and monitoring system on top of the existing
 
 | hook name | sublayer hooked in HF Qwen3/Llama | captures |
 |---|---|---|
-| `attn` | `model.layers.{N}.self_attn` | attention output delta |
-| `mlp` | `model.layers.{N}.mlp` | MLP output delta |
+| `attn` | `model.layers.{N}.self_attn.o_proj` | attention output delta (o_proj output) |
+| `mlp` | `model.layers.{N}.mlp.down_proj` | MLP output delta (down_proj output) |
 | `residual` | `model.layers.{N}` | full residual stream (existing behavior) |
-| `both` | both `self_attn` and `mlp` | simultaneous dual injection |
+| `both` | both `self_attn.o_proj` and `mlp.down_proj` | simultaneous dual injection |
 
 The SVD basis **must be built with the same hook type** that will be used at inference —
 attn_delta basis vectors differ from mlp_delta basis vectors.
@@ -164,8 +164,8 @@ SVDPersonaProbe(
 ```
 
 **Hook registration:** one hook per layer, attached to the correct sublayer for `hook`:
-- `attn` → `model.layers.{N}.self_attn`
-- `mlp` → `model.layers.{N}.mlp`
+- `attn` → `model.layers.{N}.self_attn.o_proj`
+- `mlp` → `model.layers.{N}.mlp.down_proj`
 - `residual` → `model.layers.{N}`
 
 Follows exact same `make_hook() → (hooks_list, get_result_fn)` pattern as `PersonaProbe`.
@@ -230,9 +230,9 @@ def _build_injection(self, persona: Dict[str, float], layer: int) -> torch.Tenso
 ```
 
 **Hook registration:** for each layer in `layers`, registers hooks on the correct sublayer:
-- `hook: attn` → one hook on `model.layers.{N}.self_attn`
-- `hook: mlp` → one hook on `model.layers.{N}.mlp`
-- `hook: both` → two hooks per layer (attn + mlp)
+- `hook: attn` → one hook on `model.layers.{N}.self_attn.o_proj`
+- `hook: mlp` → one hook on `model.layers.{N}.mlp.down_proj`
+- `hook: both` → two hooks per layer (attn + mlp, i.e. both sub-paths)
 - `hook: residual` → one hook on `model.layers.{N}`
 
 Hook function body is **identical** to `make_steering_hook()` from `activation.py` —
