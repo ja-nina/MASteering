@@ -58,6 +58,7 @@ class DemoState:
     """Mutable demo state. Not thread-safe; Gradio is single-threaded per session."""
     def __init__(self):
         self.env = None
+        self.game_id: Optional[str] = None
         self.done = False
         self.transcript: List[str] = []
         self.last_z: Optional[List[float]] = None
@@ -121,7 +122,7 @@ def _update_persona(persona_values: Dict[str, float], layers: List[int], hook: s
     if _STATE.steering is None or _STATE.policy is None:
         return
     # Drive all non-human slots with the same steered policy
-    num_players = _STATE.env.num_players if _STATE.env is not None else 2
+    num_players = _GAME_PLAYERS.get(_STATE.game_id, 2) if _STATE.game_id else 2
     _STATE.steering._per_agent = {
         str(pid): {
             "hook": hook,
@@ -179,6 +180,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         env = ta.make(game_id)
         env.reset(num_players=num_players)
         _STATE.env = env
+        _STATE.game_id = game_id
         _STATE.done = False
         _STATE.transcript = [f"[Game started: {game_id}]"]
         _STATE.last_z = None
