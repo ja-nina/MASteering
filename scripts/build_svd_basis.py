@@ -178,6 +178,7 @@ def run_build(
     merge_threshold: float,
     rank: Optional[int],
     out_path: Path,
+    amoral_slugs: Optional[List[str]] = None,
 ) -> None:
     """Full pipeline: load → dedup → SVD → save."""
     if hook not in _HOOK_KEYS:
@@ -193,6 +194,16 @@ def run_build(
             slug = raw_pt.stem[:-4]
             slug_dirs[slug] = amoral_dir
     all_slugs = list(slug_dirs.keys())
+    # amoral_slugs filter: keep only the requested subset from amoral_dir
+    if amoral_dir is not None and amoral_slugs:
+        allowed = set(amoral_slugs)
+        removed = [s for s in all_slugs if slug_dirs.get(s) == amoral_dir and s not in allowed]
+        for s in removed:
+            del slug_dirs[s]
+        all_slugs = list(slug_dirs.keys())
+        if removed:
+            print(f"[amoral filter] kept {len(allowed) - len(set(removed) & allowed)} "
+                  f"/ {len(allowed)} requested; dropped {removed}")
     if not all_slugs:
         raise RuntimeError(f"No *_raw.pt files found under {std_dir}")
 
@@ -262,6 +273,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Build SVD persona basis from PersVecGen raw .pt files.")
     p.add_argument("--std-dir",  required=True, type=Path)
     p.add_argument("--amoral-dir", default=None, type=Path)
+    p.add_argument("--amoral-slugs", default=None, nargs="+",
+                   help="Whitelist of amoral trait slugs to include (default: all in amoral-dir)")
     p.add_argument("--hook",   default="attn", choices=list(_HOOK_KEYS))
     p.add_argument("--model",  required=True)
     p.add_argument("--ref-layer",       default=18, type=int)
@@ -278,6 +291,7 @@ def main(argv=None):
         merge_threshold=args.merge_threshold,
         rank=args.rank,
         out_path=args.out,
+        amoral_slugs=args.amoral_slugs,
     )
 
 
