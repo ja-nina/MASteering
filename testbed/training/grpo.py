@@ -94,6 +94,10 @@ def wandb_log_step(
     probe_layer: int,
     use_persona_lora: bool,
     log_transcript_every: int = 50,
+    rolling_mean: Optional[float] = None,
+    game_outcome: Optional[dict] = None,
+    step_time: Optional[float] = None,
+    target_trait_slugs: Optional[List[str]] = None,
 ) -> None:
     """Log rich training diagnostics to wandb."""
     if wandb_run is None:
@@ -117,8 +121,17 @@ def wandb_log_step(
             / max(sum(len(tg.records) for tg in episode.turn_groups), 1)
         ),
     }
+    if rolling_mean is not None:
+        log["reward/rolling_mean_10"] = rolling_mean
+    if step_time is not None:
+        log["train/step_time_s"] = step_time
+    if game_outcome is not None:
+        log["episode/trainee_game_reward"] = game_outcome.get("trainee", float("nan"))
+        log["episode/opponent_game_reward"] = game_outcome.get("opponent", float("nan"))
 
-    # ── 2. Persona space per layer (trainee's own probe, sample K=0) ─────────
+    # ── 2. Persona projections at display_layer only (trainee, K=0) ─────────
+    # Averaging over all trainee turns keeps this representative without logging
+    # all 26 layers × 55 traits = 1430 metrics per step.
     layer_z_sums: dict = {}
     layer_z_counts: dict = {}
     for tg in episode.turn_groups:
@@ -126,6 +139,8 @@ def wandb_log_step(
         if not record.probe_z_all:
             continue
         for layer_key, z_list in record.probe_z_all.items():
+            if int(layer_key) != probe_layer:
+                continue   # only display_layer
             z = torch.tensor(z_list, dtype=torch.float32)
             if layer_key not in layer_z_sums:
                 layer_z_sums[layer_key] = z.clone()
@@ -143,7 +158,10 @@ def wandb_log_step(
             C_norms = C.norm(dim=1).clamp(min=1e-8)
             sims = (C @ mean_z) / (C_norms * z_norm)
             for slug, sim in zip(probe._slugs, sims.tolist()):
-                log[f"persona/layer_{layer_key}/{slug}"] = sim
+                log[f"persona/{slug}"] = sim
+                # Dedicated target-trait panel for quick dashboard glance
+                if target_trait_slugs and slug in target_trait_slugs:
+                    log[f"target_trait/{slug}"] = sim
 
     # ── 3. LoRA B-matrix norms ───────────────────────────────────────────────
     for name, param in model.named_parameters():

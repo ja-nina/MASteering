@@ -16,7 +16,8 @@ Usage:
     python scripts/train_lora.py --config configs/training/persona_lora.yaml
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, shutil, sys, time
+from collections import deque
 from pathlib import Path
 
 import torch
@@ -170,9 +171,11 @@ def main():
     parser.add_argument("--rank", type=int, default=None)
     parser.add_argument("--traits", default=None,
                         help="Override target_traits: 'slug:weight,slug:weight' "
-                             "(e.g. 'agreeable:1.5,warm:1.0')")
+                             "(e.g. 'agreeableness:1.5,empathy:1.0')")
     parser.add_argument("--run-name", default=None,
                         help="Override wandb run name and output save_dir suffix")
+    parser.add_argument("--local-save-dir", default=None,
+                        help="Extra save path (e.g. scratch dir) for checkpoints and final adapters")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -197,6 +200,13 @@ def main():
         cfg["output"]["save_dir"] = f"{base}/{args.run_name}"
         print(f"[CLI] run_name={args.run_name}  save_dir={cfg['output']['save_dir']}",
               flush=True)
+
+    local_save_dir = Path(args.local_save_dir) if args.local_save_dir else None
+    if local_save_dir:
+        run_suffix = args.run_name or cfg.get("wandb", {}).get("name", "run")
+        local_save_dir = local_save_dir / run_suffix
+        local_save_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[CLI] local_save_dir={local_save_dir}", flush=True)
 
     use_persona_lora = cfg.get("use_persona_lora", True)
 
@@ -329,10 +339,46 @@ def main():
     episode_log = []
     step = 0
 
+    # ── Startup banner ────────────────────────────────────────────────────────
+    target_traits = reward_cfg["target_traits"]
+    target_trait_slugs = list(target_traits.keys())
+    traits_str = ", ".join(f"{s}×{w:+g}" for s, w in target_traits.items())
+    adapters_str = (
+        f"adapter_a (SVD r={cfg['lora_a']['rank']}) + adapter_b (free r={cfg['lora_b']['rank']})"
+        if use_persona_lora else f"adapter_b only (free r={cfg['lora_b']['rank']})"
+    )
+    total_episodes = train_cfg["episodes"]
+    run_name = cfg.get("wandb", {}).get("name", "unnamed")
+    print("", flush=True)
+    print("═" * 60, flush=True)
+    print(f"  Persona LoRA Training", flush=True)
+    print(f"  run      : {run_name}", flush=True)
+    print(f"  game     : {game_id}", flush=True)
+    print(f"  model    : {model_id}", flush=True)
+    print(f"  traits   : {traits_str}", flush=True)
+    print(f"  adapters : {adapters_str}", flush=True)
+    print(f"  episodes : {total_episodes}  grpo_k={grpo_k}  save_every={save_interval}", flush=True)
+    print(f"  save_dir : {save_dir}", flush=True)
+    if local_save_dir:
+        print(f"  local    : {local_save_dir}", flush=True)
+    print("═" * 60, flush=True)
+    print("", flush=True)
+
+    rolling_rewards: deque = deque(maxlen=10)
+    train_start = time.time()
+
     def _reward_fn(opp_z):
         if opp_z is None:
             return 0.0
         return reward_alpha * persona_reward(opp_z)
+
+    def _fmt_eta(elapsed: float, done: int, total: int) -> str:
+        if done == 0:
+            return "?"
+        remaining = elapsed / done * (total - done)
+        h, m = divmod(int(remaining), 3600)
+        m //= 60
+        return f"{h}h{m:02d}m" if h else f"{m}m"
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(1, train_cfg["episodes"] + 1):
