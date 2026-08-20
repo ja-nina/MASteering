@@ -323,13 +323,17 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
             _STATE.transcript.append("[Game over]")
             chart_html = "<p>Game over.</p>"
             break
-        # Update time series if probe_layer requested
+        # Update time series: one point per chunk (window_tokens rolling avg)
         if probe_layer is not None and _STATE.policy._last_probe:
             layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
-            top_traits = layer_data.get("top_traits", [])
-            if top_traits:
-                turn_idx = len(_STATE.probe_history) + 1
-                _STATE.probe_history.append((turn_idx, top_traits))
+            chunks = layer_data.get("chunks", [])
+            for chunk in chunks:
+                z_list = chunk.get("z", [])
+                if z_list:
+                    top_traits = _STATE.probe.rank_traits(z_list, probe_layer)
+                    chunk_idx = len(_STATE.probe_history) + 1
+                    _STATE.probe_history.append((chunk_idx, top_traits))
+            if _STATE.probe_history:
                 chart_html = _make_timeseries_html(
                     _STATE.probe_history, title=f"SVD persona monitor (layer {probe_layer})"
                 )
@@ -400,7 +404,9 @@ def main(argv=None):
                         choices=["attn", "mlp", "both", "residual"])
     parser.add_argument("--layers", default=None,
                         help="Comma-separated layer ints; defaults to all layers in basis")
-    parser.add_argument("--game",   default="SimpleNegotiation-v0")
+    parser.add_argument("--game",         default="SimpleNegotiation-v0")
+    parser.add_argument("--window-tokens", type=int, default=10,
+                        help="Tokens per rolling-average chunk in the probe (default: 10)")
     parser.add_argument("--share",  action="store_true")
     args = parser.parse_args(argv)
 
@@ -419,6 +425,7 @@ def main(argv=None):
         layers=layers,
         hook=args.hook,
         top_k=7,
+        window_tokens=args.window_tokens,
     )
 
     # Build steering (starts with all zeros)

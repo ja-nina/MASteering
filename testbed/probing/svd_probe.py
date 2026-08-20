@@ -161,6 +161,12 @@ class SVDPersonaProbe:
 
         return hooks, _get_result
 
+    def rank_traits(self, z_list: List[float], layer: int) -> List[List]:
+        """Public: rank traits for a raw z-vector (list of floats) at a given layer."""
+        import torch
+        z = torch.tensor(z_list, dtype=torch.float32)
+        return self._nearest_traits(z, layer)
+
     def _nearest_traits(self, z: "torch.Tensor", layer: int) -> List[List]:
         """Return top-k [[slug, cosine_sim], ...] for z against C[layer]."""
         C = self._C[layer].to(z.device)  # [N_dedup, k]
