@@ -111,9 +111,9 @@ class DemoState:
         self.game_id: Optional[str] = None
         self.done = False
         self.transcript: List[str] = []
-        # history: list of (turn_idx, top_trait_name, top_trait_score, top5)
-        # accumulated across agent turns in the current game
-        self.probe_history: List[tuple] = []
+        # per-layer history: {layer_int: [(word_label, top_traits), ...]}
+        # accumulates across all rounds in the current game
+        self.probe_history: Dict[int, List[tuple]] = {}
         self.policy: Optional[TransformersPolicy] = None
         self.probe: Optional[SVDPersonaProbe] = None
         self.steering: Optional[SVDSteering] = None
@@ -300,59 +300,67 @@ def _update_persona(persona_values: Dict[str, float], layers: List[int], hook: s
     }
 
 
-def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]:
+def _append_probe_chunks(action: str) -> None:
+    """Add chunk data from the latest agent turn to probe_history for every layer."""
+    if not (_STATE.policy and _STATE.policy._last_probe and _STATE.probe):
+        return
+    words = action.split()
+    for layer in _STATE.probe.layers:
+        layer_data = _STATE.policy._last_probe.get(str(layer), {})
+        chunks = layer_data.get("chunks", [])
+        if not chunks:
+            continue
+        total_tokens = chunks[-1]["token"] if chunks else 1
+        if layer not in _STATE.probe_history:
+            _STATE.probe_history[layer] = []
+        for chunk in chunks:
+            z_list = chunk.get("z", [])
+            if not z_list:
+                continue
+            frac = chunk["token"] / max(total_tokens, 1)
+            word_idx = min(int(frac * len(words)), len(words) - 1) if words else 0
+            word_label = words[word_idx] if words else f"t{chunk['token']}"
+            top_traits = _STATE.probe.rank_traits(z_list, layer)
+            _STATE.probe_history[layer].append((word_label, top_traits))
+
+
+def _render_charts() -> str:
+    """Render one time series per layer, stacked vertically."""
+    if not _STATE.probe_history:
+        return "<p>No projection data yet.</p>"
+    parts = []
+    for layer in sorted(_STATE.probe_history.keys()):
+        hist = _STATE.probe_history[layer]
+        if hist:
+            parts.append(_make_timeseries_html(hist, title=f"Layer {layer}"))
+    return "<hr style='margin:6px 0'>".join(parts) if parts else "<p>No data yet.</p>"
+
+
+def _auto_play_agents_until_human() -> Tuple[str, str]:
     """Drive all agent turns until human's turn or game end (must be called within lock)."""
-    chart_html = "<p>Play a turn to see projection.</p>"
     while not _STATE.done:
         current_player, obs_str = _STATE.env.get_observation()
         if current_player == _HUMAN_ID:
             break
-        # Non-human slot: auto-generate
         system_prompt = "You are a competitive game player. Respond concisely."
         action, _ = _STATE.policy.act(
             system_prompt=system_prompt,
             user_prompt=str(obs_str),
             agent_id=str(current_player),
-            steering=None,  # SVDSteering handled via apply_hooks inside act()
+            steering=None,
         )
         _STATE.transcript.append(f"[Agent {current_player}] {action}")
         done, _info = _STATE.env.step(action)
         _STATE.done = done
+        _append_probe_chunks(action)
         if done:
             _STATE.transcript.append("[Game over]")
-            chart_html = "<p>Game over.</p>"
             break
-        # Update time series: one point per chunk, labelled with the word from
-        # the agent's output at that chunk's position in the token stream.
-        if probe_layer is not None and _STATE.policy._last_probe:
-            layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
-            chunks = layer_data.get("chunks", [])
-            if chunks:
-                # Map chunk index → word from the generated text.
-                # chunks[i]["token"] is the cumulative token count at flush.
-                # We approximate: split action into words, scale by token count.
-                words = action.split()
-                total_tokens = chunks[-1]["token"] if chunks else 1
-                for chunk in chunks:
-                    z_list = chunk.get("z", [])
-                    if not z_list:
-                        continue
-                    # pick the word at this chunk's relative position
-                    frac = chunk["token"] / max(total_tokens, 1)
-                    word_idx = min(int(frac * len(words)), len(words) - 1) if words else 0
-                    word_label = words[word_idx] if words else f"t{chunk['token']}"
-                    top_traits = _STATE.probe.rank_traits(z_list, probe_layer)
-                    _STATE.probe_history.append((word_label, top_traits))
-            if _STATE.probe_history:
-                chart_html = _make_timeseries_html(
-                    _STATE.probe_history, title=f"SVD persona monitor (layer {probe_layer})"
-                )
-    return "<br>".join(_STATE.transcript), chart_html
+    return "<br>".join(_STATE.transcript), _render_charts()
 
 
 def _start_game(game_id: str, persona_values: Dict[str, float],
-                hook: str, layers: List[int],
-                probe_layer: Optional[int] = None) -> Tuple[str, str]:
+                hook: str, layers: List[int]) -> Tuple[str, str]:
     """Initialise or re-initialise the TextArena env and agent."""
     global _STATE
     with _STATE.lock:
@@ -363,7 +371,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         _STATE.game_id = game_id
         _STATE.done = False
         _STATE.transcript = [f"[Game started: {game_id}]"]
-        _STATE.probe_history = []
+        _STATE.probe_history = {}
 
         if _STATE.policy is not None and _STATE.steering is not None:
             _update_persona(persona_values, layers, hook)
@@ -372,7 +380,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         _STATE.transcript.append(f"[Env] {obs_str}")
 
         if current_player != _HUMAN_ID and not _STATE.done:
-            transcript_html, chart_html = _auto_play_agents_until_human(probe_layer=probe_layer)
+            transcript_html, chart_html = _auto_play_agents_until_human()
         else:
             transcript_html = "<br>".join(_STATE.transcript)
             chart_html = "<p>Play a turn to see projection.</p>"
@@ -380,24 +388,22 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
     return transcript_html, chart_html
 
 
-def _human_turn(human_text: str, probe_layer: int) -> Tuple[str, str]:
+def _human_turn(human_text: str) -> Tuple[str, str]:
     """Process one human action then auto-play agents until human's turn again."""
     global _STATE
     with _STATE.lock:
         if _STATE.env is None or _STATE.done:
             return "Start a game first.", "<p>No game running.</p>"
 
-        # 1. Step the env with the human's action (step takes a plain string)
         done, _info = _STATE.env.step(human_text)
         _STATE.transcript.append(f"[You] {human_text}")
         _STATE.done = done
 
         if done:
             _STATE.transcript.append("[Game over]")
-            return "<br>".join(_STATE.transcript), "<p>Game over.</p>"
+            return "<br>".join(_STATE.transcript), _render_charts()
 
-        # 2. Auto-play agents until it's the human's turn again
-        transcript_html, chart_html = _auto_play_agents_until_human(probe_layer)
+        transcript_html, chart_html = _auto_play_agents_until_human()
 
     return transcript_html, chart_html
 
@@ -487,12 +493,7 @@ def main(argv=None):
 
             # ── Centre: SVD chart ────────────────────────────────────────────
             with gr.Column(scale=2):
-                chart = gr.HTML(label="SVD Projection", value="<p>No data yet.</p>")
-                probe_layer = gr.Dropdown(
-                    choices=[str(l) for l in layers],
-                    value=str(layers[0]),
-                    label="Display layer",
-                )
+                chart = gr.HTML(label="SVD Projection — all layers", value="<p>No data yet.</p>")
 
             # ── Right: controls ──────────────────────────────────────────────
             with gr.Column(scale=1):
@@ -514,16 +515,16 @@ def main(argv=None):
         def _on_game_change(game_id):
             return _instructions_html(game_id)
 
-        def _on_start(game_id, layer_str, hook_type, *slider_vals):
+        def _on_start(game_id, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
             _update_persona(persona, layers, hook_type)
-            t, c = _start_game(game_id, persona, hook_type, layers, probe_layer=int(layer_str))
+            t, c = _start_game(game_id, persona, hook_type, layers)
             return _instructions_html(game_id), t, c
 
-        def _on_send(text, layer_str, hook_type, *slider_vals):
+        def _on_send(text, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
             _update_persona(persona, layers, hook_type)
-            t, c = _human_turn(text, int(layer_str))
+            t, c = _human_turn(text)
             return t, c, ""
 
         def _on_apply(*slider_vals):
@@ -537,12 +538,12 @@ def main(argv=None):
 
         start_btn.click(
             fn=_on_start,
-            inputs=[game_sel, probe_layer, hook_sel] + slider_list,
+            inputs=[game_sel, hook_sel] + slider_list,
             outputs=[instructions, transcript, chart],
         )
         send_btn.click(
             fn=_on_send,
-            inputs=[human_input, probe_layer, hook_sel] + slider_list,
+            inputs=[human_input, hook_sel] + slider_list,
             outputs=[transcript, chart, human_input],
         )
         apply_btn.click(fn=_on_apply, inputs=slider_list, outputs=[chart])
