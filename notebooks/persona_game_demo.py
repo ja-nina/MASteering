@@ -336,7 +336,8 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
 
 
 def _start_game(game_id: str, persona_values: Dict[str, float],
-                hook: str, layers: List[int]) -> Tuple[str, str]:
+                hook: str, layers: List[int],
+                probe_layer: Optional[int] = None) -> Tuple[str, str]:
     """Initialise or re-initialise the TextArena env and agent."""
     global _STATE
     with _STATE.lock:
@@ -356,7 +357,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         _STATE.transcript.append(f"[Env] {obs_str}")
 
         if current_player != _HUMAN_ID and not _STATE.done:
-            transcript_html, chart_html = _auto_play_agents_until_human(probe_layer=None)
+            transcript_html, chart_html = _auto_play_agents_until_human(probe_layer=probe_layer)
         else:
             transcript_html = "<br>".join(_STATE.transcript)
             chart_html = "<p>Play a turn to see projection.</p>"
@@ -494,10 +495,10 @@ def main(argv=None):
         def _on_game_change(game_id):
             return _instructions_html(game_id)
 
-        def _on_start(game_id, hook_type, *slider_vals):
+        def _on_start(game_id, layer_str, hook_type, *slider_vals):
             persona = dict(zip(sorted(all_slugs), slider_vals))
             _update_persona(persona, layers, hook_type)
-            t, c = _start_game(game_id, persona, hook_type, layers)
+            t, c = _start_game(game_id, persona, hook_type, layers, probe_layer=int(layer_str))
             return _instructions_html(game_id), t, c
 
         def _on_send(text, layer_str, hook_type, *slider_vals):
@@ -517,7 +518,7 @@ def main(argv=None):
 
         start_btn.click(
             fn=_on_start,
-            inputs=[game_sel, hook_sel] + slider_list,
+            inputs=[game_sel, probe_layer, hook_sel] + slider_list,
             outputs=[instructions, transcript, chart],
         )
         send_btn.click(
