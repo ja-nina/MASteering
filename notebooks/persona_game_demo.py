@@ -129,7 +129,8 @@ _STATE = DemoState()
 
 _SERIES_COLORS = [
     "#4a90d9", "#e05a5a", "#5ab85a", "#e0a020",
-    "#9b59b6", "#1abc9c", "#e67e22", "#2ecc71",
+    "#9b59b6", "#1abc9c", "#e67e22", "#e91e8c",
+    "#00bcd4", "#8d6e63",
 ]
 
 
@@ -249,7 +250,7 @@ def _make_timeseries_html(history: list, title: str = "") -> str:
     # Legend (right of chart, stacked)
     legend_x = PAD_L + plot_w + 6
     legend_els = []
-    for t_idx, slug in enumerate(seen_traits[:8]):
+    for t_idx, slug in enumerate(seen_traits[:10]):
         color = _SERIES_COLORS[t_idx % len(_SERIES_COLORS)]
         ly = PAD_T + t_idx * 16
         label = slug[:11] + "…" if len(slug) > 12 else slug
@@ -417,6 +418,7 @@ def main(argv=None):
         basis_path=args.basis,
         layers=layers,
         hook=args.hook,
+        top_k=7,
     )
 
     # Build steering (starts with all zeros)
