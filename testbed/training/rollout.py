@@ -1,14 +1,17 @@
 """Episode rollout for self-play training.
 
-Generation is fully decoupled from gradient computation:
+Reward design: the trainee is rewarded based on the OPPONENT's hidden-state
+persona projection after reading the trainee's message — i.e., does the
+trainee's text cause the opponent to internally represent the target traits?
+This is captured by reading trainee_policy._last_probe right after the
+opponent's turn (FrozenOpponent calls through to trainee_policy.act(), which
+updates _last_probe with the opponent's forward-pass activations).
 
-  collect_episode()  — pure torch.no_grad(); stores (obs, action, full_ids,
-                        probe_z) but no live computation graph.
-  recompute_logprobs() — single batched teacher-forcing pass WITH gradients,
-                         called once per GRPO group just before backward.
-
-This keeps collection fast (no graph accumulation) and lets the optimizer
-step work on freshly computed log_probs without 80 stale graphs in VRAM.
+Generation is decoupled from gradient computation:
+  collect_episode()     — pure torch.no_grad(); stores full_ids+input_len
+                          but no live computation graph.
+  recompute_logprobs()  — teacher-forcing pass WITH gradients, called once
+                          per GRPO group just before backward.
 """
 from __future__ import annotations
 import time
@@ -17,19 +20,23 @@ from typing import Dict, List, Optional
 
 import torch
 
-OPPONENT_ID = 0  # player 0 = frozen opponent
-TRAINEE_ID  = 1  # player 1 = model being trained
+OPPONENT_ID = 0
+TRAINEE_ID  = 1
 
 
 @dataclass
 class TurnRecord:
     obs: str
     action: str
-    full_ids: "torch.Tensor"               # [1, input_len+gen_len] cpu tensor
-    input_len: int                         # number of prompt tokens in full_ids
-    log_prob: Optional["torch.Tensor"]     # filled in by recompute_logprobs()
-    probe_z: Optional[List[float]]         # z-vector at reward layer (for reward fn)
-    probe_z_all: Optional[Dict[str, List[float]]] = None  # z per layer (for logging)
+    full_ids: "torch.Tensor"               # [1, input_len+gen_len] cpu, no grad
+    input_len: int                         # prompt token count in full_ids
+    log_prob: Optional["torch.Tensor"]     # filled by recompute_logprobs()
+    # Trainee's own hidden-state projection (for logging/analysis only).
+    probe_z: Optional[List[float]]
+    # Opponent's hidden-state projection after reading this trainee message
+    # (the reward signal — did my words shift the opponent's persona?).
+    probe_z_opponent: Optional[List[float]] = None
+    probe_z_all: Optional[Dict[str, List[float]]] = None
 
 
 @dataclass
@@ -44,7 +51,7 @@ def collect_episode(
     trainee_policy,
     opponent_policy,
     probe_layer: int,
-    reward_fn=None,           # unused; kept for API compat
+    reward_fn=None,
     system_prompt: str = "You are a strategic game player. Respond concisely.",
     max_turns: int = 50,
     seed: Optional[int] = None,
@@ -56,14 +63,15 @@ def collect_episode(
     env.reset(num_players=num_players)
     episode = Episode()
     turn_count = 0
+    pending_trainee_record: Optional[TurnRecord] = None  # waiting for opponent reaction
 
     while turn_count < max_turns:
         player_id, obs_str = env.get_observation()
+
         if player_id == TRAINEE_ID:
             if verbose:
                 print(f"    turn {turn_count+1} trainee...", flush=True)
             t0 = time.time()
-            # Generate action — pure no_grad, no computation graph stored.
             action, (full_ids, input_len) = trainee_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
@@ -72,23 +80,27 @@ def collect_episode(
                 return_full_ids=True,
             )
             elapsed = time.time() - t0
+
+            # Trainee's own probe (kept for logging/analysis only).
             probe_z = None
             probe_z_all = None
             if trainee_policy._last_probe:
-                layer_data = trainee_policy._last_probe.get(str(probe_layer), {})
-                probe_z = layer_data.get("z") or None
+                ld = trainee_policy._last_probe.get(str(probe_layer), {})
+                probe_z = ld.get("z") or None
                 probe_z_all = {
                     k: v["z"] for k, v in trainee_policy._last_probe.items()
                     if v.get("z")
                 }
             if verbose:
-                words = len(action.split())
-                print(f"    turn {turn_count+1} done — {words} words  {elapsed:.1f}s",
-                      flush=True)
-            episode.records.append(
-                TurnRecord(obs_str, action, full_ids, input_len,
-                           log_prob=None, probe_z=probe_z, probe_z_all=probe_z_all)
-            )
+                print(f"    turn {turn_count+1} done — "
+                      f"{len(action.split())} words  {elapsed:.1f}s", flush=True)
+
+            record = TurnRecord(obs_str, action, full_ids, input_len,
+                                log_prob=None, probe_z=probe_z,
+                                probe_z_all=probe_z_all)
+            episode.records.append(record)
+            pending_trainee_record = record  # opponent reaction goes here
+
         else:
             if verbose:
                 print(f"    turn {turn_count+1} opponent...", flush=True)
@@ -99,8 +111,20 @@ def collect_episode(
                 agent_id=str(player_id),
                 steering=None,
             )
+            elapsed = time.time() - t0
+
+            # Capture the opponent's probe — this is the reward signal.
+            # _FrozenOpponent calls through to trainee_policy.act(), so
+            # _last_probe now holds the opponent's hidden-state activation.
+            if pending_trainee_record is not None and trainee_policy._last_probe:
+                ld = trainee_policy._last_probe.get(str(probe_layer), {})
+                opp_z = ld.get("z") or None
+                pending_trainee_record.probe_z_opponent = opp_z
+                pending_trainee_record = None
+
             if verbose:
-                print(f"    turn {turn_count+1} done  {time.time()-t0:.1f}s", flush=True)
+                print(f"    turn {turn_count+1} done  {elapsed:.1f}s", flush=True)
+
         done, _ = env.step(action)
         turn_count += 1
         if done:
@@ -112,11 +136,10 @@ def collect_episode(
 
 
 def recompute_logprobs(episodes: List[Episode], model, device: str) -> None:
-    """Fill in record.log_prob for every trainee turn across all episodes.
+    """Fill record.log_prob for every trainee turn, right before backward.
 
-    Runs one teacher-forcing forward pass per turn WITH gradient tracking.
-    Called once after all K episodes are collected, so graphs are created
-    fresh right before the backward — not held across the entire collection.
+    One teacher-forcing forward pass per turn WITH gradient tracking.
+    Graphs are fresh and freed episode-by-episode during grpo_step.
     """
     import torch.nn.functional as F
 
@@ -125,17 +148,17 @@ def recompute_logprobs(episodes: List[Episode], model, device: str) -> None:
             if record.full_ids is None:
                 record.log_prob = None
                 continue
-            full_ids = record.full_ids.to(device)   # [1, T]
-            input_len = record.input_len
-            gen_len = full_ids.shape[1] - input_len
+            full_ids = record.full_ids.to(device)
+            gen_len = full_ids.shape[1] - record.input_len
             if gen_len <= 0:
                 record.log_prob = torch.tensor(0.0)
                 continue
-            # Forward pass WITH gradients — graph lives only until backward().
-            logits = model(full_ids).logits          # [1, T, vocab]
-            gen_logits = logits[0, input_len - 1: input_len - 1 + gen_len, :]
+            logits = model(full_ids).logits                       # [1, T, vocab]
+            gen_logits = logits[0,
+                                record.input_len - 1:
+                                record.input_len - 1 + gen_len, :]
             log_probs_matrix = F.log_softmax(gen_logits, dim=-1)
-            gen_ids = full_ids[0, input_len:]
+            gen_ids = full_ids[0, record.input_len:]
             record.log_prob = log_probs_matrix[
                 torch.arange(gen_len, device=device), gen_ids
             ].sum()

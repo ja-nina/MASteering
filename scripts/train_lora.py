@@ -334,12 +334,25 @@ def main():
                 probe_layer=probe_layer,
                 max_turns=train_cfg.get("max_turns", 50),
             )
-            # Same reward for both adapters — both push toward target traits.
-            rewards = [persona_reward(r.probe_z) if r.probe_z else 0.0
-                       for r in episode.records]
+            # Reward = opponent's persona shift after reading the trainee's message.
+            # probe_z_opponent is None for trainee turns with no subsequent opponent
+            # turn (e.g. last turn of the game) — fall back to 0.
+            rewards = [
+                persona_reward(r.probe_z_opponent) if r.probe_z_opponent else 0.0
+                for r in episode.records
+            ]
             ep_mean_r = sum(rewards) / max(len(rewards), 1)
-            print(f"  ep {k+1}/{grpo_k}: {len(episode.records)} turns  "
-                  f"r={ep_mean_r:+.4f}", flush=True)
+            n_rewarded = sum(1 for r in episode.records if r.probe_z_opponent)
+            # Show top trait from the last rewarded turn for a quick sanity check.
+            trait_str = ""
+            for r in reversed(episode.records):
+                if r.probe_z_opponent:
+                    top = probe.rank_traits(r.probe_z_opponent, probe_layer)
+                    if top:
+                        trait_str = f"  top={top[0][0]}:{top[0][1]:+.2f}"
+                    break
+            print(f"  ep {k+1}/{grpo_k}: {len(episode.records)} turns "
+                  f"({n_rewarded} rewarded)  r={ep_mean_r:+.4f}{trait_str}", flush=True)
             group_episodes.append(episode)
             group_rewards_a.append(rewards)
             group_rewards_b.append(rewards)

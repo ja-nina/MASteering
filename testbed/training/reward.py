@@ -21,10 +21,22 @@ class PersonaReward:
         # Build target z-direction: weighted sum of trait coordinates.
         w = torch.zeros(len(slugs))
         merge_map = basis.get("merge_map", {})
+        found, missing = [], []
         for trait, weight in target_traits.items():
             canonical = merge_map.get(trait, trait)
             if canonical in slug_to_idx:
                 w[slug_to_idx[canonical]] += weight
+                found.append(trait)
+            else:
+                missing.append(trait)
+        if missing:
+            print(f"[PersonaReward] WARNING: traits not in basis and will be ignored: {missing}")
+            print(f"[PersonaReward] Available slugs: {slugs[:20]}{'...' if len(slugs)>20 else ''}")
+        if found:
+            print(f"[PersonaReward] Targeting traits: {found}")
+        else:
+            print(f"[PersonaReward] ERROR: no target traits found in basis — reward will be 0 everywhere!")
+
         # z_target = C.T @ w  →  [k]
         self.z_target = C.T @ w
         self.z_target_norm = self.z_target.norm().clamp(min=1e-8)
