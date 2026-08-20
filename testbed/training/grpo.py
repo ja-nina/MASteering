@@ -225,6 +225,36 @@ def wandb_log_step(
     except Exception:
         pass
 
+    # ── 5b. Opponent persona time series — ALL K episodes, every step ──────────
+    # The key training signal: does the trainee's text shift the opponent's
+    # internal trait representation turn-by-turn?
+    # Table columns: episode | turn | trait | cosine_sim_opponent | reward
+    try:
+        import wandb as _wandb
+        rows = []
+        for ep_idx, ep in enumerate(episodes):
+            ep_rewards = rewards_a[ep_idx] if ep_idx < len(rewards_a) else []
+            for turn_idx, record in enumerate(ep.records):
+                if not record.probe_z_opponent:
+                    continue
+                z = torch.tensor(record.probe_z_opponent, dtype=torch.float32)
+                if probe_layer not in probe._C:
+                    continue
+                C = probe._C[probe_layer].float()
+                z_norm = z.norm().clamp(min=1e-8)
+                C_norms = C.norm(dim=1).clamp(min=1e-8)
+                sims = (C @ z) / (C_norms * z_norm)
+                r = ep_rewards[turn_idx] if turn_idx < len(ep_rewards) else float("nan")
+                for slug, sim in zip(probe._slugs, sims.tolist()):
+                    rows.append([ep_idx, turn_idx, slug, round(sim, 4), round(r, 4)])
+        if rows:
+            log["opponent_persona/timeseries"] = _wandb.Table(
+                columns=["episode", "turn", "trait", "cosine_sim_opponent", "reward"],
+                data=rows,
+            )
+    except Exception:
+        pass
+
     # ── 6. All K rollout transcripts (every N steps) ────────────────────────
     # Logs every episode in the GRPO group as a wandb.Table so all rollouts
     # can be inspected side-by-side in the wandb UI.
