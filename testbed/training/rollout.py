@@ -1,5 +1,6 @@
 """Episode rollout for self-play training."""
 from __future__ import annotations
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -48,6 +49,7 @@ def collect_episode(
         if player_id == TRAINEE_ID:
             if verbose:
                 print(f"    turn {turn_count+1} trainee...", flush=True)
+            t0 = time.time()
             action, log_prob = trainee_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
@@ -55,26 +57,26 @@ def collect_episode(
                 steering=None,
                 return_logprob=True,
             )
+            elapsed = time.time() - t0
             probe_z = None
             probe_z_all = None
             if trainee_policy._last_probe:
-                # Reward layer z
                 layer_data = trainee_policy._last_probe.get(str(probe_layer), {})
                 probe_z = layer_data.get("z") or None
-                # All layers z (for logging)
                 probe_z_all = {
                     k: v["z"] for k, v in trainee_policy._last_probe.items()
                     if v.get("z")
                 }
             if verbose:
-                print(f"    turn {turn_count+1} done — "
-                      f"{len(action.split())} words", flush=True)
+                words = len(action.split())
+                print(f"    turn {turn_count+1} done — {words} words  {elapsed:.1f}s", flush=True)
             episode.records.append(
                 TurnRecord(obs_str, action, log_prob, probe_z, probe_z_all)
             )
         else:
             if verbose:
                 print(f"    turn {turn_count+1} opponent...", flush=True)
+            t0 = time.time()
             action, _ = opponent_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
@@ -82,7 +84,7 @@ def collect_episode(
                 steering=None,
             )
             if verbose:
-                print(f"    turn {turn_count+1} done", flush=True)
+                print(f"    turn {turn_count+1} done  {time.time()-t0:.1f}s", flush=True)
         done, _ = env.step(action)
         turn_count += 1
         if done:

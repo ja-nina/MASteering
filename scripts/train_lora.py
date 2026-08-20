@@ -259,12 +259,14 @@ def main():
     )
 
     # ── Build policies ───────────────────────────────────────────────────────
+    max_new_tokens = train_cfg.get("max_new_tokens", 256)
     trainee_policy = TransformersPolicy(
         model_id=model_id,
         model=model,
         tokenizer=tokenizer,
         steering=None,
         probe=probe,
+        max_new_tokens=max_new_tokens,
     )
     opponent_policy = _FrozenOpponent(model, trainee_policy)
 
