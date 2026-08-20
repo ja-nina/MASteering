@@ -20,23 +20,31 @@ import torch
 
 
 def grpo_step(
-    episode_records: List[List],      # [K][T] — K episodes, each a list of TurnRecords
-    episode_rewards: List[List[float]],  # [K][T] — matching per-turn rewards
-    optimizer,
+    episode_records: List[List],          # [K][T] — K episodes, each a list of TurnRecords
+    episode_rewards: List[List[float]],   # [K][T] — matching per-turn rewards
+    optimizers,                           # single optimizer OR list of optimizers
     max_grad_norm: float = 1.0,
-    retain_graph: bool = False,
+    retain_graph: bool = False,           # ignored — kept for API compat
     eps: float = 1e-8,
 ) -> float:
-    """One GRPO gradient step over K parallel rollouts.
+    """One GRPO gradient step over K rollouts using episode-by-episode accumulation.
 
-    Returns the scalar loss value (detached).
+    Processes one episode at a time and calls backward() immediately, so only
+    one episode's computation graph lives in GPU memory at once.  This is
+    critical for large models (Qwen3-4B) where holding K graphs simultaneously
+    causes OOM.
 
-    Args:
-        retain_graph: pass True for the FIRST of two adapter backward passes
-            so the computation graph survives for the second adapter's step.
+    When multiple optimizers are passed (e.g. [optimizer_a, optimizer_b]),
+    a single backward accumulates gradients for all trainable params at once —
+    no retain_graph needed.
+
+    Returns the total scalar loss (detached, summed across all episodes).
     """
     if not episode_records:
         return 0.0
+
+    if not isinstance(optimizers, (list, tuple)):
+        optimizers = [optimizers]
 
     # Episode-level mean reward (scalar per episode)
     ep_means: List[float] = [
@@ -49,24 +57,29 @@ def grpo_step(
     group_var = sum((m - group_mean) ** 2 for m in ep_means) / max(K, 1)
     group_std = group_var ** 0.5
 
-    # Build loss: -log_prob * advantage, summed over all turns in all episodes
-    loss = torch.tensor(0.0)
+    for opt in optimizers:
+        opt.zero_grad()
+
+    total_loss = 0.0
     for records, ep_mean in zip(episode_records, ep_means):
         advantage = (ep_mean - group_mean) / (group_std + eps)
+        ep_loss = torch.tensor(0.0)
         for record in records:
             if record.log_prob is not None:
-                loss = loss + (-record.log_prob * float(advantage))
+                ep_loss = ep_loss + (-record.log_prob * float(advantage))
 
-    if loss.requires_grad:
-        optimizer.zero_grad()
-        loss.backward(retain_graph=retain_graph)
-        torch.nn.utils.clip_grad_norm_(
-            [p for pg in optimizer.param_groups for p in pg["params"]],
-            max_grad_norm,
-        )
-        optimizer.step()
+        if ep_loss.requires_grad:
+            # backward() frees this episode's graph immediately after use
+            ep_loss.backward()
+            total_loss += ep_loss.item()
 
-    return loss.item()
+    all_params = [p for opt in optimizers for pg in opt.param_groups for p in pg["params"]]
+    if any(p.grad is not None for p in all_params):
+        torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
+        for opt in optimizers:
+            opt.step()
+
+    return total_loss
 
 
 def group_stats(episode_rewards: List[List[float]]) -> dict:

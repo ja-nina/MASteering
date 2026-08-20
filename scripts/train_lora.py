@@ -234,6 +234,11 @@ def main():
         model = get_peft_model(base_model, lora_cfg_b, adapter_name="adapter_b")
         _set_adapters(model, ["adapter_b"])
 
+    # Gradient checkpointing: recompute activations during backward instead of
+    # caching them.  Halves activation memory at ~20% extra compute cost.
+    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable()
+
     model.train()
     print("Trainable parameters:")
     model.print_trainable_parameters()
@@ -330,17 +335,15 @@ def main():
             group_rewards_b.append(rewards)
             total_turns += len(episode.records)
 
-        # GRPO update — adapter_a first (retain graph so adapter_b can also
-        # backprop through the shared computation), then adapter_b.
+        # GRPO update — single call, episode-by-episode accumulation.
+        # Both optimizers receive gradients in one backward pass; no retain_graph.
         group_records = [ep.records for ep in group_episodes]
-        if use_persona_lora:
-            loss_a = grpo_step(group_records, group_rewards_a, optimizer_a,
-                               max_grad_norm=max_grad_norm, retain_graph=True)
-        else:
-            loss_a = 0.0
-
-        loss_b = grpo_step(group_records, group_rewards_b, optimizer_b,
-                           max_grad_norm=max_grad_norm, retain_graph=False)
+        optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
+        combined_loss = grpo_step(group_records, group_rewards_a, optimizers,
+                                  max_grad_norm=max_grad_norm)
+        # Attribute loss equally for logging (same backward, same signal)
+        loss_a = combined_loss if use_persona_lora else 0.0
+        loss_b = combined_loss
 
         stats_a = group_stats(group_rewards_a)
         stats_b = group_stats(group_rewards_b)

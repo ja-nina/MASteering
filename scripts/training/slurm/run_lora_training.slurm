@@ -36,6 +36,8 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
 export SVD_BASIS="${SVD_BASIS:-${REPO}/data/svd_basis/qwen3-4b-attn.pt}"
+# Reduce memory fragmentation — important when holding multiple LoRA grad graphs
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
