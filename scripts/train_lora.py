@@ -160,6 +160,13 @@ def main():
 
     # ── Load base model ──────────────────────────────────────────────────────
     from peft import LoraConfig, get_peft_model, TaskType
+    import peft as _peft
+    from packaging.version import Version
+    if Version(_peft.__version__) < Version("0.6.0"):
+        raise RuntimeError(
+            f"PEFT >= 0.6.0 required (installed: {_peft.__version__}).\n"
+            f"  Fix: pip install 'peft>=0.6'"
+        )
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     model_id = cfg["model"]["base"]
