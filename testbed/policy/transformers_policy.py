@@ -125,6 +125,34 @@ class TransformersPolicy:
             return text.rstrip().removesuffix(eos).rstrip(), truncated
         return self.tokenizer.decode(gen, skip_special_tokens=True), truncated
 
+    def _generate_with_full_ids(self, inputs) -> tuple[str, "torch.Tensor"]:
+        """Generate with no_grad; return (text, full_ids_cpu) for deferred log_prob."""
+        import torch
+
+        temperature = self._gen_kwargs.get("temperature", 0.7)
+        kwargs = {
+            **self._gen_kwargs,
+            "do_sample": temperature > 0,
+            "temperature": max(temperature, 1e-5),
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+        input_ids = inputs["input_ids"]
+        input_len = input_ids.shape[1]
+
+        with torch.no_grad():
+            out = self.model.generate(**inputs, **kwargs)
+
+        gen = out[0, input_len:]
+        if self.enable_thinking or self.reasoning_cue:
+            text = self.tokenizer.decode(gen, skip_special_tokens=False)
+            eos = self.tokenizer.eos_token or ""
+            text = text.rstrip().removesuffix(eos).rstrip()
+        else:
+            text = self.tokenizer.decode(gen, skip_special_tokens=True)
+
+        full_ids = out[0:1].cpu()   # [1, input_len + gen_len], no grad, on cpu
+        return text, (full_ids, input_len)
+
     def _generate_with_logprob(self, inputs) -> tuple[str, "torch.Tensor"]:
         """Generate a response and compute its log-probability via teacher forcing.
 
@@ -179,32 +207,26 @@ class TransformersPolicy:
 
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,
             steering: Optional[SteeringSpec],
-            return_logprob: bool = False) -> tuple[str, Any]:
+            return_logprob: bool = False,
+            return_full_ids: bool = False) -> tuple[str, Any]:
         """Generate an action.
 
         Args:
-            system_prompt: system message for the model.
-            user_prompt:   user/observation message.
-            agent_id:      identifier used by steering/probe.
-            steering:      optional SteeringSpec for activation steering.
-            return_logprob: when True, the second return value is a scalar
-                tensor with grad (sum of log P over generated tokens via
-                teacher forcing). When False (default), returns the original
-                ``truncated`` bool for backward compatibility.
+            return_logprob:  (legacy) returns (text, log_prob_tensor) with grad.
+            return_full_ids: returns (text, full_ids_cpu_tensor) with NO grad.
+                             Use this during rollout collection; call
+                             recompute_logprobs() separately before backward.
 
         Returns:
-            (action_str, log_prob_tensor)  if return_logprob=True
-            (action_str, truncated_bool)   if return_logprob=False
+            (action_str, full_ids_cpu)   if return_full_ids=True
+            (action_str, log_prob)       if return_logprob=True
+            (action_str, truncated_bool) otherwise
         """
         inputs = self._build_inputs(system_prompt, user_prompt)
 
-        # Build the list of hooks to register: steering (if active) + probe (always)
         hooks = []
-
-        # SVDSteering path — duck-typed: any steering object with apply_hooks()
         if self.steering is not None and hasattr(self.steering, "apply_hooks"):
-            svd_hooks = self.steering.apply_hooks(agent_id, self.model)
-            hooks.extend(svd_hooks)
+            hooks.extend(self.steering.apply_hooks(agent_id, self.model))
         elif steering is not None and steering.method == "activation":
             if self.steering is None:
                 raise ValueError("Activation steering requested but no steering "
@@ -220,7 +242,12 @@ class TransformersPolicy:
             probe_hooks, get_scores = self.probe.make_hook()
             hooks.extend(probe_hooks)
 
-        _gen = self._generate_with_logprob if return_logprob else self._generate
+        if return_full_ids:
+            _gen = self._generate_with_full_ids
+        elif return_logprob:
+            _gen = self._generate_with_logprob
+        else:
+            _gen = self._generate
 
         if hooks:
             with _HookSession(self.model, hooks):

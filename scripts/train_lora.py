@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
-from testbed.training.rollout import collect_episode, TRAINEE_ID
+from testbed.training.rollout import collect_episode, recompute_logprobs, TRAINEE_ID
 from testbed.training.grpo import grpo_step, group_stats, wandb_log_step
 
 
@@ -345,8 +345,13 @@ def main():
             group_rewards_b.append(rewards)
             total_turns += len(episode.records)
 
+        # Recompute log_probs WITH gradients — happens once, right before backward.
+        # Collection above was pure no_grad so no graphs were held during rollouts.
+        device = next(model.parameters()).device
+        print(f"  recomputing log_probs for {grpo_k} episodes...", flush=True)
+        recompute_logprobs(group_episodes, model, str(device))
+
         # GRPO update — single call, episode-by-episode accumulation.
-        # Both optimizers receive gradients in one backward pass; no retain_graph.
         group_records = [ep.records for ep in group_episodes]
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
         combined_loss = grpo_step(group_records, group_rewards_a, optimizers,
