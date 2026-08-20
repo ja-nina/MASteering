@@ -131,6 +131,33 @@ def _init_svd_lora_a(model, basis_path: str, adapter_name: str):
           f" (o_proj only; lora_A remains trainable)")
 
 
+def _set_adapters(model, adapter_names: list):
+    """Activate one or more LoRA adapters, compatible across PEFT versions."""
+    if len(adapter_names) == 1:
+        model.set_adapter(adapter_names[0])
+        return
+    # Try list form first (PEFT >= 0.13 on PeftModel level may vary).
+    try:
+        model.set_adapter(adapter_names)
+        return
+    except TypeError:
+        pass
+    # Fallback: set via the underlying LoraModel directly.
+    try:
+        model.base_model.set_adapter(adapter_names)
+        return
+    except Exception:
+        pass
+    # Last resort: enable all adapter layers and set each module manually.
+    model.enable_adapter_layers()
+    for module in model.modules():
+        if hasattr(module, "set_adapter"):
+            try:
+                module.set_adapter(adapter_names)
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -199,11 +226,11 @@ def main():
         # SVD-init adapter_a: freeze lora_A (o_proj) to Vk; only lora_B trains.
         _init_svd_lora_a(model, probe_cfg["basis_path"], "adapter_a")
         model.add_adapter("adapter_b", lora_cfg_b)
-        model.set_adapter(["adapter_a", "adapter_b"])
+        _set_adapters(model, ["adapter_a", "adapter_b"])
     else:
         print("  use_persona_lora=False — training minimiser (adapter_b) only")
         model = get_peft_model(base_model, lora_cfg_b, adapter_name="adapter_b")
-        model.set_adapter(["adapter_b"])
+        _set_adapters(model, ["adapter_b"])
 
     model.train()
     print("Trainable parameters:")
@@ -274,9 +301,9 @@ def main():
     for ep in range(1, train_cfg["episodes"] + 1):
         # Restore active adapters before each episode.
         if use_persona_lora:
-            model.set_adapter(["adapter_a", "adapter_b"])
+            _set_adapters(model, ["adapter_a", "adapter_b"])
         else:
-            model.set_adapter(["adapter_b"])
+            _set_adapters(model, ["adapter_b"])
 
         # Collect a group of K episodes for GRPO.
         group_episodes = []
