@@ -1,7 +1,7 @@
 """In-process HuggingFace policy with activation-steering and persona-probe hooks."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from testbed.steering.activation import make_steering_hook
 from testbed.types import SteeringSpec
@@ -51,6 +51,8 @@ class TransformersPolicy:
                  reasoning_cue: bool = False,
                  steering: Optional[object] = None,
                  probe: Optional[object] = None,
+                 model=None,
+                 tokenizer=None,
                  **gen_kwargs) -> None:
         """
         enable_thinking   — use Qwen3 native thinking mode (<think> tokens).
@@ -62,6 +64,10 @@ class TransformersPolicy:
         probe             — PersonaProbe instance; if set, projects every
                             completion's hidden states onto all trait vectors
                             and stores results in self._last_probe.
+        model             — optional pre-built model object; when provided the
+                            model is used as-is (caller owns eval/train mode).
+        tokenizer         — optional pre-built tokenizer; loaded from model_id
+                            if omitted.
         All remaining kwargs are forwarded to model.generate().
         """
         import torch
@@ -70,14 +76,23 @@ class TransformersPolicy:
         self.model_id = model_id
         self.enable_thinking = enable_thinking
         self.reasoning_cue = reasoning_cue and not enable_thinking
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        dtype = torch.float16 if self.device == "cuda" else torch.float32
+
         disable_quantization = gen_kwargs.pop("disable_quantization", False)
-        load_kwargs = {"quantization_config": None} if disable_quantization else {}
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=dtype, **load_kwargs).to(self.device)
-        self.model.eval()
+
+        if model is not None:
+            # Injected model — caller is responsible for eval/train mode.
+            self.model = model
+            self.device = device or str(next(model.parameters()).device)
+            self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_id)
+        else:
+            self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+            self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_id)
+            dtype = torch.float16 if self.device == "cuda" else torch.float32
+            load_kwargs = {"quantization_config": None} if disable_quantization else {}
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id, dtype=dtype, **load_kwargs).to(self.device)
+            self.model.eval()
+
         self.steering = steering
         self.probe = probe
         self._gen_kwargs: Dict[str, Any] = {**_GEN_DEFAULTS, **gen_kwargs}
@@ -110,8 +125,77 @@ class TransformersPolicy:
             return text.rstrip().removesuffix(eos).rstrip(), truncated
         return self.tokenizer.decode(gen, skip_special_tokens=True), truncated
 
+    def _generate_with_logprob(self, inputs) -> tuple[str, "torch.Tensor"]:
+        """Generate a response and compute its log-probability via teacher forcing.
+
+        The sampling step runs under torch.no_grad() (selecting the action).
+        A second forward pass with the full sequence then computes log P(action)
+        with gradient tracking so REINFORCE can backprop through LoRA params.
+        """
+        import torch
+        import torch.nn.functional as F
+
+        temperature = self._gen_kwargs.get("temperature", 0.7)
+        max_new_tokens = self._gen_kwargs.get("max_new_tokens", 1024)
+        kwargs = {
+            **self._gen_kwargs,
+            "do_sample": temperature > 0,
+            "temperature": max(temperature, 1e-5),
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+
+        input_ids = inputs["input_ids"]
+        input_len = input_ids.shape[1]
+
+        # 1. Sample the action (no gradient needed here).
+        with torch.no_grad():
+            out = self.model.generate(**inputs, **kwargs)
+
+        gen = out[0, input_len:]   # generated token ids, shape [gen_len]
+        gen_len = gen.shape[0]
+
+        # 2. Decode text.
+        if self.enable_thinking or self.reasoning_cue:
+            text = self.tokenizer.decode(gen, skip_special_tokens=False)
+            eos = self.tokenizer.eos_token or ""
+            text = text.rstrip().removesuffix(eos).rstrip()
+        else:
+            text = self.tokenizer.decode(gen, skip_special_tokens=True)
+
+        # 3. Teacher-forcing forward pass WITH gradient tracking.
+        if gen_len == 0:
+            log_prob = torch.tensor(0.0)
+        else:
+            full_ids = out[0:1]  # [1, input_len + gen_len]
+            # No no_grad here — we want gradients through LoRA params.
+            logits = self.model(full_ids).logits  # [1, T, vocab]
+            # Logit at position (input_len-1 + i) predicts generated token i.
+            gen_logits = logits[0, input_len - 1 : input_len - 1 + gen_len, :]
+            log_probs_matrix = F.log_softmax(gen_logits, dim=-1)
+            token_log_probs = log_probs_matrix[torch.arange(gen_len, device=gen.device), gen]
+            log_prob = token_log_probs.sum()
+
+        return text, log_prob
+
     def act(self, system_prompt: str, user_prompt: str, agent_id: str,
-            steering: Optional[SteeringSpec]) -> tuple[str, bool]:
+            steering: Optional[SteeringSpec],
+            return_logprob: bool = False) -> tuple[str, Any]:
+        """Generate an action.
+
+        Args:
+            system_prompt: system message for the model.
+            user_prompt:   user/observation message.
+            agent_id:      identifier used by steering/probe.
+            steering:      optional SteeringSpec for activation steering.
+            return_logprob: when True, the second return value is a scalar
+                tensor with grad (sum of log P over generated tokens via
+                teacher forcing). When False (default), returns the original
+                ``truncated`` bool for backward compatibility.
+
+        Returns:
+            (action_str, log_prob_tensor)  if return_logprob=True
+            (action_str, truncated_bool)   if return_logprob=False
+        """
         inputs = self._build_inputs(system_prompt, user_prompt)
 
         # Build the list of hooks to register: steering (if active) + probe (always)
@@ -136,11 +220,13 @@ class TransformersPolicy:
             probe_hooks, get_scores = self.probe.make_hook()
             hooks.extend(probe_hooks)
 
+        _gen = self._generate_with_logprob if return_logprob else self._generate
+
         if hooks:
             with _HookSession(self.model, hooks):
-                result = self._generate(inputs)
+                result = _gen(inputs)
         else:
-            result = self._generate(inputs)
+            result = _gen(inputs)
 
         self._last_probe = get_scores() if get_scores is not None else {}
         return result
