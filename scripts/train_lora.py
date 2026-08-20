@@ -318,7 +318,8 @@ def main():
         group_rewards_b = []
         total_turns = 0
 
-        for _ in range(grpo_k):
+        print(f"[step {ep:4d}] collecting {grpo_k} episodes...", flush=True)
+        for k in range(grpo_k):
             episode = collect_episode(
                 game_id=game_id,
                 num_players=num_players,
@@ -330,6 +331,9 @@ def main():
             # Same reward for both adapters — both push toward target traits.
             rewards = [persona_reward(r.probe_z) if r.probe_z else 0.0
                        for r in episode.records]
+            ep_mean_r = sum(rewards) / max(len(rewards), 1)
+            print(f"  ep {k+1}/{grpo_k}: {len(episode.records)} turns  "
+                  f"r={ep_mean_r:+.4f}", flush=True)
             group_episodes.append(episode)
             group_rewards_a.append(rewards)
             group_rewards_b.append(rewards)
