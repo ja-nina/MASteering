@@ -225,24 +225,43 @@ def wandb_log_step(
     except Exception:
         pass
 
-    # ── 6. Sample transcript (every N steps) ────────────────────────────────
+    # ── 6. All K rollout transcripts (every N steps) ────────────────────────
+    # Logs every episode in the GRPO group as a wandb.Table so all rollouts
+    # can be inspected side-by-side in the wandb UI.
+    # Columns: episode | turn | observation | action | reward | top_trait | top_sim
     if step % log_transcript_every == 0 and episodes:
-        ep = episodes[0]
-        lines = []
-        for i, r in enumerate(ep.records):
-            lines.append(f"**Turn {i+1} (trainee)**")
-            lines.append(f"> {r.obs[:300]}{'...' if len(r.obs)>300 else ''}")
-            lines.append(f"*Action:* {r.action[:300]}{'...' if len(r.action)>300 else ''}")
-            if r.probe_z and layer_key in layer_z_sums:
-                top = probe.rank_traits(r.probe_z, probe_layer)[:3]
-                lines.append(f"*Top traits (layer {probe_layer}):* " +
-                              ", ".join(f"{s} {v:.2f}" for s, v in top))
-            lines.append("")
         try:
-            import wandb
-            log["transcript/sample"] = wandb.Html("<br>".join(
-                l.replace("**", "<b>").replace("*", "<i>") for l in lines
-            ))
+            import wandb as _wandb
+            rows = []
+            for ep_idx, ep in enumerate(episodes):
+                ep_rewards = (rewards_a[ep_idx]
+                              if ep_idx < len(rewards_a) else [])
+                for turn_idx, r in enumerate(ep.records):
+                    turn_reward = (ep_rewards[turn_idx]
+                                   if turn_idx < len(ep_rewards) else float("nan"))
+                    top_trait, top_sim = "", float("nan")
+                    if r.probe_z:
+                        try:
+                            top = probe.rank_traits(r.probe_z, probe_layer)
+                            if top:
+                                top_trait, top_sim = top[0][0], float(top[0][1])
+                        except Exception:
+                            pass
+                    rows.append([
+                        ep_idx,
+                        turn_idx,
+                        r.obs[:400],
+                        r.action[:400],
+                        round(turn_reward, 4),
+                        top_trait,
+                        round(top_sim, 4) if top_sim == top_sim else float("nan"),
+                    ])
+            if rows:
+                log["rollouts/transcripts"] = _wandb.Table(
+                    columns=["episode", "turn", "observation",
+                             "action", "reward", "top_trait", "top_sim"],
+                    data=rows,
+                )
         except Exception:
             pass
 
