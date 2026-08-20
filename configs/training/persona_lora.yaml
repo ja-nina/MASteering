@@ -11,11 +11,11 @@ model:
 
 use_persona_lora: true   # set false (or --no-persona-lora) to train only adapter_b
 
-lora_a:  # SVD persona LoRA (maximiser) — lora_A frozen to Vk; only lora_B trains
-  rank: 16              # should be ≤ k (# SVD components); excess slots zeroed
+lora_a:  # SVD persona LoRA (maximiser) — lora_B frozen to Vk cols; lora_A trains
+  rank: 16              # should be ≤ k (# SVD components); excess cols zeroed
   alpha: 32
-  targets: [o_proj]    # SVD basis lives at o_proj; only this makes sense here
-  dropout: 0.0          # no dropout on A (frozen); B has no dropout by default
+  targets: [o_proj]    # SVD basis lives in o_proj output space (2560-dim)
+  dropout: 0.0          # frozen B is not dropped; A can use dropout if needed
 
 lora_b:  # standard LoRA (minimiser) — pushed AWAY from target traits
   rank: 16

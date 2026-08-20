@@ -87,18 +87,25 @@ def _adapter_params(model, adapter_name: str):
 
 
 def _init_svd_lora_a(model, basis_path: str, adapter_name: str):
-    """Initialize lora_A weights for o_proj layers from SVD basis Vk and freeze them.
+    """Initialize lora_B (up-projection) for o_proj from SVD basis Vk and freeze it.
 
-    The UP projection (A matrix) is set to the SVD persona directions so the
-    adapter can only move activations along known trait axes.  Only B is trained.
+    o_proj maps [4096 → 2560] in Qwen3-4B.  Vk lives in the 2560-dim OUTPUT
+    space, so it aligns with lora_B (shape [d_out, r] = [2560, r]), not lora_A.
+
+    After this call:
+      lora_B columns = SVD trait directions  →  frozen  (up-projection)
+      lora_A                                 →  trainable (down-projection)
+
+    The adapter can only push activations along known persona axes; lora_A
+    learns which input patterns activate which direction.
     """
     basis = torch.load(os.path.expandvars(basis_path), map_location="cpu",
                        weights_only=False)
-    Vk = basis["Vk"]  # {layer_int: Tensor[k, d]}
+    Vk = basis["Vk"]  # {layer_int: Tensor[k, d_out]}
 
     initialized = 0
     for name, param in model.named_parameters():
-        if "lora_A" not in name or adapter_name not in name or "o_proj" not in name:
+        if "lora_B" not in name or adapter_name not in name or "o_proj" not in name:
             continue
         parts = name.split(".")
         try:
@@ -107,20 +114,21 @@ def _init_svd_lora_a(model, basis_path: str, adapter_name: str):
             continue
         if layer_idx not in Vk:
             continue
-        vk = Vk[layer_idx].float()  # [k, d]
-        r, d = param.shape[0], param.shape[1]
+        vk = Vk[layer_idx].float()  # [k, d_out]
+        d_out, r = param.shape      # [d_out, r]
         k = vk.shape[0]
         with torch.no_grad():
             if r <= k:
-                param.data.copy_(vk[:r, :d])
+                # B[:, i] = i-th SVD direction  →  B = Vk[:r].T
+                param.data.copy_(vk[:r, :d_out].T)
             else:
-                param.data[:k, :d].copy_(vk[:, :d])
-                param.data[k:].zero_()
+                param.data[:d_out, :k].copy_(vk[:, :d_out].T)
+                param.data[:, k:].zero_()
         param.requires_grad_(False)
         initialized += 1
 
-    print(f"  SVD-init + froze {initialized} lora_A tensors for {adapter_name!r}"
-          f" (o_proj only; lora_B remains trainable)")
+    print(f"  SVD-init + froze {initialized} lora_B tensors for {adapter_name!r}"
+          f" (o_proj only; lora_A remains trainable)")
 
 
 # ---------------------------------------------------------------------------
