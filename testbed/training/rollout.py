@@ -27,10 +27,10 @@ class Episode:
 def collect_episode(
     game_id: str,
     num_players: int,
-    trainee_policy,       # TransformersPolicy (LoRA model, grad enabled)
-    opponent_policy,      # TransformersPolicy or compatible (frozen base)
-    reward_fn,            # callable(z_list, game_rewards, player_id) -> float
+    trainee_policy,                # TransformersPolicy (LoRA model, grad enabled)
+    opponent_policy,               # TransformersPolicy or compatible (frozen base)
     probe_layer: int,
+    reward_fn=None,                # deprecated / unused; kept for API compatibility
     system_prompt: str = "You are a strategic game player. Respond concisely.",
     max_turns: int = 50,
     seed: Optional[int] = None,

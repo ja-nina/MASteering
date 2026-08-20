@@ -1,40 +1,42 @@
 """
-Analyze what a trained LoRA has learned in terms of SVD persona directions.
+Analyze what trained LoRA adapters have learned in terms of SVD persona directions.
+
+Loads both adapter_a (maximiser) and adapter_b (minimiser) from their saved
+directories, runs reference prompts through base / adapter_a / adapter_b, and
+produces an HTML page with side-by-side per-trait cosine-sim delta bar charts.
 
 Usage:
     python scripts/analyze_lora.py \
-        --lora outputs/lora/persona_run_001/final \
-        --basis data/svd_basis/qwen3-4b-attn.pt \
-        --layer 18 \
+        --lora-a outputs/lora/dual_run_001/final/adapter_a \
+        --lora-b outputs/lora/dual_run_001/final/adapter_b \
+        --basis  data/svd_basis/qwen3-4b-attn.pt \
+        --layer  18 \
         --prompts data/reference_prompts.txt \
-        --out outputs/lora/persona_run_001/analysis.html
+        --out    outputs/lora/dual_run_001/analysis.html
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse, sys
 from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def build_probe(basis_path, layer, hook="attn"):
+def build_probe(basis_path: str, layer: int, hook: str = "attn"):
     from testbed.probing.svd_probe import SVDPersonaProbe
-    probe = SVDPersonaProbe(basis_path=basis_path, layers=[layer], hook=hook, top_k=20)
-    return probe
+    return SVDPersonaProbe(basis_path=basis_path, layers=[layer], hook=hook, top_k=20)
 
 
 def run_prompts_get_z(model, tokenizer, probe, prompts, layer, device):
     """Run each prompt through the model; return one z-vector per prompt.
 
-    A fresh set of hooks is created per prompt so that the running-mean
-    accumulator in SVDPersonaProbe is reset between inputs and each entry
-    in the returned list corresponds to exactly one prompt.
+    A fresh make_hook() call per prompt resets the accumulator so each entry
+    in the returned list corresponds to exactly one input (not a cumulative mean).
     """
     from testbed.policy.transformers_policy import _HookSession
     zs = []
     for prompt in prompts:
-        # Fresh make_hook() call resets the state accumulator.
-        hooks, get_result = probe.make_hook()
+        hooks, get_result = probe.make_hook()   # fresh accumulator state
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         with _HookSession(model, hooks):
             with torch.no_grad():
@@ -46,8 +48,8 @@ def run_prompts_get_z(model, tokenizer, probe, prompts, layer, device):
     return zs
 
 
-def activation_shift_per_trait(z_base_list, z_lora_list, basis_path, layer):
-    """For each dedup trait, compute mean cosine-sim shift: lora - base."""
+def activation_shift_per_trait(z_base_list, z_lora_list, basis_path: str, layer: int):
+    """Per-trait cosine-sim delta: mean_lora - mean_base."""
     basis = torch.load(basis_path, map_location="cpu", weights_only=False)
     C = basis["C"][layer].float()          # [N_dedup, k]
     slugs = basis["slugs"]
@@ -67,34 +69,56 @@ def activation_shift_per_trait(z_base_list, z_lora_list, basis_path, layer):
     return list(zip(slugs, delta.tolist()))
 
 
-def make_html(trait_deltas, title):
-    """Simple horizontal bar chart HTML."""
-    sorted_td = sorted(trait_deltas, key=lambda x: -abs(x[1]))[:20]
+def _bar_chart_html(trait_deltas, title: str, top_n: int = 20) -> str:
+    """Horizontal bar chart showing the top-N traits by absolute delta."""
+    sorted_td = sorted(trait_deltas, key=lambda x: -abs(x[1]))[:top_n]
     max_abs = max(abs(v) for _, v in sorted_td) or 1.0
-    bars = []
+    rows = []
     for slug, delta in sorted_td:
         color = "#4a90d9" if delta >= 0 else "#e05a5a"
         w = int(abs(delta) / max_abs * 200)
-        bars.append(
+        rows.append(
             f'<div style="display:flex;align-items:center;gap:6px;margin:3px 0">'
             f'<span style="width:140px;text-align:right;font-size:11px">{slug}</span>'
             f'<div style="width:{w}px;height:14px;background:{color};border-radius:2px"></div>'
             f'<span style="font-size:10px;color:#666">{delta:+.3f}</span></div>'
         )
-    body = "\n".join(bars)
-    return (f"<h3>{title}</h3>"
-            f"<p>Delta = LoRA cosine sim - base cosine sim to each trait direction</p>"
-            f"{body}")
+    body = "\n".join(rows)
+    return (
+        f'<div style="flex:1;min-width:280px">'
+        f'<h3 style="margin-top:0">{title}</h3>'
+        f'<p style="font-size:11px;color:#888">Delta = LoRA - base cosine sim per trait</p>'
+        f'{body}'
+        f'</div>'
+    )
+
+
+def make_html(delta_a, delta_b, layer: int, hook: str) -> str:
+    chart_a = _bar_chart_html(delta_a, "Adapter A (maximiser)")
+    chart_b = _bar_chart_html(delta_b, "Adapter B (minimiser)")
+    return (
+        "<!DOCTYPE html>\n"
+        "<html><head><meta charset=\"utf-8\"><title>LoRA Analysis</title>\n"
+        "<style>"
+        "body{font-family:sans-serif;max-width:1000px;margin:40px auto;padding:0 16px}"
+        ".row{display:flex;gap:40px;flex-wrap:wrap}"
+        "</style></head><body>"
+        f"<h2>LoRA Dual-Adapter Activation Shift &mdash; layer {layer} ({hook})</h2>"
+        f'<div class="row">{chart_a}{chart_b}</div>'
+        "</body></html>"
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lora",    required=True, help="Path to saved LoRA adapter")
+    parser.add_argument("--lora-a",  required=True, help="Path to adapter_a checkpoint dir")
+    parser.add_argument("--lora-b",  required=True, help="Path to adapter_b checkpoint dir")
     parser.add_argument("--basis",   required=True)
     parser.add_argument("--layer",   type=int, default=18)
     parser.add_argument("--hook",    default="attn")
-    parser.add_argument("--prompts", required=True, help="Text file with one prompt per line")
-    parser.add_argument("--model",   default=None, help="Base model ID (read from adapter if omitted)")
+    parser.add_argument("--prompts", required=True, help="Text file, one prompt per line")
+    parser.add_argument("--model",   default=None,
+                        help="Base model ID (read from adapter config if omitted)")
     parser.add_argument("--out",     default="lora_analysis.html")
     args = parser.parse_args()
 
@@ -104,7 +128,7 @@ def main():
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel, PeftConfig
 
-    peft_cfg = PeftConfig.from_pretrained(args.lora)
+    peft_cfg = PeftConfig.from_pretrained(args.lora_a)
     base_id = args.model or peft_cfg.base_model_name_or_path
 
     print(f"Loading base model {base_id}...")
@@ -115,28 +139,36 @@ def main():
 
     probe = build_probe(args.basis, args.layer, args.hook)
 
+    # Load both adapters into a single PeftModel so we can switch between them.
+    print("Loading adapter_a...")
+    peft_model = PeftModel.from_pretrained(base_model, args.lora_a,
+                                            adapter_name="adapter_a")
+    print("Loading adapter_b...")
+    peft_model.load_adapter(args.lora_b, adapter_name="adapter_b")
+
+    # Base model run (all adapters disabled).
     print("Running reference prompts through base model...")
-    z_base = run_prompts_get_z(base_model, tokenizer, probe, prompts, args.layer, device)
+    with peft_model.disable_adapter():
+        z_base = run_prompts_get_z(peft_model, tokenizer, probe, prompts,
+                                   args.layer, device)
 
-    print("Loading LoRA and running prompts...")
-    lora_model = PeftModel.from_pretrained(base_model, args.lora)
-    lora_model.merge_and_unload()   # merge for clean forward pass
-    z_lora = run_prompts_get_z(lora_model, tokenizer, probe, prompts, args.layer, device)
+    # Adapter A run.
+    print("Running prompts through adapter_a (maximiser)...")
+    peft_model.set_adapter("adapter_a")
+    z_lora_a = run_prompts_get_z(peft_model, tokenizer, probe, prompts,
+                                  args.layer, device)
 
-    trait_deltas = activation_shift_per_trait(z_base, z_lora, args.basis, args.layer)
-    html_body = make_html(
-        trait_deltas,
-        f"LoRA activation shift - layer {args.layer} ({args.hook})"
-    )
+    # Adapter B run.
+    print("Running prompts through adapter_b (minimiser)...")
+    peft_model.set_adapter("adapter_b")
+    z_lora_b = run_prompts_get_z(peft_model, tokenizer, probe, prompts,
+                                  args.layer, device)
 
-    full_html = (
-        "<!DOCTYPE html>\n"
-        "<html><head><meta charset=\"utf-8\"><title>LoRA Analysis</title>\n"
-        "<style>body{font-family:sans-serif;max-width:600px;margin:40px auto;padding:0 16px}</style>\n"
-        f"</head><body>{html_body}</body></html>"
-    )
+    delta_a = activation_shift_per_trait(z_base, z_lora_a, args.basis, args.layer)
+    delta_b = activation_shift_per_trait(z_base, z_lora_b, args.basis, args.layer)
 
-    Path(args.out).write_text(full_html, encoding="utf-8")
+    html = make_html(delta_a, delta_b, args.layer, args.hook)
+    Path(args.out).write_text(html, encoding="utf-8")
     print(f"\nSaved analysis -> {args.out}")
 
 

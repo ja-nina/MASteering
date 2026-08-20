@@ -1,5 +1,4 @@
 training:
-  mode: persona
   game: TruthAndDeception-v0
   num_players: 2
   episodes: 500
@@ -10,7 +9,13 @@ model:
   base: Qwen/Qwen3-4B
   dtype: bfloat16
 
-lora:
+lora_a:  # maximiser adapter — pushed TOWARD target traits
+  rank: 16
+  alpha: 32
+  targets: [q_proj, v_proj, o_proj]
+  dropout: 0.05
+
+lora_b:  # minimiser adapter — pushed AWAY from target traits
   rank: 16
   alpha: 32
   targets: [q_proj, v_proj, o_proj]
@@ -22,11 +27,15 @@ probe:
   hook: attn
 
 reward:
-  mode: persona
-  target_traits:
+  # LoRA A maximises cosine sim to the weighted direction of these traits.
+  maximize_traits:
     agreeable: 1.5
     warm: 1.0
-    deceptive: -0.5
+  # LoRA B minimises cosine sim to the weighted direction of these traits
+  # (equivalently, sign=-1 reward).
+  minimize_traits:
+    deceptive: 1.0
+    dominant: 0.5
 
 optimizer:
   lr: 1.0e-4

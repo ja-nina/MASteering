@@ -19,8 +19,16 @@ def reinforce_step(
     baseline: float,
     gamma: float = 0.99,
     max_grad_norm: float = 1.0,
+    retain_graph: bool = False,
 ) -> Tuple[float, float]:
-    """One REINFORCE gradient step. Returns (loss_value, updated_baseline)."""
+    """One REINFORCE gradient step. Returns (loss_value, updated_baseline).
+
+    Args:
+        retain_graph: when True, the backward pass retains the computation graph
+            so a second backward (for a second adapter) can be performed on the
+            same log_prob tensors. Pass True for the FIRST of two adapter steps,
+            False (default) for the last.
+    """
     returns = compute_returns(rewards, gamma)
     mean_r = sum(rewards) / max(len(rewards), 1)
     updated_baseline = 0.9 * baseline + 0.1 * mean_r
@@ -38,7 +46,7 @@ def reinforce_step(
 
     if loss.requires_grad:
         optimizer.zero_grad()
-        loss.backward()
+        loss.backward(retain_graph=retain_graph)
         torch.nn.utils.clip_grad_norm_(
             [p for pg in optimizer.param_groups for p in pg["params"]],
             max_grad_norm
