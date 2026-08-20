@@ -1,14 +1,16 @@
 """
-Train dual persona LoRA adapters via REINFORCE self-play.
+Train dual persona LoRA adapters via GRPO self-play.
 
-Two adapters are trained simultaneously on the same trainee agent:
-  adapter_a — maximiser: rewarded for high cosine sim to the maximize_traits direction.
-  adapter_b — minimiser: rewarded for low  cosine sim to the minimize_traits direction
-              (equivalently, high cosine sim to the negated direction; sign=-1 in reward).
+Two adapters are trained on the same trainee agent; both share the same reward
+(SVD cosine-similarity to the target trait direction):
 
-Both adapters are active during trainee turns.  The opponent plays with both
-disabled (base model weights only), using peft's disable_adapter() context so
-only one copy of the weights lives in GPU memory.
+  adapter_a — persona LoRA: lora_B frozen to SVD trait directions, lora_A trainable.
+              Can only activate pre-known persona axes — interpretable, constrained.
+  adapter_b — standard LoRA on q/v/o_proj: free weights, finds its own path.
+              Unconstrained baseline for comparison.
+
+Both adapters are active during trainee turns; the opponent plays with both
+disabled (base model only) via peft's disable_adapter() context.
 
 Usage:
     python scripts/train_lora.py --config configs/training/persona_lora.yaml
@@ -237,11 +239,14 @@ def main():
     model.print_trainable_parameters()
 
     # ── Build probe ──────────────────────────────────────────────────────────
+    # PeftModel wraps Qwen3ForCausalLM as .model, so transformer layers sit at
+    # .model.model.layers — one extra ".model" vs the bare Qwen3ForCausalLM case.
     probe = SVDPersonaProbe(
         basis_path=probe_cfg["basis_path"],
         layers=[probe_cfg["layer"]],
         hook=probe_cfg.get("hook", "attn"),
         top_k=cfg.get("top_k", 7),
+        layer_path_template="model.model.layers.{}",
     )
 
     # ── Build policies ───────────────────────────────────────────────────────
@@ -254,22 +259,19 @@ def main():
     )
     opponent_policy = _FrozenOpponent(model, trainee_policy)
 
-    # ── Build rewards ────────────────────────────────────────────────────────
+    # ── Build reward ─────────────────────────────────────────────────────────
+    # Both adapters share the same objective: maximise cosine-sim to target
+    # traits.  adapter_a achieves this while constrained to the SVD persona
+    # space; adapter_b is a free LoRA that finds its own path.
     reward_cfg = cfg["reward"]
     basis_path = probe_cfg["basis_path"]
     probe_layer = probe_cfg["layer"]
 
-    reward_a = PersonaReward(
+    persona_reward = PersonaReward(
         basis_path=basis_path,
         layer=probe_layer,
-        target_traits=reward_cfg["maximize_traits"],
+        target_traits=reward_cfg["target_traits"],
         sign=+1.0,
-    )
-    reward_b = PersonaReward(
-        basis_path=basis_path,
-        layer=probe_layer,
-        target_traits=reward_cfg["minimize_traits"],
-        sign=-1.0,
     )
 
     # ── Optimizers (one per adapter) ─────────────────────────────────────────
@@ -320,14 +322,16 @@ def main():
                 probe_layer=probe_layer,
                 max_turns=train_cfg.get("max_turns", 50),
             )
-            ra = [reward_a(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
-            rb = [reward_b(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
+            # Same reward for both adapters — both push toward target traits.
+            rewards = [persona_reward(r.probe_z) if r.probe_z else 0.0
+                       for r in episode.records]
             group_episodes.append(episode)
-            group_rewards_a.append(ra)
-            group_rewards_b.append(rb)
+            group_rewards_a.append(rewards)
+            group_rewards_b.append(rewards)
             total_turns += len(episode.records)
 
-        # GRPO update — adapter_a first (retain graph), then adapter_b.
+        # GRPO update — adapter_a first (retain graph so adapter_b can also
+        # backprop through the shared computation), then adapter_b.
         group_records = [ep.records for ep in group_episodes]
         if use_persona_lora:
             loss_a = grpo_step(group_records, group_rewards_a, optimizer_a,
