@@ -201,10 +201,12 @@ def main():
     model_id = cfg["model"]["base"]
     dtype = getattr(torch, cfg["model"].get("dtype", "bfloat16"))
 
-    print(f"Loading {model_id}...")
+    print(f"Loading tokenizer for {model_id}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
+    print(f"Loading model weights ({cfg['model'].get('dtype', 'bfloat16')})...", flush=True)
     base_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype,
                                                        device_map="auto")
+    print("Model loaded.", flush=True)
 
     # ── Probe config (needed early for SVD init) ─────────────────────────────
     probe_cfg = cfg["probe"]
@@ -222,25 +224,27 @@ def main():
 
     lora_cfg_b = _make_lora_config(cfg["lora_b"])
 
+    print("Attaching LoRA adapters...", flush=True)
     if use_persona_lora:
         lora_cfg_a = _make_lora_config(cfg["lora_a"])
         model = get_peft_model(base_model, lora_cfg_a, adapter_name="adapter_a")
-        # SVD-init adapter_a: freeze lora_A (o_proj) to Vk; only lora_B trains.
+        print("  SVD-init adapter_a lora_B from basis...", flush=True)
         _init_svd_lora_a(model, probe_cfg["basis_path"], "adapter_a")
         model.add_adapter("adapter_b", lora_cfg_b)
         _set_adapters(model, ["adapter_a", "adapter_b"])
     else:
-        print("  use_persona_lora=False — training minimiser (adapter_b) only")
+        print("  use_persona_lora=False — training adapter_b only", flush=True)
         model = get_peft_model(base_model, lora_cfg_b, adapter_name="adapter_b")
         _set_adapters(model, ["adapter_b"])
 
     # Gradient checkpointing: recompute activations during backward instead of
     # caching them.  Halves activation memory at ~20% extra compute cost.
+    print("Enabling gradient checkpointing...", flush=True)
     model.enable_input_require_grads()
     model.gradient_checkpointing_enable()
 
     model.train()
-    print("Trainable parameters:")
+    print("Trainable parameters:", flush=True)
     model.print_trainable_parameters()
 
     # ── Build probe ──────────────────────────────────────────────────────────
