@@ -111,8 +111,9 @@ class DemoState:
         self.game_id: Optional[str] = None
         self.done = False
         self.transcript: List[str] = []
-        self.last_z: Optional[List[float]] = None
-        self.last_top_traits: List[List] = []
+        # history: list of (turn_idx, top_trait_name, top_trait_score, top5)
+        # accumulated across agent turns in the current game
+        self.probe_history: List[tuple] = []
         self.policy: Optional[TransformersPolicy] = None
         self.probe: Optional[SVDPersonaProbe] = None
         self.steering: Optional[SVDSteering] = None
@@ -126,41 +127,102 @@ _STATE = DemoState()
 # Chart helper
 # ---------------------------------------------------------------------------
 
-def _make_bar_chart_html(z: List[float], top_traits: List[List], title: str = "") -> str:
-    """Return HTML: PC-indexed bar chart for SVD z-coordinates + top-trait text list."""
-    if not z:
+def _make_timeseries_html(history: list, title: str = "") -> str:
+    """Return HTML: SVG time series of top-trait similarity scores over agent turns.
+
+    X-axis: agent turn labels (dominant trait name at each turn).
+    Labels are thinned automatically when turns get dense.
+    """
+    if not history:
         return "<p>No projection data yet.</p>"
-    max_abs = max(abs(v) for v in z) or 1.0
-    bars = []
-    for i, val in enumerate(z):
-        pct_pos = val / max_abs  # [-1, 1]
-        label = f"PC{i}"
-        color = "#4a90d9" if val >= 0 else "#e05a5a"
-        width_px = int(abs(pct_pos) * 80)
-        bars.append(
-            f'<div style="display:flex;align-items:center;gap:4px;margin:2px 0">'
-            f'<span style="font-size:11px;width:90px;text-align:right;color:#888">{label}</span>'
-            f'<div style="width:160px;display:flex;justify-content:{"flex-end" if val<0 else "flex-start"}">'
-            f'<div style="width:{width_px}px;height:14px;background:{color};border-radius:2px"></div>'
-            f'</div>'
-            f'<span style="font-size:10px;color:#666">{val:.2f}</span>'
-            f'</div>'
+
+    W, H = 420, 180
+    PAD_L, PAD_R, PAD_T, PAD_B = 38, 10, 22, 48
+    plot_w = W - PAD_L - PAD_R
+    plot_h = H - PAD_T - PAD_B
+
+    scores = [s for (_, _, s, _) in history]
+    y_min = min(0.0, min(scores))
+    y_max = max(0.01, max(scores))
+    y_range = y_max - y_min or 1.0
+
+    n = len(history)
+
+    def px(i, s):
+        x = PAD_L + (i / max(n - 1, 1)) * plot_w
+        y = PAD_T + plot_h - ((s - y_min) / y_range) * plot_h
+        return x, y
+
+    # Polyline points
+    pts = " ".join(f"{px(i, s)[0]:.1f},{px(i, s)[1]:.1f}" for i, (_, _, s, _) in enumerate(history))
+
+    # Dot + tooltip overlay
+    dots = []
+    for i, (turn, name, score, top5) in enumerate(history):
+        cx, cy = px(i, score)
+        tip = f"Turn {turn}: {name} ({score:.2f})"
+        dots.append(
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4" fill="#4a90d9" stroke="white" stroke-width="1.5">'
+            f'<title>{tip}</title></circle>'
         )
-    # Top-k nearest traits as a numbered text list below the bars
-    trait_items = "".join(
-        f'<li style="font-size:11px">{rank}. {slug} ({score:.2f})</li>'
-        for rank, (slug, score) in enumerate(top_traits[:5], start=1)
+
+    # Y-axis ticks (3 ticks)
+    yticks = []
+    for frac in [0.0, 0.5, 1.0]:
+        val = y_min + frac * y_range
+        y = PAD_T + plot_h - frac * plot_h
+        yticks.append(
+            f'<line x1="{PAD_L}" y1="{y:.1f}" x2="{PAD_L + plot_w}" y2="{y:.1f}" '
+            f'stroke="#ddd" stroke-dasharray="3,3"/>'
+            f'<text x="{PAD_L - 4}" y="{y + 4:.1f}" text-anchor="end" '
+            f'font-size="9" fill="#888">{val:.2f}</text>'
+        )
+
+    # X-axis labels: show every Nth label so they don't overlap (~50px per label)
+    max_labels = max(1, plot_w // 52)
+    step = max(1, (n - 1) // max_labels + 1) if n > 1 else 1
+    xlabels = []
+    for i, (turn, name, score, _) in enumerate(history):
+        if i % step != 0 and i != n - 1:
+            continue
+        x, _ = px(i, score)
+        # Truncate long names
+        label = name[:10] + "…" if len(name) > 11 else name
+        xlabels.append(
+            f'<text x="{x:.1f}" y="{PAD_T + plot_h + 14}" text-anchor="middle" '
+            f'font-size="9" fill="#555" transform="rotate(-30,{x:.1f},{PAD_T + plot_h + 14})">'
+            f'{label}</text>'
+        )
+
+    # Latest top-5 traits
+    _, _, _, top5 = history[-1]
+    trait_rows = "".join(
+        f'<li style="font-size:11px;line-height:1.5">{r}. {sl} <span style="color:#888">({sc:.2f})</span></li>'
+        for r, (sl, sc) in enumerate(top5[:5], 1)
     )
-    trait_list = (
-        f'<div style="margin-top:8px"><b style="font-size:11px">Top traits:</b>'
-        f'<ol style="margin:2px 0;padding-left:18px">{trait_items}</ol></div>'
-        if trait_items else ""
+    trait_block = (
+        f'<div style="margin-top:6px"><b style="font-size:11px">Latest top traits:</b>'
+        f'<ol style="margin:2px 0;padding-left:18px">{trait_rows}</ol></div>'
+    ) if top5 else ""
+
+    title_el = (
+        f'<text x="{W // 2}" y="14" text-anchor="middle" font-size="11" font-weight="600" fill="#333">{title}</text>'
+        if title else ""
     )
-    return (
-        f'<div style="font-size:12px;font-weight:600;margin-bottom:8px">{title}</div>'
-        + "".join(bars)
-        + trait_list
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'style="max-width:100%;font-family:sans-serif;overflow:visible">'
+        + title_el
+        + "".join(yticks)
+        + f'<polyline points="{pts}" fill="none" stroke="#4a90d9" stroke-width="2" stroke-linejoin="round"/>'
+        + "".join(dots)
+        + "".join(xlabels)
+        + f'<line x1="{PAD_L}" y1="{PAD_T}" x2="{PAD_L}" y2="{PAD_T + plot_h}" stroke="#aaa"/>'
+        + f'<line x1="{PAD_L}" y1="{PAD_T + plot_h}" x2="{PAD_L + plot_w}" y2="{PAD_T + plot_h}" stroke="#aaa"/>'
+        + "</svg>"
     )
+    return svg + trait_block
 
 
 # ---------------------------------------------------------------------------
@@ -206,16 +268,16 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
             _STATE.transcript.append("[Game over]")
             chart_html = "<p>Game over.</p>"
             break
-        # Update chart if probe_layer requested
+        # Update time series if probe_layer requested
         if probe_layer is not None and _STATE.policy._last_probe:
             layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
-            z = layer_data.get("z", None)
             top_traits = layer_data.get("top_traits", [])
-            if z:
-                _STATE.last_z = z
-                _STATE.last_top_traits = top_traits
-                chart_html = _make_bar_chart_html(
-                    z, top_traits, title=f"SVD projection (layer {probe_layer})"
+            if top_traits:
+                turn_idx = len(_STATE.probe_history) + 1
+                top_name, top_score = top_traits[0][0], top_traits[0][1]
+                _STATE.probe_history.append((turn_idx, top_name, top_score, top_traits))
+                chart_html = _make_timeseries_html(
+                    _STATE.probe_history, title=f"SVD persona monitor (layer {probe_layer})"
                 )
     return "<br>".join(_STATE.transcript), chart_html
 
@@ -232,8 +294,7 @@ def _start_game(game_id: str, persona_values: Dict[str, float],
         _STATE.game_id = game_id
         _STATE.done = False
         _STATE.transcript = [f"[Game started: {game_id}]"]
-        _STATE.last_z = None
-        _STATE.last_top_traits = []
+        _STATE.probe_history = []
 
         if _STATE.policy is not None and _STATE.steering is not None:
             _update_persona(persona_values, layers, hook)
