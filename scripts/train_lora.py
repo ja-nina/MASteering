@@ -29,6 +29,24 @@ from testbed.training.rollout import collect_episode, TRAINEE_ID
 from testbed.training.grpo import grpo_step, group_stats
 
 
+def _init_wandb(cfg: dict):
+    wcfg = cfg.get("wandb", {})
+    if not wcfg.get("enabled", False):
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("wandb not installed — skipping. pip install wandb to enable.")
+        return None
+    return wandb.init(
+        project=wcfg.get("project", "ma-steering-lora"),
+        name=wcfg.get("name", None),
+        tags=wcfg.get("tags", []),
+        config=cfg,
+        dir="wandb_logs",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Memory-efficient frozen opponent
 # ---------------------------------------------------------------------------
@@ -233,6 +251,7 @@ def main():
     log_interval = cfg["output"].get("log_interval", 10)
     save_interval = cfg["output"].get("save_interval", 50)
 
+    wandb_run = _init_wandb(cfg)
     episode_log = []
     step = 0  # counts GRPO update steps (each step = grpo_k episodes)
 
@@ -288,6 +307,22 @@ def main():
         }
         episode_log.append(entry)
 
+        if wandb_run is not None:
+            wandb_run.log({
+                "loss/adapter_a":        loss_a,
+                "loss/adapter_b":        loss_b,
+                "reward_a/mean":         stats_a["mean"],
+                "reward_a/std":          stats_a["std"],
+                "reward_a/min":          stats_a["min"],
+                "reward_a/max":          stats_a["max"],
+                "reward_b/mean":         stats_b["mean"],
+                "reward_b/std":          stats_b["std"],
+                "reward_b/min":          stats_b["min"],
+                "reward_b/max":          stats_b["max"],
+                "mean_turns_per_ep":     total_turns / grpo_k,
+                "episodes_total":        ep * grpo_k,
+            }, step=step)
+
         if ep % log_interval == 0:
             print(f"[step {step:4d}] "
                   f"r_a={stats_a['mean']:+.4f}±{stats_a['std']:.3f}  loss_a={loss_a:.4f}  |  "
@@ -314,6 +349,8 @@ def main():
     with open(save_dir / "training_log.jsonl", "w") as f:
         for entry in episode_log:
             f.write(json.dumps(entry) + "\n")
+    if wandb_run is not None:
+        wandb_run.finish()
     print(f"\nTraining complete. Outputs in {save_dir}")
 
 
