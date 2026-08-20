@@ -36,26 +36,25 @@ REPO="/BS/ForNet/work/MASteering"
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-STD_DIR="${REPO}/data/vector_extraction/persona/qwen3-4b/bf16"
-AMORAL_DIR="${REPO}/data/vector_extraction/persona/qwen3-4b-amoral-roleplay"
+PVEC_ROOT="/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona"
+STD_DIR="${PVEC_ROOT}/qwen3-4b/bf16"
+AMORAL_DIR="${PVEC_ROOT}/qwen3-4b-amoral-roleplay/bf16"
 OUT_PT="${REPO}/data/svd_basis/qwen3-4b-attn-with-amoral.pt"
 
-# ── The 12 amoral traits to include ─────────────────────────────────────────
-# Replace these placeholders with the actual slug names from $AMORAL_DIR.
-# Run `ls $AMORAL_DIR/*_raw.pt | sed 's/.*\///;s/_raw.pt//'` to see all slugs.
+# ── All 12 amoral traits (every slug present in $AMORAL_DIR/bf16) ────────────
 AMORAL_SLUGS=(
-    "SLUG_1"
-    "SLUG_2"
-    "SLUG_3"
-    "SLUG_4"
-    "SLUG_5"
-    "SLUG_6"
-    "SLUG_7"
-    "SLUG_8"
-    "SLUG_9"
-    "SLUG_10"
-    "SLUG_11"
-    "SLUG_12"
+    "charismatic"
+    "curious"
+    "directive-stance"
+    "epistemic-humility"
+    "evil"
+    "exploratory-stance"
+    "humorous"
+    "optimistic"
+    "over-pathologizing"
+    "protocol-rigid-checklist-driven"
+    "repair-accountability"
+    "suggestible-leading"
 )
 
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
