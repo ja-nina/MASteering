@@ -214,7 +214,7 @@ def _make_timeseries_html(history: list, title: str = "") -> str:
                 series_els.append(
                     f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3.5" '
                     f'fill="{color}" stroke="white" stroke-width="1">'
-                    f'<title>{slug} (turn {turn_ids[i]}): {sc:.2f}</title></circle>'
+                    f'<title>{slug} @ "{turn_ids[i]}": {sc:.2f}</title></circle>'
                 )
             else:
                 pts_str = " ".join(f"{px(i,sc)[0]:.1f},{px(i,sc)[1]:.1f}" for i, sc in seg)
@@ -227,20 +227,19 @@ def _make_timeseries_html(history: list, title: str = "") -> str:
                     series_els.append(
                         f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" '
                         f'fill="{color}" stroke="white" stroke-width="1">'
-                        f'<title>{slug} (turn {turn_ids[i]}): {sc:.2f}</title></circle>'
+                        f'<title>{slug} @ "{turn_ids[i]}": {sc:.2f}</title></circle>'
                     )
 
-    # X-axis turn labels — show every Nth so they don't overlap (~48 px each)
-    max_labels = max(1, plot_w // 48)
+    # X-axis word labels — show every Nth so they don't overlap (~44 px each)
+    max_labels = max(1, plot_w // 44)
     step = max(1, (n - 1) // max_labels + 1) if n > 1 else 1
     xlabels = []
-    for i, (tid, top_traits) in enumerate(history):
+    for i, (word_label, _top_traits) in enumerate(history):
         if i % step != 0 and i != n - 1:
             continue
         x, _ = px(i, y_min)
-        # label = dominant trait name at this turn, truncated
-        name = top_traits[0][0] if top_traits else str(tid)
-        label = name[:9] + "…" if len(name) > 10 else name
+        label = str(word_label)
+        label = label[:9] + "…" if len(label) > 10 else label
         xlabels.append(
             f'<text x="{x:.1f}" y="{PAD_T + plot_h + 13}" text-anchor="end" '
             f'font-size="9" fill="#555" '
@@ -323,16 +322,27 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
             _STATE.transcript.append("[Game over]")
             chart_html = "<p>Game over.</p>"
             break
-        # Update time series: one point per chunk (window_tokens rolling avg)
+        # Update time series: one point per chunk, labelled with the word from
+        # the agent's output at that chunk's position in the token stream.
         if probe_layer is not None and _STATE.policy._last_probe:
             layer_data = _STATE.policy._last_probe.get(str(probe_layer), {})
             chunks = layer_data.get("chunks", [])
-            for chunk in chunks:
-                z_list = chunk.get("z", [])
-                if z_list:
+            if chunks:
+                # Map chunk index → word from the generated text.
+                # chunks[i]["token"] is the cumulative token count at flush.
+                # We approximate: split action into words, scale by token count.
+                words = action.split()
+                total_tokens = chunks[-1]["token"] if chunks else 1
+                for chunk in chunks:
+                    z_list = chunk.get("z", [])
+                    if not z_list:
+                        continue
+                    # pick the word at this chunk's relative position
+                    frac = chunk["token"] / max(total_tokens, 1)
+                    word_idx = min(int(frac * len(words)), len(words) - 1) if words else 0
+                    word_label = words[word_idx] if words else f"t{chunk['token']}"
                     top_traits = _STATE.probe.rank_traits(z_list, probe_layer)
-                    chunk_idx = len(_STATE.probe_history) + 1
-                    _STATE.probe_history.append((chunk_idx, top_traits))
+                    _STATE.probe_history.append((word_label, top_traits))
             if _STATE.probe_history:
                 chart_html = _make_timeseries_html(
                     _STATE.probe_history, title=f"SVD persona monitor (layer {probe_layer})"
