@@ -68,16 +68,66 @@ def _adapter_params(model, adapter_name: str):
             if adapter_name in n and p.requires_grad]
 
 
+def _init_svd_lora_a(model, basis_path: str, adapter_name: str):
+    """Initialize lora_A weights for o_proj layers from SVD basis Vk and freeze them.
+
+    The UP projection (A matrix) is set to the SVD persona directions so the
+    adapter can only move activations along known trait axes.  Only B is trained.
+    """
+    basis = torch.load(os.path.expandvars(basis_path), map_location="cpu",
+                       weights_only=False)
+    Vk = basis["Vk"]  # {layer_int: Tensor[k, d]}
+
+    initialized = 0
+    for name, param in model.named_parameters():
+        if "lora_A" not in name or adapter_name not in name or "o_proj" not in name:
+            continue
+        parts = name.split(".")
+        try:
+            layer_idx = next(int(p) for p in parts if p.isdigit())
+        except StopIteration:
+            continue
+        if layer_idx not in Vk:
+            continue
+        vk = Vk[layer_idx].float()  # [k, d]
+        r, d = param.shape[0], param.shape[1]
+        k = vk.shape[0]
+        with torch.no_grad():
+            if r <= k:
+                param.data.copy_(vk[:r, :d])
+            else:
+                param.data[:k, :d].copy_(vk[:, :d])
+                param.data[k:].zero_()
+        param.requires_grad_(False)
+        initialized += 1
+
+    print(f"  SVD-init + froze {initialized} lora_A tensors for {adapter_name!r}"
+          f" (o_proj only; lora_B remains trainable)")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--no-persona-lora", action="store_true",
+                        help="Skip adapter_a entirely; train only the minimiser (adapter_b)")
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Override lora rank for both adapters")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    # CLI overrides
+    if args.no_persona_lora:
+        cfg["use_persona_lora"] = False
+    if args.rank is not None:
+        cfg.setdefault("lora_a", {})["rank"] = args.rank
+        cfg.setdefault("lora_b", {})["rank"] = args.rank
+
+    use_persona_lora = cfg.get("use_persona_lora", True)
 
     save_dir = Path(cfg["output"]["save_dir"])
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +144,10 @@ def main():
     base_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype,
                                                        device_map="auto")
 
-    # ── Attach two LoRA adapters ─────────────────────────────────────────────
+    # ── Probe config (needed early for SVD init) ─────────────────────────────
+    probe_cfg = cfg["probe"]
+
+    # ── Attach LoRA adapters ─────────────────────────────────────────────────
     def _make_lora_config(lora_cfg):
         return LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -105,21 +158,25 @@ def main():
             bias="none",
         )
 
-    lora_cfg_a = _make_lora_config(cfg["lora_a"])
     lora_cfg_b = _make_lora_config(cfg["lora_b"])
 
-    # First adapter via get_peft_model, second via add_adapter.
-    model = get_peft_model(base_model, lora_cfg_a, adapter_name="adapter_a")
-    model.add_adapter("adapter_b", lora_cfg_b)
-    # Activate both adapters for trainee turns.
-    model.set_adapter(["adapter_a", "adapter_b"])
-    model.train()
+    if use_persona_lora:
+        lora_cfg_a = _make_lora_config(cfg["lora_a"])
+        model = get_peft_model(base_model, lora_cfg_a, adapter_name="adapter_a")
+        # SVD-init adapter_a: freeze lora_A (o_proj) to Vk; only lora_B trains.
+        _init_svd_lora_a(model, probe_cfg["basis_path"], "adapter_a")
+        model.add_adapter("adapter_b", lora_cfg_b)
+        model.set_adapter(["adapter_a", "adapter_b"])
+    else:
+        print("  use_persona_lora=False — training minimiser (adapter_b) only")
+        model = get_peft_model(base_model, lora_cfg_b, adapter_name="adapter_b")
+        model.set_adapter(["adapter_b"])
 
+    model.train()
     print("Trainable parameters:")
     model.print_trainable_parameters()
 
     # ── Build probe ──────────────────────────────────────────────────────────
-    probe_cfg = cfg["probe"]
     probe = SVDPersonaProbe(
         basis_path=probe_cfg["basis_path"],
         layers=[probe_cfg["layer"]],
@@ -160,10 +217,13 @@ def main():
     lr = opt_cfg.get("lr", 1e-4)
     max_grad_norm = opt_cfg.get("max_grad_norm", 1.0)
 
-    params_a = _adapter_params(model, "adapter_a")
     params_b = _adapter_params(model, "adapter_b")
-    optimizer_a = torch.optim.AdamW(params_a, lr=lr)
     optimizer_b = torch.optim.AdamW(params_b, lr=lr)
+    if use_persona_lora:
+        params_a = _adapter_params(model, "adapter_a")
+        optimizer_a = torch.optim.AdamW(params_a, lr=lr)
+    else:
+        optimizer_a = None
 
     # ── Training config ───────────────────────────────────────────────────────
     train_cfg = cfg["training"]
@@ -179,8 +239,11 @@ def main():
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(1, train_cfg["episodes"] + 1):
-        # Ensure both adapters are active before each episode.
-        model.set_adapter(["adapter_a", "adapter_b"])
+        # Restore active adapters before each episode.
+        if use_persona_lora:
+            model.set_adapter(["adapter_a", "adapter_b"])
+        else:
+            model.set_adapter(["adapter_b"])
 
         episode = collect_episode(
             game_id=game_id,
@@ -197,13 +260,15 @@ def main():
         rewards_b = [reward_b(r.probe_z) if r.probe_z else 0.0
                      for r in episode.records]
 
-        # Two REINFORCE steps — use retain_graph=True for adapter_a so the
-        # computation graph is still alive when adapter_b's step runs.
-        loss_a, baseline_a = reinforce_step(
-            episode.records, rewards_a, optimizer_a, baseline_a,
-            gamma=gamma, max_grad_norm=max_grad_norm,
-            retain_graph=True,   # keep graph for adapter_b's backward
-        )
+        if use_persona_lora:
+            loss_a, baseline_a = reinforce_step(
+                episode.records, rewards_a, optimizer_a, baseline_a,
+                gamma=gamma, max_grad_norm=max_grad_norm,
+                retain_graph=True,  # keep graph alive for adapter_b's backward
+            )
+        else:
+            loss_a = 0.0
+
         loss_b, baseline_b = reinforce_step(
             episode.records, rewards_b, optimizer_b, baseline_b,
             gamma=gamma, max_grad_norm=max_grad_norm,
@@ -229,14 +294,18 @@ def main():
 
         if ep % save_interval == 0:
             ckpt = save_dir / f"checkpoint_ep{ep:05d}"
-            model.save_pretrained(str(ckpt / "adapter_a"), selected_adapters=["adapter_a"])
-            model.save_pretrained(str(ckpt / "adapter_b"), selected_adapters=["adapter_b"])
+            if use_persona_lora:
+                model.save_pretrained(str(ckpt / "adapter_a"),
+                                      selected_adapters=["adapter_a"])
+            model.save_pretrained(str(ckpt / "adapter_b"),
+                                  selected_adapters=["adapter_b"])
             tokenizer.save_pretrained(str(ckpt))
             print(f"  Saved checkpoint -> {ckpt}")
 
     # ── Final save ────────────────────────────────────────────────────────────
-    model.save_pretrained(str(save_dir / "final" / "adapter_a"),
-                          selected_adapters=["adapter_a"])
+    if use_persona_lora:
+        model.save_pretrained(str(save_dir / "final" / "adapter_a"),
+                              selected_adapters=["adapter_a"])
     model.save_pretrained(str(save_dir / "final" / "adapter_b"),
                           selected_adapters=["adapter_b"])
     tokenizer.save_pretrained(str(save_dir / "final"))

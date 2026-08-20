@@ -9,13 +9,15 @@ model:
   base: Qwen/Qwen3-4B
   dtype: bfloat16
 
-lora_a:  # maximiser adapter — pushed TOWARD target traits
-  rank: 16
-  alpha: 32
-  targets: [q_proj, v_proj, o_proj]
-  dropout: 0.05
+use_persona_lora: true   # set false (or --no-persona-lora) to train only adapter_b
 
-lora_b:  # minimiser adapter — pushed AWAY from target traits
+lora_a:  # SVD persona LoRA (maximiser) — lora_A frozen to Vk; only lora_B trains
+  rank: 16              # should be ≤ k (# SVD components); excess slots zeroed
+  alpha: 32
+  targets: [o_proj]    # SVD basis lives at o_proj; only this makes sense here
+  dropout: 0.0          # no dropout on A (frozen); B has no dropout by default
+
+lora_b:  # standard LoRA (minimiser) — pushed AWAY from target traits
   rank: 16
   alpha: 32
   targets: [q_proj, v_proj, o_proj]
