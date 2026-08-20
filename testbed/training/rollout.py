@@ -35,6 +35,7 @@ def collect_episode(
     system_prompt: str = "You are a strategic game player. Respond concisely.",
     max_turns: int = 50,
     seed: Optional[int] = None,
+    verbose: bool = True,
 ) -> Episode:
     import textarena as ta
     env = ta.make(game_id)
@@ -45,6 +46,8 @@ def collect_episode(
     while turn_count < max_turns:
         player_id, obs_str = env.get_observation()
         if player_id == TRAINEE_ID:
+            if verbose:
+                print(f"    turn {turn_count+1} trainee...", flush=True)
             action, log_prob = trainee_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
@@ -63,16 +66,23 @@ def collect_episode(
                     k: v["z"] for k, v in trainee_policy._last_probe.items()
                     if v.get("z")
                 }
+            if verbose:
+                print(f"    turn {turn_count+1} done — "
+                      f"{len(action.split())} words", flush=True)
             episode.records.append(
                 TurnRecord(obs_str, action, log_prob, probe_z, probe_z_all)
             )
         else:
+            if verbose:
+                print(f"    turn {turn_count+1} opponent...", flush=True)
             action, _ = opponent_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
                 agent_id=str(player_id),
                 steering=None,
             )
+            if verbose:
+                print(f"    turn {turn_count+1} done", flush=True)
         done, _ = env.step(action)
         turn_count += 1
         if done:
