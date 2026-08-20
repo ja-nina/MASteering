@@ -49,7 +49,7 @@ echo "[$(date)] Extra args: ${EXTRA_ARGS:-<none>}"
 echo "[$(date)] GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
 # ── Run ────────────────────────────────────────────────────────────────────
-"$PYTHON" "${REPO}/scripts/train_lora.py" \
+"$PYTHON" -u "${REPO}/scripts/train_lora.py" \
     --config "${CONFIG}" \
     ${EXTRA_ARGS}
 
