@@ -259,7 +259,7 @@ def main():
     )
 
     # ── Build policies ───────────────────────────────────────────────────────
-    max_new_tokens = train_cfg.get("max_new_tokens", 256)
+    max_new_tokens = cfg.get("training", {}).get("max_new_tokens", 256)
     trainee_policy = TransformersPolicy(
         model_id=model_id,
         model=model,
