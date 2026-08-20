@@ -1,7 +1,7 @@
 """Episode rollout for self-play training."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # textarena is imported lazily inside collect_episode() to avoid import-time
 # failures on platforms where textarena's optional curses dep is missing.
@@ -14,8 +14,9 @@ TRAINEE_ID  = 1  # player 1 = model being trained
 class TurnRecord:
     obs: str
     action: str
-    log_prob: "torch.Tensor"   # scalar tensor with grad
-    probe_z: Optional[List[float]]  # z-vector at training layer, or None
+    log_prob: "torch.Tensor"              # scalar tensor with grad
+    probe_z: Optional[List[float]]        # z-vector at reward layer (for reward fn)
+    probe_z_all: Optional[Dict[str, List[float]]] = None  # z per layer (for logging)
 
 
 @dataclass
@@ -30,7 +31,7 @@ def collect_episode(
     trainee_policy,                # TransformersPolicy (LoRA model, grad enabled)
     opponent_policy,               # TransformersPolicy or compatible (frozen base)
     probe_layer: int,
-    reward_fn=None,                # deprecated / unused; kept for API compatibility
+    reward_fn=None,                # unused; kept for API compatibility
     system_prompt: str = "You are a strategic game player. Respond concisely.",
     max_turns: int = 50,
     seed: Optional[int] = None,
@@ -52,10 +53,19 @@ def collect_episode(
                 return_logprob=True,
             )
             probe_z = None
+            probe_z_all = None
             if trainee_policy._last_probe:
+                # Reward layer z
                 layer_data = trainee_policy._last_probe.get(str(probe_layer), {})
                 probe_z = layer_data.get("z") or None
-            episode.records.append(TurnRecord(obs_str, action, log_prob, probe_z))
+                # All layers z (for logging)
+                probe_z_all = {
+                    k: v["z"] for k, v in trainee_policy._last_probe.items()
+                    if v.get("z")
+                }
+            episode.records.append(
+                TurnRecord(obs_str, action, log_prob, probe_z, probe_z_all)
+            )
         else:
             action, _ = opponent_policy.act(
                 system_prompt=system_prompt,

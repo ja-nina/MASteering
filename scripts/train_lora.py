@@ -26,7 +26,7 @@ from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
 from testbed.training.rollout import collect_episode, TRAINEE_ID
-from testbed.training.grpo import grpo_step, group_stats
+from testbed.training.grpo import grpo_step, group_stats, wandb_log_step
 
 
 def _init_wandb(cfg: dict):
@@ -264,7 +264,7 @@ def main():
             model.set_adapter(["adapter_b"])
 
         # Collect a group of K episodes for GRPO.
-        group_records = []
+        group_episodes = []
         group_rewards_a = []
         group_rewards_b = []
         total_turns = 0
@@ -280,12 +280,13 @@ def main():
             )
             ra = [reward_a(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
             rb = [reward_b(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
-            group_records.append(episode.records)
+            group_episodes.append(episode)
             group_rewards_a.append(ra)
             group_rewards_b.append(rb)
             total_turns += len(episode.records)
 
         # GRPO update — adapter_a first (retain graph), then adapter_b.
+        group_records = [ep.records for ep in group_episodes]
         if use_persona_lora:
             loss_a = grpo_step(group_records, group_rewards_a, optimizer_a,
                                max_grad_norm=max_grad_norm, retain_graph=True)
@@ -307,21 +308,20 @@ def main():
         }
         episode_log.append(entry)
 
-        if wandb_run is not None:
-            wandb_run.log({
-                "loss/adapter_a":        loss_a,
-                "loss/adapter_b":        loss_b,
-                "reward_a/mean":         stats_a["mean"],
-                "reward_a/std":          stats_a["std"],
-                "reward_a/min":          stats_a["min"],
-                "reward_a/max":          stats_a["max"],
-                "reward_b/mean":         stats_b["mean"],
-                "reward_b/std":          stats_b["std"],
-                "reward_b/min":          stats_b["min"],
-                "reward_b/max":          stats_b["max"],
-                "mean_turns_per_ep":     total_turns / grpo_k,
-                "episodes_total":        ep * grpo_k,
-            }, step=step)
+        wandb_log_step(
+            wandb_run=wandb_run,
+            step=step,
+            episodes=group_episodes,
+            rewards_a=group_rewards_a,
+            rewards_b=group_rewards_b,
+            loss_a=loss_a,
+            loss_b=loss_b,
+            model=model,
+            probe=probe,
+            probe_layer=probe_layer,
+            use_persona_lora=use_persona_lora,
+            log_transcript_every=cfg["output"].get("log_transcript_every", 50),
+        )
 
         if ep % log_interval == 0:
             print(f"[step {step:4d}] "

@@ -78,3 +78,126 @@ def group_stats(episode_rewards: List[List[float]]) -> dict:
     mu = sum(ep_means) / K
     sigma = (sum((m - mu) ** 2 for m in ep_means) / K) ** 0.5
     return {"mean": mu, "std": sigma, "min": min(ep_means), "max": max(ep_means)}
+
+
+def wandb_log_step(
+    wandb_run,
+    step: int,
+    episodes,           # List[Episode]
+    rewards_a: List[List[float]],
+    rewards_b: List[List[float]],
+    loss_a: float,
+    loss_b: float,
+    model,              # PeftModel — for LoRA norm tracking
+    probe,              # SVDPersonaProbe — for trait name lookup
+    probe_layer: int,
+    use_persona_lora: bool,
+    log_transcript_every: int = 50,
+) -> None:
+    """Log rich training diagnostics to wandb."""
+    if wandb_run is None:
+        return
+
+    import torch
+
+    stats_a = group_stats(rewards_a)
+    stats_b = group_stats(rewards_b)
+
+    # ── 1. Core scalars ──────────────────────────────────────────────────────
+    log = {
+        "loss/adapter_a":    loss_a,
+        "loss/adapter_b":    loss_b,
+        "reward_a/mean":     stats_a["mean"],
+        "reward_a/std":      stats_a["std"],
+        "reward_a/min":      stats_a["min"],
+        "reward_a/max":      stats_a["max"],
+        "reward_b/mean":     stats_b["mean"],
+        "reward_b/std":      stats_b["std"],
+        "reward_b/min":      stats_b["min"],
+        "reward_b/max":      stats_b["max"],
+        "grpo/advantage_std": stats_a["std"],  # group std = effective advantage scale
+        "episode/mean_turns": sum(len(ep.records) for ep in episodes) / max(len(episodes), 1),
+        "episode/mean_length_chars": sum(
+            sum(len(r.action) for r in ep.records) for ep in episodes
+        ) / max(sum(len(ep.records) for ep in episodes), 1),
+    }
+
+    # ── 2. Persona space per layer ───────────────────────────────────────────
+    # Aggregate mean z-vector across all trainee turns in the group, per layer.
+    layer_z_sums: dict = {}
+    layer_z_counts: dict = {}
+    for ep in episodes:
+        for record in ep.records:
+            if not record.probe_z_all:
+                continue
+            for layer_key, z_list in record.probe_z_all.items():
+                z = torch.tensor(z_list, dtype=torch.float32)
+                if layer_key not in layer_z_sums:
+                    layer_z_sums[layer_key] = z.clone()
+                    layer_z_counts[layer_key] = 1
+                else:
+                    layer_z_sums[layer_key] += z
+                    layer_z_counts[layer_key] += 1
+
+    for layer_key, z_sum in layer_z_sums.items():
+        mean_z = z_sum / layer_z_counts[layer_key]
+        layer_int = int(layer_key)
+        # Cosine sim to each trait direction C[layer]
+        if layer_int in probe._C:
+            C = probe._C[layer_int].float()              # [N_dedup, k]
+            z_norm = mean_z.norm().clamp(min=1e-8)
+            C_norms = C.norm(dim=1).clamp(min=1e-8)
+            sims = (C @ mean_z) / (C_norms * z_norm)    # [N_dedup]
+            for slug, sim in zip(probe._slugs, sims.tolist()):
+                log[f"persona/layer_{layer_key}/{slug}"] = sim
+
+    # ── 3. LoRA B-matrix norms per layer ────────────────────────────────────
+    # Tracks how much each adapter has moved from its zero initialization.
+    for name, param in model.named_parameters():
+        if "lora_B" not in name or not param.requires_grad:
+            continue
+        adapter = "adapter_a" if "adapter_a" in name else "adapter_b" if "adapter_b" in name else None
+        if adapter is None:
+            continue
+        parts = name.split(".")
+        try:
+            layer_idx = next(int(p) for p in parts if p.isdigit())
+        except StopIteration:
+            continue
+        mod = "o_proj" if "o_proj" in name else "q_proj" if "q_proj" in name else "other"
+        log[f"lora_norm/{adapter}/layer_{layer_idx}/{mod}"] = param.data.norm().item()
+
+    # ── 4. Gradient norms (read from .grad if available) ────────────────────
+    for adapter_name in (["adapter_a", "adapter_b"] if use_persona_lora else ["adapter_b"]):
+        grad_norms = [
+            p.grad.norm().item()
+            for n, p in model.named_parameters()
+            if adapter_name in n and p.grad is not None
+        ]
+        if grad_norms:
+            log[f"grad_norm/{adapter_name}"] = (
+                sum(g ** 2 for g in grad_norms) ** 0.5
+            )
+
+    # ── 5. Sample transcript (every N steps) ────────────────────────────────
+    if step % log_transcript_every == 0 and episodes:
+        ep = episodes[0]
+        lines = []
+        for i, r in enumerate(ep.records):
+            lines.append(f"**Turn {i+1} (trainee)**")
+            lines.append(f"> {r.obs[:300]}{'...' if len(r.obs)>300 else ''}")
+            lines.append(f"*Action:* {r.action[:300]}{'...' if len(r.action)>300 else ''}")
+            if r.probe_z and layer_key in layer_z_sums:
+                top = probe.rank_traits(r.probe_z, probe_layer)[:3]
+                lines.append(f"*Top traits (layer {probe_layer}):* " +
+                              ", ".join(f"{s} {v:.2f}" for s, v in top))
+            lines.append("")
+        try:
+            import wandb
+            log["transcript/sample"] = wandb.Html("<br>".join(
+                l.replace("**", "<b>").replace("*", "<i>") for l in lines
+            ))
+        except Exception:
+            pass
+
+    wandb_run.log(log, step=step)
