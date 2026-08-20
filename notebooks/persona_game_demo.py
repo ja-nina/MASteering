@@ -127,46 +127,55 @@ _STATE = DemoState()
 # Chart helper
 # ---------------------------------------------------------------------------
 
-def _make_timeseries_html(history: list, title: str = "") -> str:
-    """Return HTML: SVG time series of top-trait similarity scores over agent turns.
+_SERIES_COLORS = [
+    "#4a90d9", "#e05a5a", "#5ab85a", "#e0a020",
+    "#9b59b6", "#1abc9c", "#e67e22", "#2ecc71",
+]
 
-    X-axis: agent turn labels (dominant trait name at each turn).
-    Labels are thinned automatically when turns get dense.
+
+def _make_timeseries_html(history: list, title: str = "") -> str:
+    """Multi-line SVG time series: one line per trait that appears in any turn's top-k.
+
+    history: list of (turn_idx, top_traits) where top_traits = [[slug, score], ...]
+    X-axis: turn numbers; x-labels thin when dense so words don't overlap.
     """
     if not history:
         return "<p>No projection data yet.</p>"
 
-    W, H = 420, 180
-    PAD_L, PAD_R, PAD_T, PAD_B = 38, 10, 22, 48
+    W, H = 460, 200
+    PAD_L, PAD_R, PAD_T, PAD_B = 42, 12, 22, 44
     plot_w = W - PAD_L - PAD_R
     plot_h = H - PAD_T - PAD_B
 
-    scores = [s for (_, _, s, _) in history]
-    y_min = min(0.0, min(scores))
-    y_max = max(0.01, max(scores))
-    y_range = y_max - y_min or 1.0
-
     n = len(history)
 
-    def px(i, s):
-        x = PAD_L + (i / max(n - 1, 1)) * plot_w
-        y = PAD_T + plot_h - ((s - y_min) / y_range) * plot_h
+    # Collect all traits that ever appeared, preserving first-seen order
+    seen_traits: list = []
+    trait_set: set = set()
+    for _, top_traits in history:
+        for slug, _ in top_traits:
+            if slug not in trait_set:
+                seen_traits.append(slug)
+                trait_set.add(slug)
+
+    # Build per-trait score series: {slug: {turn_idx: score}}
+    trait_scores: dict = {slug: {} for slug in seen_traits}
+    for turn_idx, top_traits in history:
+        for slug, score in top_traits:
+            trait_scores[slug][turn_idx] = float(score)
+
+    turn_ids = [t for (t, _) in history]
+    all_scores = [s for d in trait_scores.values() for s in d.values()]
+    y_min = min(0.0, min(all_scores))
+    y_max = max(0.01, max(all_scores))
+    y_range = y_max - y_min or 1.0
+
+    def px(turn_i, score):
+        x = PAD_L + (turn_i / max(n - 1, 1)) * plot_w
+        y = PAD_T + plot_h - ((score - y_min) / y_range) * plot_h
         return x, y
 
-    # Polyline points
-    pts = " ".join(f"{px(i, s)[0]:.1f},{px(i, s)[1]:.1f}" for i, (_, _, s, _) in enumerate(history))
-
-    # Dot + tooltip overlay
-    dots = []
-    for i, (turn, name, score, top5) in enumerate(history):
-        cx, cy = px(i, score)
-        tip = f"Turn {turn}: {name} ({score:.2f})"
-        dots.append(
-            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4" fill="#4a90d9" stroke="white" stroke-width="1.5">'
-            f'<title>{tip}</title></circle>'
-        )
-
-    # Y-axis ticks (3 ticks)
+    # Y-axis grid + labels (3 ticks)
     yticks = []
     for frac in [0.0, 0.5, 1.0]:
         val = y_min + frac * y_range
@@ -178,51 +187,96 @@ def _make_timeseries_html(history: list, title: str = "") -> str:
             f'font-size="9" fill="#888">{val:.2f}</text>'
         )
 
-    # X-axis labels: show every Nth label so they don't overlap (~50px per label)
-    max_labels = max(1, plot_w // 52)
+    # One polyline + dots per trait
+    series_els = []
+    for t_idx, slug in enumerate(seen_traits):
+        color = _SERIES_COLORS[t_idx % len(_SERIES_COLORS)]
+        scores_map = trait_scores[slug]
+        # Segments: connected run of consecutive turns where trait is present
+        pts_parts = []
+        seg = []
+        for i, tid in enumerate(turn_ids):
+            if tid in scores_map:
+                seg.append((i, scores_map[tid]))
+            else:
+                if seg:
+                    pts_parts.append(seg)
+                    seg = []
+        if seg:
+            pts_parts.append(seg)
+
+        for seg in pts_parts:
+            if len(seg) == 1:
+                # isolated point — draw as dot only
+                i, sc = seg[0]
+                cx, cy = px(i, sc)
+                series_els.append(
+                    f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3.5" '
+                    f'fill="{color}" stroke="white" stroke-width="1">'
+                    f'<title>{slug} (turn {turn_ids[i]}): {sc:.2f}</title></circle>'
+                )
+            else:
+                pts_str = " ".join(f"{px(i,sc)[0]:.1f},{px(i,sc)[1]:.1f}" for i, sc in seg)
+                series_els.append(
+                    f'<polyline points="{pts_str}" fill="none" stroke="{color}" '
+                    f'stroke-width="2" stroke-linejoin="round"/>'
+                )
+                for i, sc in seg:
+                    cx, cy = px(i, sc)
+                    series_els.append(
+                        f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" '
+                        f'fill="{color}" stroke="white" stroke-width="1">'
+                        f'<title>{slug} (turn {turn_ids[i]}): {sc:.2f}</title></circle>'
+                    )
+
+    # X-axis turn labels — show every Nth so they don't overlap (~48 px each)
+    max_labels = max(1, plot_w // 48)
     step = max(1, (n - 1) // max_labels + 1) if n > 1 else 1
     xlabels = []
-    for i, (turn, name, score, _) in enumerate(history):
+    for i, (tid, top_traits) in enumerate(history):
         if i % step != 0 and i != n - 1:
             continue
-        x, _ = px(i, score)
-        # Truncate long names
-        label = name[:10] + "…" if len(name) > 11 else name
+        x, _ = px(i, y_min)
+        # label = dominant trait name at this turn, truncated
+        name = top_traits[0][0] if top_traits else str(tid)
+        label = name[:9] + "…" if len(name) > 10 else name
         xlabels.append(
-            f'<text x="{x:.1f}" y="{PAD_T + plot_h + 14}" text-anchor="middle" '
-            f'font-size="9" fill="#555" transform="rotate(-30,{x:.1f},{PAD_T + plot_h + 14})">'
-            f'{label}</text>'
+            f'<text x="{x:.1f}" y="{PAD_T + plot_h + 13}" text-anchor="end" '
+            f'font-size="9" fill="#555" '
+            f'transform="rotate(-35,{x:.1f},{PAD_T + plot_h + 13})">{label}</text>'
         )
 
-    # Latest top-5 traits
-    _, _, _, top5 = history[-1]
-    trait_rows = "".join(
-        f'<li style="font-size:11px;line-height:1.5">{r}. {sl} <span style="color:#888">({sc:.2f})</span></li>'
-        for r, (sl, sc) in enumerate(top5[:5], 1)
-    )
-    trait_block = (
-        f'<div style="margin-top:6px"><b style="font-size:11px">Latest top traits:</b>'
-        f'<ol style="margin:2px 0;padding-left:18px">{trait_rows}</ol></div>'
-    ) if top5 else ""
+    # Legend (right of chart, stacked)
+    legend_x = PAD_L + plot_w + 6
+    legend_els = []
+    for t_idx, slug in enumerate(seen_traits[:8]):
+        color = _SERIES_COLORS[t_idx % len(_SERIES_COLORS)]
+        ly = PAD_T + t_idx * 16
+        label = slug[:11] + "…" if len(slug) > 12 else slug
+        legend_els.append(
+            f'<rect x="{legend_x}" y="{ly}" width="10" height="10" fill="{color}" rx="2"/>'
+            f'<text x="{legend_x + 13}" y="{ly + 9}" font-size="9" fill="#444">{label}</text>'
+        )
 
     title_el = (
-        f'<text x="{W // 2}" y="14" text-anchor="middle" font-size="11" font-weight="600" fill="#333">{title}</text>'
-        if title else ""
-    )
+        f'<text x="{(PAD_L + PAD_L + plot_w) // 2}" y="14" text-anchor="middle" '
+        f'font-size="11" font-weight="600" fill="#333">{title}</text>'
+    ) if title else ""
 
+    svg_w = W + 110  # extra room for legend
     svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_w}" height="{H}" '
         f'style="max-width:100%;font-family:sans-serif;overflow:visible">'
         + title_el
         + "".join(yticks)
-        + f'<polyline points="{pts}" fill="none" stroke="#4a90d9" stroke-width="2" stroke-linejoin="round"/>'
-        + "".join(dots)
+        + "".join(series_els)
         + "".join(xlabels)
+        + "".join(legend_els)
         + f'<line x1="{PAD_L}" y1="{PAD_T}" x2="{PAD_L}" y2="{PAD_T + plot_h}" stroke="#aaa"/>'
         + f'<line x1="{PAD_L}" y1="{PAD_T + plot_h}" x2="{PAD_L + plot_w}" y2="{PAD_T + plot_h}" stroke="#aaa"/>'
         + "</svg>"
     )
-    return svg + trait_block
+    return svg
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +328,7 @@ def _auto_play_agents_until_human(probe_layer: Optional[int]) -> Tuple[str, str]
             top_traits = layer_data.get("top_traits", [])
             if top_traits:
                 turn_idx = len(_STATE.probe_history) + 1
-                top_name, top_score = top_traits[0][0], top_traits[0][1]
-                _STATE.probe_history.append((turn_idx, top_name, top_score, top_traits))
+                _STATE.probe_history.append((turn_idx, top_traits))
                 chart_html = _make_timeseries_html(
                     _STATE.probe_history, title=f"SVD persona monitor (layer {probe_layer})"
                 )
