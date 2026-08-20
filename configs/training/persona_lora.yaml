@@ -25,9 +25,10 @@ lora_b:  # standard LoRA (minimiser) — pushed AWAY from target traits
   dropout: 0.05
 
 probe:
-  basis_path: data/svd_basis/qwen3-4b-attn.pt
-  layer: 18
-  hook: attn
+  basis_path: data/svd_basis/qwen3-4b-residual.pt
+  hook: residual
+  reward_layer_start: 10    # sum cosine-sim reward over layers [10, last]
+  display_layer: 35         # layer used for rank_traits / wandb trait labels
 
 reward:
   # Both adapters maximise cosine-sim to this weighted trait direction.
@@ -36,6 +37,11 @@ reward:
   target_traits:
     agreeable: 1.5
     warm: 1.0
+  # Dense reward mix: alpha weights the opponent's reaction (primary signal —
+  # did my words shift the opponent's internal state?); beta weights the
+  # trainee's own representation (secondary — is the trainee "in character"?).
+  alpha: 1.0
+  beta: 0.0
 
 optimizer:
   lr: 1.0e-4

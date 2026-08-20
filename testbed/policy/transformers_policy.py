@@ -258,6 +258,27 @@ class TransformersPolicy:
         self._last_probe = get_scores() if get_scores is not None else {}
         return result
 
+    def probe_text(self, text: str) -> "Dict[str, Any]":
+        """Single forward pass on text with probe hooks active; no generation.
+
+        Runs with all LoRA adapters disabled so this always reflects base-model
+        weights (i.e. the frozen opponent's perspective).  Used to measure the
+        opponent's hidden-state reaction to each of the K candidate trainee
+        responses without running a full generate() call.
+
+        Returns the same dict format as self._last_probe.
+        """
+        import torch
+        if self.probe is None:
+            return {}
+        inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+        probe_hooks, get_scores = self.probe.make_hook()
+        with _HookSession(self.model, probe_hooks):
+            with self.model.disable_adapter():
+                with torch.no_grad():
+                    self.model(**inputs)
+        return get_scores() if get_scores is not None else {}
+
     def _build_inputs(self, system_prompt: str, user_prompt: str):
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}]

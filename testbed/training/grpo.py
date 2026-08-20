@@ -1,77 +1,69 @@
-"""GRPO (Group Relative Policy Optimization) for dual persona LoRA training.
+"""GRPO (Group Relative Policy Optimisation) for persona LoRA training.
 
-Collects K rollouts per update step (a "group"), normalises rewards within
-the group to form advantages, and does one gradient step per adapter.
+At each trainee turn, K candidate responses were sampled from the same
+observation.  The opponent was probed on each → K rewards.  These K rewards
+are normalised within the turn group to form per-turn advantages:
 
-Reference: DeepSeek-R1 (Shao et al. 2024) — same algorithm, adapted for
-multi-turn self-play with a dense SVD cosine-similarity reward.
+    a_k  =  (r_k − μ_turn) / (σ_turn + ε)
 
-Advantage formula:
-    a_i = (mean_reward_i - μ_group) / (σ_group + ε)
-
-where mean_reward_i is the mean per-turn reward across episode i.
-All turns within episode i share the same advantage a_i.
+Gradients accumulate turn-by-turn (one backward per TurnGroup) so only one
+turn's K computation graphs live in GPU memory at once.
 """
 from __future__ import annotations
 
+import random
 from typing import List, Optional
 
 import torch
 
+from testbed.training.rollout import Episode, TurnGroup
+
 
 def grpo_step(
-    episode_records: List[List],          # [K][T] — K episodes, each a list of TurnRecords
-    episode_rewards: List[List[float]],   # [K][T] — matching per-turn rewards
-    optimizers,                           # single optimizer OR list of optimizers
+    episode: Episode,
+    optimizers,
     max_grad_norm: float = 1.0,
-    retain_graph: bool = False,           # ignored — kept for API compat
     eps: float = 1e-8,
 ) -> float:
-    """One GRPO gradient step over K rollouts using episode-by-episode accumulation.
+    """One GRPO gradient step over a single episode with K candidates per turn.
 
-    Processes one episode at a time and calls backward() immediately, so only
-    one episode's computation graph lives in GPU memory at once.  This is
-    critical for large models (Qwen3-4B) where holding K graphs simultaneously
-    causes OOM.
+    For each TurnGroup:
+      - normalise K rewards → K advantages
+      - accumulate loss: Σ_k  −log_prob_k × advantage_k
+      - backward() immediately → frees this turn's K graphs
 
-    When multiple optimizers are passed (e.g. [optimizer_a, optimizer_b]),
-    a single backward accumulates gradients for all trainable params at once —
-    no retain_graph needed.
-
-    Returns the total scalar loss (detached, summed across all episodes).
+    Returns total scalar loss (summed across all turn groups).
     """
-    if not episode_records:
+    if not episode.turn_groups:
         return 0.0
 
     if not isinstance(optimizers, (list, tuple)):
         optimizers = [optimizers]
 
-    # Episode-level mean reward (scalar per episode)
-    ep_means: List[float] = [
-        sum(rs) / max(len(rs), 1) for rs in episode_rewards
-    ]
-
-    # Group statistics
-    K = len(ep_means)
-    group_mean = sum(ep_means) / K
-    group_var = sum((m - group_mean) ** 2 for m in ep_means) / max(K, 1)
-    group_std = group_var ** 0.5
-
     for opt in optimizers:
         opt.zero_grad()
 
     total_loss = 0.0
-    for records, ep_mean in zip(episode_records, ep_means):
-        advantage = (ep_mean - group_mean) / (group_std + eps)
-        ep_loss = torch.tensor(0.0)
-        for record in records:
-            if record.log_prob is not None:
-                ep_loss = ep_loss + (-record.log_prob * float(advantage))
 
-        if ep_loss.requires_grad:
-            # backward() frees this episode's graph immediately after use
-            ep_loss.backward()
-            total_loss += ep_loss.item()
+    for tg in episode.turn_groups:
+        K = len(tg.rewards)
+        if K < 2:
+            tg.advantages = [0.0] * K
+            continue
+
+        mu  = sum(tg.rewards) / K
+        std = (sum((r - mu) ** 2 for r in tg.rewards) / K) ** 0.5
+        advantages = [(r - mu) / (std + eps) for r in tg.rewards]
+        tg.advantages = advantages
+
+        tg_loss = torch.tensor(0.0)
+        for record, adv in zip(tg.records, advantages):
+            if record.log_prob is not None:
+                tg_loss = tg_loss + (-record.log_prob * float(adv))
+
+        if tg_loss.requires_grad:
+            tg_loss.backward()   # frees this turn group's graphs
+            total_loss += tg_loss.item()
 
     all_params = [p for opt in optimizers for pg in opt.param_groups for p in pg["params"]]
     if any(p.grad is not None for p in all_params):
@@ -82,27 +74,23 @@ def grpo_step(
     return total_loss
 
 
-def group_stats(episode_rewards: List[List[float]]) -> dict:
-    """Compute summary statistics over a group of K episodes (for logging)."""
-    ep_means = [sum(rs) / max(len(rs), 1) for rs in episode_rewards]
-    K = len(ep_means)
-    if K == 0:
+def episode_stats(episode: Episode) -> dict:
+    """Summary statistics over all turn-group rewards in one episode."""
+    all_rewards = [r for tg in episode.turn_groups for r in tg.rewards]
+    if not all_rewards:
         return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
-    mu = sum(ep_means) / K
-    sigma = (sum((m - mu) ** 2 for m in ep_means) / K) ** 0.5
-    return {"mean": mu, "std": sigma, "min": min(ep_means), "max": max(ep_means)}
+    mu = sum(all_rewards) / len(all_rewards)
+    sigma = (sum((r - mu) ** 2 for r in all_rewards) / len(all_rewards)) ** 0.5
+    return {"mean": mu, "std": sigma, "min": min(all_rewards), "max": max(all_rewards)}
 
 
 def wandb_log_step(
     wandb_run,
     step: int,
-    episodes,           # List[Episode]
-    rewards_a: List[List[float]],
-    rewards_b: List[List[float]],
-    loss_a: float,
-    loss_b: float,
-    model,              # PeftModel — for LoRA norm tracking
-    probe,              # SVDPersonaProbe — for trait name lookup
+    episode: Episode,
+    loss: float,
+    model,
+    probe,
     probe_layer: int,
     use_persona_lora: bool,
     log_transcript_every: int = 50,
@@ -113,63 +101,56 @@ def wandb_log_step(
 
     import torch
 
-    stats_a = group_stats(rewards_a)
-    stats_b = group_stats(rewards_b)
+    stats = episode_stats(episode)
 
     # ── 1. Core scalars ──────────────────────────────────────────────────────
+    n_turns = len(episode.turn_groups)
     log = {
-        "loss/adapter_a":    loss_a,
-        "loss/adapter_b":    loss_b,
-        "reward_a/mean":     stats_a["mean"],
-        "reward_a/std":      stats_a["std"],
-        "reward_a/min":      stats_a["min"],
-        "reward_a/max":      stats_a["max"],
-        "reward_b/mean":     stats_b["mean"],
-        "reward_b/std":      stats_b["std"],
-        "reward_b/min":      stats_b["min"],
-        "reward_b/max":      stats_b["max"],
-        "grpo/advantage_std": stats_a["std"],  # group std = effective advantage scale
-        "episode/mean_turns": sum(len(ep.records) for ep in episodes) / max(len(episodes), 1),
-        "episode/mean_length_chars": sum(
-            sum(len(r.action) for r in ep.records) for ep in episodes
-        ) / max(sum(len(ep.records) for ep in episodes), 1),
+        "loss":               loss,
+        "reward/mean":        stats["mean"],
+        "reward/std":         stats["std"],
+        "reward/min":         stats["min"],
+        "reward/max":         stats["max"],
+        "episode/num_turns":  n_turns,
+        "episode/mean_length_chars": (
+            sum(len(r.action) for tg in episode.turn_groups for r in tg.records)
+            / max(sum(len(tg.records) for tg in episode.turn_groups), 1)
+        ),
     }
 
-    # ── 2. Persona space per layer ───────────────────────────────────────────
-    # Aggregate mean z-vector across all trainee turns in the group, per layer.
+    # ── 2. Persona space per layer (trainee's own probe, sample K=0) ─────────
     layer_z_sums: dict = {}
     layer_z_counts: dict = {}
-    for ep in episodes:
-        for record in ep.records:
-            if not record.probe_z_all:
-                continue
-            for layer_key, z_list in record.probe_z_all.items():
-                z = torch.tensor(z_list, dtype=torch.float32)
-                if layer_key not in layer_z_sums:
-                    layer_z_sums[layer_key] = z.clone()
-                    layer_z_counts[layer_key] = 1
-                else:
-                    layer_z_sums[layer_key] += z
-                    layer_z_counts[layer_key] += 1
+    for tg in episode.turn_groups:
+        record = tg.records[0]   # sample 0 carries probe_z_all
+        if not record.probe_z_all:
+            continue
+        for layer_key, z_list in record.probe_z_all.items():
+            z = torch.tensor(z_list, dtype=torch.float32)
+            if layer_key not in layer_z_sums:
+                layer_z_sums[layer_key] = z.clone()
+                layer_z_counts[layer_key] = 1
+            else:
+                layer_z_sums[layer_key] += z
+                layer_z_counts[layer_key] += 1
 
     for layer_key, z_sum in layer_z_sums.items():
         mean_z = z_sum / layer_z_counts[layer_key]
         layer_int = int(layer_key)
-        # Cosine sim to each trait direction C[layer]
         if layer_int in probe._C:
-            C = probe._C[layer_int].float()              # [N_dedup, k]
+            C = probe._C[layer_int].float()
             z_norm = mean_z.norm().clamp(min=1e-8)
             C_norms = C.norm(dim=1).clamp(min=1e-8)
-            sims = (C @ mean_z) / (C_norms * z_norm)    # [N_dedup]
+            sims = (C @ mean_z) / (C_norms * z_norm)
             for slug, sim in zip(probe._slugs, sims.tolist()):
                 log[f"persona/layer_{layer_key}/{slug}"] = sim
 
-    # ── 3. LoRA B-matrix norms per layer ────────────────────────────────────
-    # Tracks how much each adapter has moved from its zero initialization.
+    # ── 3. LoRA B-matrix norms ───────────────────────────────────────────────
     for name, param in model.named_parameters():
         if "lora_B" not in name or not param.requires_grad:
             continue
-        adapter = "adapter_a" if "adapter_a" in name else "adapter_b" if "adapter_b" in name else None
+        adapter = ("adapter_a" if "adapter_a" in name
+                   else "adapter_b" if "adapter_b" in name else None)
         if adapter is None:
             continue
         parts = name.split(".")
@@ -177,10 +158,11 @@ def wandb_log_step(
             layer_idx = next(int(p) for p in parts if p.isdigit())
         except StopIteration:
             continue
-        mod = "o_proj" if "o_proj" in name else "q_proj" if "q_proj" in name else "other"
+        mod = ("o_proj" if "o_proj" in name
+               else "q_proj" if "q_proj" in name else "other")
         log[f"lora_norm/{adapter}/layer_{layer_idx}/{mod}"] = param.data.norm().item()
 
-    # ── 4. Gradient norms (read from .grad if available) ────────────────────
+    # ── 4. Gradient norms ────────────────────────────────────────────────────
     for adapter_name in (["adapter_a", "adapter_b"] if use_persona_lora else ["adapter_b"]):
         grad_norms = [
             p.grad.norm().item()
@@ -192,18 +174,47 @@ def wandb_log_step(
                 sum(g ** 2 for g in grad_norms) ** 0.5
             )
 
-    # ── 5. Persona time series — per-turn trajectory within one sample episode ─
-    # Logs a wandb.Table with one row per turn: (step, episode_idx, turn,
-    # layer, slug, cosine_sim).  Gives the within-episode arc, not just the
-    # cross-episode mean.  Uses only the first episode to keep table size sane.
+    # ── 5. Opponent reaction timeseries — K rewards per turn ─────────────────
+    # Shows how the K candidate responses at each turn compared against each
+    # other in terms of opponent persona shift.
     try:
         import wandb as _wandb
-        if episodes:
-            sample_ep = episodes[0]
+        rows = []
+        for turn_idx, tg in enumerate(episode.turn_groups):
+            if probe_layer not in probe._C:
+                continue
+            C = probe._C[probe_layer].float()
+            for k, (record, reward, adv) in enumerate(
+                zip(tg.records, tg.rewards,
+                    tg.advantages or [float("nan")] * len(tg.records))
+            ):
+                if record.probe_z_opponent:
+                    z = torch.tensor(record.probe_z_opponent, dtype=torch.float32)
+                    z_norm = z.norm().clamp(min=1e-8)
+                    C_norms = C.norm(dim=1).clamp(min=1e-8)
+                    sims = (C @ z) / (C_norms * z_norm)
+                    for slug, sim in zip(probe._slugs, sims.tolist()):
+                        rows.append([turn_idx, k, slug,
+                                     round(sim, 4), round(reward, 4),
+                                     round(adv, 4) if adv == adv else float("nan")])
+        if rows:
+            log["opponent_persona/timeseries"] = _wandb.Table(
+                columns=["turn", "candidate", "trait",
+                         "cosine_sim_opponent", "reward", "advantage"],
+                data=rows,
+            )
+    except Exception:
+        pass
+
+    # ── 6. Trainee persona timeseries (random turn's sample 0) ──────────────
+    try:
+        import wandb as _wandb
+        if episode.turn_groups:
+            sample_tg = random.choice(episode.turn_groups)
+            record = sample_tg.records[0]
             rows = []
-            for turn_idx, record in enumerate(sample_ep.records):
-                if not record.probe_z_all:
-                    continue
+            if record.probe_z_all:
+                turn_idx = episode.turn_groups.index(sample_tg)
                 for layer_key, z_list in record.probe_z_all.items():
                     layer_int = int(layer_key)
                     if layer_int not in probe._C:
@@ -215,81 +226,43 @@ def wandb_log_step(
                     sims = (C @ z) / (C_norms * z_norm)
                     for slug, sim in zip(probe._slugs, sims.tolist()):
                         rows.append([step, turn_idx, int(layer_key), slug, sim])
-
             if rows:
-                table = _wandb.Table(
+                log["persona_timeseries/turn_sample"] = _wandb.Table(
                     columns=["step", "turn", "layer", "trait", "cosine_sim"],
                     data=rows,
                 )
-                log["persona_timeseries/episode_sample"] = table
     except Exception:
         pass
 
-    # ── 5b. Opponent persona time series — ALL K episodes, every step ──────────
-    # The key training signal: does the trainee's text shift the opponent's
-    # internal trait representation turn-by-turn?
-    # Table columns: episode | turn | trait | cosine_sim_opponent | reward
-    try:
-        import wandb as _wandb
-        rows = []
-        for ep_idx, ep in enumerate(episodes):
-            ep_rewards = rewards_a[ep_idx] if ep_idx < len(rewards_a) else []
-            for turn_idx, record in enumerate(ep.records):
-                if not record.probe_z_opponent:
-                    continue
-                z = torch.tensor(record.probe_z_opponent, dtype=torch.float32)
-                if probe_layer not in probe._C:
-                    continue
-                C = probe._C[probe_layer].float()
-                z_norm = z.norm().clamp(min=1e-8)
-                C_norms = C.norm(dim=1).clamp(min=1e-8)
-                sims = (C @ z) / (C_norms * z_norm)
-                r = ep_rewards[turn_idx] if turn_idx < len(ep_rewards) else float("nan")
-                for slug, sim in zip(probe._slugs, sims.tolist()):
-                    rows.append([ep_idx, turn_idx, slug, round(sim, 4), round(r, 4)])
-        if rows:
-            log["opponent_persona/timeseries"] = _wandb.Table(
-                columns=["episode", "turn", "trait", "cosine_sim_opponent", "reward"],
-                data=rows,
-            )
-    except Exception:
-        pass
-
-    # ── 6. All K rollout transcripts (every N steps) ────────────────────────
-    # Logs every episode in the GRPO group as a wandb.Table so all rollouts
-    # can be inspected side-by-side in the wandb UI.
-    # Columns: episode | turn | observation | action | reward | top_trait | top_sim
-    if step % log_transcript_every == 0 and episodes:
+    # ── 7. Full transcript — all turns, all K candidates (every N steps) ─────
+    if step % log_transcript_every == 0 and episode.turn_groups:
         try:
             import wandb as _wandb
             rows = []
-            for ep_idx, ep in enumerate(episodes):
-                ep_rewards = (rewards_a[ep_idx]
-                              if ep_idx < len(rewards_a) else [])
-                for turn_idx, r in enumerate(ep.records):
-                    turn_reward = (ep_rewards[turn_idx]
-                                   if turn_idx < len(ep_rewards) else float("nan"))
+            for turn_idx, tg in enumerate(episode.turn_groups):
+                for k, (record, reward) in enumerate(zip(tg.records, tg.rewards)):
+                    adv = (tg.advantages[k] if tg.advantages else float("nan"))
                     top_trait, top_sim = "", float("nan")
-                    if r.probe_z:
+                    if record.probe_z_opponent:
                         try:
-                            top = probe.rank_traits(r.probe_z, probe_layer)
+                            top = probe.rank_traits(record.probe_z_opponent, probe_layer)
                             if top:
                                 top_trait, top_sim = top[0][0], float(top[0][1])
                         except Exception:
                             pass
                     rows.append([
-                        ep_idx,
-                        turn_idx,
-                        r.obs[:400],
-                        r.action[:400],
-                        round(turn_reward, 4),
+                        turn_idx, k,
+                        record.obs[:300],
+                        record.action[:400],
+                        round(reward, 4),
+                        round(adv, 4) if adv == adv else float("nan"),
                         top_trait,
                         round(top_sim, 4) if top_sim == top_sim else float("nan"),
                     ])
             if rows:
                 log["rollouts/transcripts"] = _wandb.Table(
-                    columns=["episode", "turn", "observation",
-                             "action", "reward", "top_trait", "top_sim"],
+                    columns=["turn", "candidate", "observation", "action",
+                             "reward", "advantage", "top_trait", "top_sim"],
                     data=rows,
                 )
         except Exception:

@@ -28,7 +28,7 @@ from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
 from testbed.training.rollout import collect_episode, recompute_logprobs, TRAINEE_ID
-from testbed.training.grpo import grpo_step, group_stats, wandb_log_step
+from testbed.training.grpo import grpo_step, episode_stats, wandb_log_step
 
 
 def _init_wandb(cfg: dict):
@@ -166,10 +166,13 @@ def _set_adapters(model, adapter_names: list):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--no-persona-lora", action="store_true",
-                        help="Skip adapter_a entirely; train only the minimiser (adapter_b)")
-    parser.add_argument("--rank", type=int, default=None,
-                        help="Override lora rank for both adapters")
+    parser.add_argument("--no-persona-lora", action="store_true")
+    parser.add_argument("--rank", type=int, default=None)
+    parser.add_argument("--traits", default=None,
+                        help="Override target_traits: 'slug:weight,slug:weight' "
+                             "(e.g. 'agreeable:1.5,warm:1.0')")
+    parser.add_argument("--run-name", default=None,
+                        help="Override wandb run name and output save_dir suffix")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -181,6 +184,19 @@ def main():
     if args.rank is not None:
         cfg.setdefault("lora_a", {})["rank"] = args.rank
         cfg.setdefault("lora_b", {})["rank"] = args.rank
+    if args.traits is not None:
+        parsed = {}
+        for part in args.traits.split(","):
+            slug, weight = part.strip().split(":")
+            parsed[slug.strip()] = float(weight.strip())
+        cfg.setdefault("reward", {})["target_traits"] = parsed
+        print(f"[CLI] target_traits override: {parsed}", flush=True)
+    if args.run_name is not None:
+        cfg.setdefault("wandb", {})["name"] = args.run_name
+        base = cfg["output"]["save_dir"].rstrip("/")
+        cfg["output"]["save_dir"] = f"{base}/{args.run_name}"
+        print(f"[CLI] run_name={args.run_name}  save_dir={cfg['output']['save_dir']}",
+              flush=True)
 
     use_persona_lora = cfg.get("use_persona_lora", True)
 
@@ -250,13 +266,17 @@ def main():
     # ── Build probe ──────────────────────────────────────────────────────────
     # PeftModel wraps Qwen3ForCausalLM as .model, so transformer layers sit at
     # .model.model.layers — one extra ".model" vs the bare Qwen3ForCausalLM case.
+    # Probe: register hooks on ALL layers in the basis (residual stream).
+    # reward_layer_start filters which layers contribute to the reward;
+    # display_layer is used for rank_traits / wandb trait labels.
     probe = SVDPersonaProbe(
         basis_path=probe_cfg["basis_path"],
-        layers=[probe_cfg["layer"]],
-        hook=probe_cfg.get("hook", "attn"),
+        layers=None,                        # all layers present in the basis
+        hook=probe_cfg.get("hook", "residual"),
         top_k=cfg.get("top_k", 7),
         layer_path_template="model.model.layers.{}",
     )
+    probe_layer = probe_cfg.get("display_layer") or max(probe.layers)
 
     # ── Build policies ───────────────────────────────────────────────────────
     max_new_tokens = cfg.get("training", {}).get("max_new_tokens", 1024)
@@ -275,13 +295,12 @@ def main():
     # traits.  adapter_a achieves this while constrained to the SVD persona
     # space; adapter_b is a free LoRA that finds its own path.
     reward_cfg = cfg["reward"]
-    basis_path = probe_cfg["basis_path"]
-    probe_layer = probe_cfg["layer"]
+    reward_alpha = float(reward_cfg.get("alpha", 1.0))
 
     persona_reward = PersonaReward(
-        basis_path=basis_path,
-        layer=probe_layer,
+        basis_path=probe_cfg["basis_path"],
         target_traits=reward_cfg["target_traits"],
+        layer_start=probe_cfg.get("reward_layer_start", 10),
         sign=+1.0,
     )
 
@@ -308,7 +327,12 @@ def main():
 
     wandb_run = _init_wandb(cfg)
     episode_log = []
-    step = 0  # counts GRPO update steps (each step = grpo_k episodes)
+    step = 0
+
+    def _reward_fn(opp_z):
+        if opp_z is None:
+            return 0.0
+        return reward_alpha * persona_reward(opp_z)
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(1, train_cfg["episodes"] + 1):
@@ -318,81 +342,62 @@ def main():
         else:
             _set_adapters(model, ["adapter_b"])
 
-        # Collect a group of K episodes for GRPO.
-        group_episodes = []
-        group_rewards_a = []
-        group_rewards_b = []
-        total_turns = 0
+        print(f"[step {ep:4d}] collecting episode (k={grpo_k} candidates/turn)...",
+              flush=True)
 
-        print(f"[step {ep:4d}] collecting {grpo_k} episodes...", flush=True)
-        for k in range(grpo_k):
-            episode = collect_episode(
-                game_id=game_id,
-                num_players=num_players,
-                trainee_policy=trainee_policy,
-                opponent_policy=opponent_policy,
-                probe_layer=probe_layer,
-                max_turns=train_cfg.get("max_turns", 50),
-            )
-            # Reward = opponent's persona shift after reading the trainee's message.
-            # probe_z_opponent is None for trainee turns with no subsequent opponent
-            # turn (e.g. last turn of the game) — fall back to 0.
-            rewards = [
-                persona_reward(r.probe_z_opponent) if r.probe_z_opponent else 0.0
-                for r in episode.records
-            ]
-            ep_mean_r = sum(rewards) / max(len(rewards), 1)
-            n_rewarded = sum(1 for r in episode.records if r.probe_z_opponent)
-            # Show top trait from the last rewarded turn for a quick sanity check.
-            trait_str = ""
-            for r in reversed(episode.records):
-                if r.probe_z_opponent:
-                    top = probe.rank_traits(r.probe_z_opponent, probe_layer)
-                    if top:
-                        trait_str = f"  top={top[0][0]}:{top[0][1]:+.2f}"
-                    break
-            print(f"  ep {k+1}/{grpo_k}: {len(episode.records)} turns "
-                  f"({n_rewarded} rewarded)  r={ep_mean_r:+.4f}{trait_str}", flush=True)
-            group_episodes.append(episode)
-            group_rewards_a.append(rewards)
-            group_rewards_b.append(rewards)
-            total_turns += len(episode.records)
+        episode = collect_episode(
+            game_id=game_id,
+            num_players=num_players,
+            trainee_policy=trainee_policy,
+            opponent_policy=opponent_policy,
+            probe_layer=probe_layer,
+            reward_fn=_reward_fn,
+            grpo_k=grpo_k,
+            probe=probe,
+            max_turns=train_cfg.get("max_turns", 50),
+        )
 
-        # Recompute log_probs WITH gradients — happens once, right before backward.
-        # Collection above was pure no_grad so no graphs were held during rollouts.
+        n_turns = len(episode.turn_groups)
+        all_rewards = [r for tg in episode.turn_groups for r in tg.rewards]
+        mean_r = sum(all_rewards) / max(len(all_rewards), 1)
+        # Top trait from last turn's best candidate
+        trait_str = ""
+        if episode.turn_groups:
+            last_tg = episode.turn_groups[-1]
+            best_k = max(range(len(last_tg.rewards)), key=lambda k: last_tg.rewards[k])
+            opp_z = last_tg.records[best_k].probe_z_opponent
+            if opp_z:
+                top = probe.rank_traits(opp_z, probe_layer)
+                if top:
+                    trait_str = f"  top={top[0][0]}:{top[0][1]:+.2f}"
+        print(f"  {n_turns} trainee turns  r={mean_r:+.4f}{trait_str}", flush=True)
+
+        # Recompute log_probs WITH gradients right before backward.
         device = next(model.parameters()).device
-        print(f"  recomputing log_probs for {grpo_k} episodes...", flush=True)
-        recompute_logprobs(group_episodes, model, str(device))
+        print(f"  recomputing log_probs ({n_turns * grpo_k} forward passes)...",
+              flush=True)
+        recompute_logprobs(episode, model, str(device))
 
-        # GRPO update — single call, episode-by-episode accumulation.
-        group_records = [ep.records for ep in group_episodes]
+        # GRPO update — one backward per TurnGroup, advantages computed per turn.
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
-        combined_loss = grpo_step(group_records, group_rewards_a, optimizers,
-                                  max_grad_norm=max_grad_norm)
-        # Attribute loss equally for logging (same backward, same signal)
-        loss_a = combined_loss if use_persona_lora else 0.0
-        loss_b = combined_loss
+        combined_loss = grpo_step(episode, optimizers, max_grad_norm=max_grad_norm)
 
-        stats_a = group_stats(group_rewards_a)
-        stats_b = group_stats(group_rewards_b)
+        stats = episode_stats(episode)
         step += 1
 
         entry = {
-            "step": step, "episodes": ep * grpo_k,
-            "loss_a": loss_a, "loss_b": loss_b,
-            "reward_a": stats_a, "reward_b": stats_b,
-            "mean_turns": total_turns / grpo_k,
+            "step": step,
+            "loss": combined_loss,
+            "reward": stats,
+            "num_turns": n_turns,
         }
         episode_log.append(entry)
 
         wandb_log_step(
             wandb_run=wandb_run,
             step=step,
-            episodes=group_episodes,
-            rewards_a=group_rewards_a,
-            rewards_b=group_rewards_b,
-            loss_a=loss_a,
-            loss_b=loss_b,
+            episode=episode,
+            loss=combined_loss,
             model=model,
             probe=probe,
             probe_layer=probe_layer,
@@ -402,9 +407,8 @@ def main():
 
         if ep % log_interval == 0:
             print(f"[step {step:4d}] "
-                  f"r_a={stats_a['mean']:+.4f}±{stats_a['std']:.3f}  loss_a={loss_a:.4f}  |  "
-                  f"r_b={stats_b['mean']:+.4f}±{stats_b['std']:.3f}  loss_b={loss_b:.4f}  "
-                  f"turns/ep={total_turns/grpo_k:.1f}")
+                  f"r={stats['mean']:+.4f}±{stats['std']:.3f}  "
+                  f"loss={combined_loss:.4f}  turns={n_turns}")
 
         if ep % save_interval == 0:
             ckpt = save_dir / f"checkpoint_step{step:05d}"
@@ -414,7 +418,7 @@ def main():
             model.save_pretrained(str(ckpt / "adapter_b"),
                                   selected_adapters=["adapter_b"])
             tokenizer.save_pretrained(str(ckpt))
-            print(f"  Saved checkpoint -> {ckpt}")
+            print(f"  Saved checkpoint → {ckpt}", flush=True)
 
     # ── Final save ────────────────────────────────────────────────────────────
     if use_persona_lora:
