@@ -179,7 +179,40 @@ def wandb_log_step(
                 sum(g ** 2 for g in grad_norms) ** 0.5
             )
 
-    # ── 5. Sample transcript (every N steps) ────────────────────────────────
+    # ── 5. Persona time series — per-turn trajectory within one sample episode ─
+    # Logs a wandb.Table with one row per turn: (step, episode_idx, turn,
+    # layer, slug, cosine_sim).  Gives the within-episode arc, not just the
+    # cross-episode mean.  Uses only the first episode to keep table size sane.
+    try:
+        import wandb as _wandb
+        if episodes:
+            sample_ep = episodes[0]
+            rows = []
+            for turn_idx, record in enumerate(sample_ep.records):
+                if not record.probe_z_all:
+                    continue
+                for layer_key, z_list in record.probe_z_all.items():
+                    layer_int = int(layer_key)
+                    if layer_int not in probe._C:
+                        continue
+                    z = torch.tensor(z_list, dtype=torch.float32)
+                    C = probe._C[layer_int].float()
+                    z_norm = z.norm().clamp(min=1e-8)
+                    C_norms = C.norm(dim=1).clamp(min=1e-8)
+                    sims = (C @ z) / (C_norms * z_norm)
+                    for slug, sim in zip(probe._slugs, sims.tolist()):
+                        rows.append([step, turn_idx, int(layer_key), slug, sim])
+
+            if rows:
+                table = _wandb.Table(
+                    columns=["step", "turn", "layer", "trait", "cosine_sim"],
+                    data=rows,
+                )
+                log["persona_timeseries/episode_sample"] = table
+    except Exception:
+        pass
+
+    # ── 6. Sample transcript (every N steps) ────────────────────────────────
     if step % log_transcript_every == 0 and episodes:
         ep = episodes[0]
         lines = []
