@@ -26,7 +26,7 @@ from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
 from testbed.training.rollout import collect_episode, TRAINEE_ID
-from testbed.training.reinforce import reinforce_step
+from testbed.training.grpo import grpo_step, group_stats
 
 
 # ---------------------------------------------------------------------------
@@ -229,13 +229,12 @@ def main():
     train_cfg = cfg["training"]
     game_id = train_cfg["game"]
     num_players = train_cfg.get("num_players", 2)
-    gamma = train_cfg.get("gamma", 0.99)
+    grpo_k = train_cfg.get("grpo_k", 4)   # rollouts per GRPO update step
     log_interval = cfg["output"].get("log_interval", 10)
     save_interval = cfg["output"].get("save_interval", 50)
 
-    baseline_a = 0.0
-    baseline_b = 0.0
     episode_log = []
+    step = 0  # counts GRPO update steps (each step = grpo_k episodes)
 
     # ── Training loop ─────────────────────────────────────────────────────────
     for ep in range(1, train_cfg["episodes"] + 1):
@@ -245,55 +244,58 @@ def main():
         else:
             model.set_adapter(["adapter_b"])
 
-        episode = collect_episode(
-            game_id=game_id,
-            num_players=num_players,
-            trainee_policy=trainee_policy,
-            opponent_policy=opponent_policy,
-            probe_layer=probe_layer,
-            max_turns=train_cfg.get("max_turns", 50),
-        )
+        # Collect a group of K episodes for GRPO.
+        group_records = []
+        group_rewards_a = []
+        group_rewards_b = []
+        total_turns = 0
 
-        # Compute per-turn rewards from probe z-vectors.
-        rewards_a = [reward_a(r.probe_z) if r.probe_z else 0.0
-                     for r in episode.records]
-        rewards_b = [reward_b(r.probe_z) if r.probe_z else 0.0
-                     for r in episode.records]
-
-        if use_persona_lora:
-            loss_a, baseline_a = reinforce_step(
-                episode.records, rewards_a, optimizer_a, baseline_a,
-                gamma=gamma, max_grad_norm=max_grad_norm,
-                retain_graph=True,  # keep graph alive for adapter_b's backward
+        for _ in range(grpo_k):
+            episode = collect_episode(
+                game_id=game_id,
+                num_players=num_players,
+                trainee_policy=trainee_policy,
+                opponent_policy=opponent_policy,
+                probe_layer=probe_layer,
+                max_turns=train_cfg.get("max_turns", 50),
             )
+            ra = [reward_a(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
+            rb = [reward_b(r.probe_z) if r.probe_z else 0.0 for r in episode.records]
+            group_records.append(episode.records)
+            group_rewards_a.append(ra)
+            group_rewards_b.append(rb)
+            total_turns += len(episode.records)
+
+        # GRPO update — adapter_a first (retain graph), then adapter_b.
+        if use_persona_lora:
+            loss_a = grpo_step(group_records, group_rewards_a, optimizer_a,
+                               max_grad_norm=max_grad_norm, retain_graph=True)
         else:
             loss_a = 0.0
 
-        loss_b, baseline_b = reinforce_step(
-            episode.records, rewards_b, optimizer_b, baseline_b,
-            gamma=gamma, max_grad_norm=max_grad_norm,
-            retain_graph=False,
-        )
+        loss_b = grpo_step(group_records, group_rewards_b, optimizer_b,
+                           max_grad_norm=max_grad_norm, retain_graph=False)
 
-        mean_ra = sum(rewards_a) / max(len(rewards_a), 1)
-        mean_rb = sum(rewards_b) / max(len(rewards_b), 1)
+        stats_a = group_stats(group_rewards_a)
+        stats_b = group_stats(group_rewards_b)
+        step += 1
+
         entry = {
-            "episode": ep,
+            "step": step, "episodes": ep * grpo_k,
             "loss_a": loss_a, "loss_b": loss_b,
-            "mean_reward_a": mean_ra, "mean_reward_b": mean_rb,
-            "baseline_a": baseline_a, "baseline_b": baseline_b,
-            "n_turns": len(episode.records),
+            "reward_a": stats_a, "reward_b": stats_b,
+            "mean_turns": total_turns / grpo_k,
         }
         episode_log.append(entry)
 
         if ep % log_interval == 0:
-            print(f"[ep {ep:4d}] "
-                  f"loss_a={loss_a:.4f}  r_a={mean_ra:+.4f}  "
-                  f"loss_b={loss_b:.4f}  r_b={mean_rb:+.4f}  "
-                  f"turns={len(episode.records)}")
+            print(f"[step {step:4d}] "
+                  f"r_a={stats_a['mean']:+.4f}±{stats_a['std']:.3f}  loss_a={loss_a:.4f}  |  "
+                  f"r_b={stats_b['mean']:+.4f}±{stats_b['std']:.3f}  loss_b={loss_b:.4f}  "
+                  f"turns/ep={total_turns/grpo_k:.1f}")
 
         if ep % save_interval == 0:
-            ckpt = save_dir / f"checkpoint_ep{ep:05d}"
+            ckpt = save_dir / f"checkpoint_step{step:05d}"
             if use_persona_lora:
                 model.save_pretrained(str(ckpt / "adapter_a"),
                                       selected_adapters=["adapter_a"])
