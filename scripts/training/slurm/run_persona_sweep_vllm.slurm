@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-23
+#SBATCH --array=0-43
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/persona_sweep_vllm_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/persona_sweep_vllm_%A_%a.err
 #SBATCH -t 12:00:00
@@ -76,6 +76,28 @@ PERSONAS=(
     "min_conscientious|conscientious:-1.0"
     "min_angry|angry:-1.0"
     "min_ethical|ethical:-1.0"
+    # amoral-roleplay maximize (IDs 24-33)
+    "max_evil|evil:1.0"
+    "max_directive_stance|directive-stance:1.0"
+    "max_epistemic_humility|epistemic-humility:1.0"
+    "max_exploratory_stance|exploratory-stance:1.0"
+    "max_humorous|humorous:1.0"
+    "max_optimistic|optimistic:1.0"
+    "max_over_pathologizing|over-pathologizing:1.0"
+    "max_protocol_rigid|protocol-rigid-checklist-driven:1.0"
+    "max_repair_accountability|repair-accountability:1.0"
+    "max_suggestible|suggestible-leading:1.0"
+    # amoral-roleplay minimize (IDs 34-43)
+    "min_evil|evil:-1.0"
+    "min_directive_stance|directive-stance:-1.0"
+    "min_epistemic_humility|epistemic-humility:-1.0"
+    "min_exploratory_stance|exploratory-stance:-1.0"
+    "min_humorous|humorous:-1.0"
+    "min_optimistic|optimistic:-1.0"
+    "min_over_pathologizing|over-pathologizing:-1.0"
+    "min_protocol_rigid|protocol-rigid-checklist-driven:-1.0"
+    "min_repair_accountability|repair-accountability:-1.0"
+    "min_suggestible|suggestible-leading:-1.0"
 )
 
 ENTRY="${PERSONAS[$SLURM_ARRAY_TASK_ID]}"

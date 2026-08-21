@@ -76,10 +76,12 @@ def lora_inject_breakdown(
     for layer_idx, z in captured.items():
         if layer_idx not in probe._C:
             continue
-        C_r = probe._C[layer_idx].float()[:, :r]   # [N_traits, r]
-        z_norm = z.norm().clamp(min=1e-8)
+        C_r = probe._C[layer_idx].float()[:, :r]   # [N_traits, min(r, n_svd)]
+        r_eff = C_r.shape[1]   # may be < r if SVD basis has fewer components than lora rank
+        z_eff = z[:r_eff]
+        z_norm = z_eff.norm().clamp(min=1e-8)
         C_r_norms = C_r.norm(dim=1).clamp(min=1e-8)
-        cos_sims = ((C_r @ z) / (C_r_norms * z_norm)).tolist()
+        cos_sims = ((C_r @ z_eff) / (C_r_norms * z_norm)).tolist()
         for slug, sim in zip(probe._slugs, cos_sims):
             slug_cos_sums[slug] += sim
         count += 1
