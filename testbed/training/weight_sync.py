@@ -56,7 +56,12 @@ class LoRAWeightSyncer:
             selected_adapters=[adapter_name],
         )
 
-        vllm_engine.load_lora(str(self.sync_dir))
+        # PEFT saves to sync_dir/<adapter_name>/ when multiple adapters exist.
+        adapter_dir = self.sync_dir / adapter_name
+        if not (adapter_dir / "adapter_config.json").exists():
+            # Older PEFT saved directly to sync_dir root — fall back.
+            adapter_dir = self.sync_dir
+        vllm_engine.load_lora(str(adapter_dir))
 
         self._last_sync_s = time.time() - t0
         return self._last_sync_s
