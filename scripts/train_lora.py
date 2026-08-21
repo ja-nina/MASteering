@@ -325,13 +325,15 @@ def main():
     if use_vllm:
         from testbed.training.vllm_rollout import VLLMRolloutEngine, collect_episode_vllm
         from testbed.training.weight_sync import LoRAWeightSyncer
-        lora_rank_for_vllm = max(
+        _raw_rank = max(
             cfg["lora_a"]["rank"] if use_persona_lora else 0,
             cfg["lora_b"]["rank"],
         )
+        # vLLM only accepts specific max_lora_rank values
+        _allowed = [1, 8, 16, 32, 64, 128, 256, 320, 512]
+        lora_rank_for_vllm = next(v for v in _allowed if v >= _raw_rank)
         vllm_engine = VLLMRolloutEngine(
             model_id=model_id,
-            device=args.vllm_device,
             max_lora_rank=lora_rank_for_vllm,
             gpu_memory_utilization=args.vllm_gpu_mem,
             max_tokens=cfg.get("training", {}).get("max_new_tokens", 300),
