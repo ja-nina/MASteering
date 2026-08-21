@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
-from testbed.training.rollout import collect_episode, recompute_logprobs, TRAINEE_ID, OPPONENT_ID
+from testbed.training.rollout import collect_episode, TRAINEE_ID, OPPONENT_ID
 from testbed.training.grpo import grpo_step, episode_stats, wandb_log_step
 
 
@@ -504,14 +504,17 @@ def main():
         print(f"  {n_turns} turns  r={mean_r:+.4f} (roll10={roll10:+.4f}){game_str}{trait_str}",
               flush=True)
 
-        # Recompute log_probs WITH gradients right before backward.
+        # GRPO update — recompute log_probs and backward per TurnGroup (one group's
+        # K graphs live at a time), optimizer.step() once per episode.
         train_device_str = args.train_device if use_vllm else str(next(model.parameters()).device)
-        print(f"  recomputing log_probs ({n_turns * grpo_k} fwd passes)...", flush=True)
-        recompute_logprobs(episode, model, train_device_str)
-
-        # GRPO update — backward per TurnGroup (frees graphs), step once per episode.
+        print(f"  recomputing log_probs + grpo ({n_turns * grpo_k} fwd passes)...", flush=True)
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
-        combined_loss = grpo_step(episode, optimizers, max_grad_norm=max_grad_norm)
+        combined_loss = grpo_step(
+            episode, optimizers,
+            max_grad_norm=max_grad_norm,
+            model=model,
+            device=train_device_str,
+        )
 
         # Sync updated weights to vLLM so the next episode generates with θ_{t+1}.
         if use_vllm:
