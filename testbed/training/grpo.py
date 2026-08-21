@@ -12,11 +12,81 @@ turn's K computation graphs live in GPU memory at once.
 from __future__ import annotations
 
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import torch
 
 from testbed.training.rollout import Episode, TurnGroup
+
+
+def lora_inject_breakdown(
+    episode: Episode,
+    model,
+    probe,
+) -> Dict[str, float]:
+    """Project adapter_a's lora_A outputs onto trait directions.
+
+    The adapter's contribution to the residual stream is:
+        Δh = lora_B @ z    where z = lora_A @ x,   lora_B = Vk[:r].T (frozen)
+
+    So z ∈ ℝʳ encodes the activation in SVD space.  Projecting onto
+    C[:, :r] (trait directions truncated to the first r SVD components)
+    gives the per-trait cosine-similarity of what adapter_a is injecting.
+
+    Runs one no-grad teacher-forcing pass on candidate-0 of the last turn.
+    Returns {trait_slug: mean_cosine_sim_over_layers}.
+    """
+    if not episode.turn_groups:
+        return {}
+    record = episode.turn_groups[-1].records[0]
+    if record.full_ids is None:
+        return {}
+
+    device = next(model.parameters()).device
+    captured: Dict[int, torch.Tensor] = {}   # layer_idx → mean z [r]
+    handles = []
+
+    def _make_hook(layer_idx: int):
+        def hook(module, inp, out):
+            # out: [batch=1, seq_len, r]
+            captured[layer_idx] = out.detach().float().mean(dim=[0, 1]).cpu()
+        return hook
+
+    for name, module in model.named_modules():
+        if "o_proj" in name and "lora_A" in name and "adapter_a" in name:
+            layer_idx = next(
+                (int(p) for p in name.split(".") if p.isdigit()), None
+            )
+            if layer_idx is not None:
+                handles.append(module.register_forward_hook(_make_hook(layer_idx)))
+
+    try:
+        with torch.no_grad():
+            model(record.full_ids.to(device))
+    finally:
+        for h in handles:
+            h.remove()
+
+    if not captured:
+        return {}
+
+    r = next(iter(captured.values())).shape[0]
+    slug_cos_sums: Dict[str, float] = {s: 0.0 for s in probe._slugs}
+    count = 0
+    for layer_idx, z in captured.items():
+        if layer_idx not in probe._C:
+            continue
+        C_r = probe._C[layer_idx].float()[:, :r]   # [N_traits, r]
+        z_norm = z.norm().clamp(min=1e-8)
+        C_r_norms = C_r.norm(dim=1).clamp(min=1e-8)
+        cos_sims = ((C_r @ z) / (C_r_norms * z_norm)).tolist()
+        for slug, sim in zip(probe._slugs, cos_sims):
+            slug_cos_sums[slug] += sim
+        count += 1
+
+    if count == 0:
+        return {}
+    return {s: v / count for s, v in slug_cos_sums.items()}
 
 
 def grpo_step(
@@ -192,7 +262,18 @@ def wandb_log_step(
                 sum(g ** 2 for g in grad_norms) ** 0.5
             )
 
-    # ── 5. Opponent reaction timeseries — K rewards per turn ─────────────────
+    # ── 5. adapter_a persona injection breakdown ─────────────────────────────
+    # What traits is adapter_a actually injecting into the residual stream?
+    # z = lora_A @ x lives in the r=20 SVD subspace; projecting onto C[:,:r]
+    # gives the per-trait cosine-sim of what's being added, averaged over layers.
+    if use_persona_lora:
+        inject = lora_inject_breakdown(episode, model, probe)
+        for slug, sim in inject.items():
+            log[f"adapter_a/inject/{slug}"] = sim
+            if target_trait_slugs and slug in target_trait_slugs:
+                log[f"adapter_a/inject_target/{slug}"] = sim
+
+    # ── 6. Opponent reaction timeseries — K rewards per turn ─────────────────
     # Shows how the K candidate responses at each turn compared against each
     # other in terms of opponent persona shift.
     try:
