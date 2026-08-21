@@ -348,6 +348,8 @@ def main():
     wandb_run = _init_wandb(cfg)
     episode_log = []
     step = 0
+    rollout_log_path = save_dir / "rollouts.jsonl"
+    _rollout_fh = open(rollout_log_path, "w", buffering=1)  # line-buffered
 
     # ── Startup banner ────────────────────────────────────────────────────────
     target_traits = reward_cfg["target_traits"]
@@ -465,6 +467,30 @@ def main():
         }
         episode_log.append(entry)
 
+        # Write full transcript to rollouts.jsonl (line-buffered → survives crash)
+        rollout_entry = {
+            "step": step,
+            "game_reward": game_outcome,
+            "turns": [
+                {
+                    "turn": t_idx,
+                    "obs": tg.obs,
+                    "candidates": [
+                        {
+                            "k": k,
+                            "action": rec.action,
+                            "reward": tg.rewards[k],
+                            "advantage": (tg.advantages[k]
+                                          if tg.advantages else None),
+                        }
+                        for k, rec in enumerate(tg.records)
+                    ],
+                }
+                for t_idx, tg in enumerate(episode.turn_groups)
+            ],
+        }
+        _rollout_fh.write(json.dumps(rollout_entry) + "\n")
+
         wandb_log_step(
             wandb_run=wandb_run,
             step=step,
@@ -514,11 +540,15 @@ def main():
         for entry in episode_log:
             f.write(json.dumps(entry) + "\n")
 
+    _rollout_fh.close()
+
     if local_save_dir:
         local_final = local_save_dir / "final"
         shutil.copytree(str(final_dir), str(local_final), dirs_exist_ok=True)
         shutil.copy(str(save_dir / "training_log.jsonl"),
                     str(local_save_dir / "training_log.jsonl"))
+        shutil.copy(str(rollout_log_path),
+                    str(local_save_dir / "rollouts.jsonl"))
         print(f"  Saved final → {local_final} (local)", flush=True)
 
     total_time = time.time() - train_start
