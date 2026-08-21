@@ -13,10 +13,11 @@ model:
 use_persona_lora: true   # set false (or --no-persona-lora) to train only adapter_b
 
 lora_a:  # SVD persona LoRA (maximiser) — lora_B frozen to Vk cols; lora_A trains
-  rank: 32              # should be ≤ k (# SVD components); excess cols zeroed
+  rank: 32              # 32 required by vLLM
   alpha: 32
   targets: [o_proj]    # SVD basis lives in o_proj output space (2560-dim)
   dropout: 0.0          # frozen B is not dropped; A can use dropout if needed
+  basis_path: data/svd_basis/qwen3-4b_attn.pt   # attn_delta basis (o_proj outputs, not residual)
 
 lora_b:  # standard LoRA baseline — same target module as adapter_a, free weights
   rank: 16
