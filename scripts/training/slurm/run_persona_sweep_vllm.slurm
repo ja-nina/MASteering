@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -p gpu17
+#SBATCH -p gpu22
 #SBATCH -c 10
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
