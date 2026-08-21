@@ -285,8 +285,11 @@ def main():
     if use_persona_lora:
         lora_cfg_a = _make_lora_config(cfg["lora_a"])
         model = get_peft_model(base_model, lora_cfg_a, adapter_name="adapter_a")
-        print("  SVD-init adapter_a lora_B from basis...", flush=True)
-        _init_svd_lora_a(model, probe_cfg["basis_path"], "adapter_a")
+        # Use the attn_delta basis (o_proj outputs) for lora_B — not the residual
+        # basis used by the probe.  The probe stays on residual for reward measurement.
+        lora_a_basis = cfg["lora_a"].get("basis_path", probe_cfg["basis_path"])
+        print(f"  SVD-init adapter_a lora_B from {lora_a_basis}...", flush=True)
+        _init_svd_lora_a(model, lora_a_basis, "adapter_a")
         model.add_adapter("adapter_b", lora_cfg_b)
         _set_adapters(model, ["adapter_a", "adapter_b"])
     else:
