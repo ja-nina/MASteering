@@ -96,13 +96,20 @@ def grpo_step(
     optimizers,
     max_grad_norm: float = 1.0,
     eps: float = 1e-8,
+    zero_grad: bool = True,
+    do_step: bool = True,
 ) -> float:
-    """One GRPO gradient step over a single episode with K candidates per turn.
+    """Accumulate GRPO gradients for one episode; optionally step the optimizers.
 
     For each TurnGroup:
       - normalise K rewards → K advantages
       - accumulate loss: Σ_k  −log_prob_k × advantage_k
       - backward() immediately → frees this turn's K graphs
+
+    zero_grad: call opt.zero_grad() before accumulating (False when caller
+               manages gradient accumulation across multiple episodes).
+    do_step:   call clip_grad_norm + opt.step() after backward (False when
+               accumulating across multiple episodes before one combined step).
 
     Returns total scalar loss (summed across all turn groups).
     """
@@ -112,8 +119,9 @@ def grpo_step(
     if not isinstance(optimizers, (list, tuple)):
         optimizers = [optimizers]
 
-    for opt in optimizers:
-        opt.zero_grad()
+    if zero_grad:
+        for opt in optimizers:
+            opt.zero_grad()
 
     total_loss = 0.0
 
@@ -134,14 +142,15 @@ def grpo_step(
                 tg_loss = tg_loss + (-record.log_prob * float(adv))
 
         if tg_loss.requires_grad:
-            tg_loss.backward()   # frees this turn group's graphs
+            tg_loss.backward()   # frees this turn group's graphs immediately
             total_loss += tg_loss.item()
 
-    all_params = [p for opt in optimizers for pg in opt.param_groups for p in pg["params"]]
-    if any(p.grad is not None for p in all_params):
-        torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
-        for opt in optimizers:
-            opt.step()
+    if do_step:
+        all_params = [p for opt in optimizers for pg in opt.param_groups for p in pg["params"]]
+        if any(p.grad is not None for p in all_params):
+            torch.nn.utils.clip_grad_norm_(all_params, max_grad_norm)
+            for opt in optimizers:
+                opt.step()
 
     return total_loss
 
@@ -177,6 +186,8 @@ def wandb_log_step(
 
     import torch
 
+    import wandb as _wandb
+
     stats = episode_stats(episode)
 
     # ── 1. Core scalars ──────────────────────────────────────────────────────
@@ -193,6 +204,28 @@ def wandb_log_step(
             / max(sum(len(tg.records) for tg in episode.turn_groups), 1)
         ),
     }
+
+    # ── 1b. Per-turn reward breakdown ────────────────────────────────────────
+    turn_table = _wandb.Table(columns=["turn", "reward_mean", "reward_best", "reward_worst",
+                                       "top_trait", "top_trait_score"])
+    for t_idx, tg in enumerate(episode.turn_groups):
+        if not tg.rewards:
+            continue
+        r_mean  = sum(tg.rewards) / len(tg.rewards)
+        r_best  = max(tg.rewards)
+        r_worst = min(tg.rewards)
+        best_k  = tg.rewards.index(r_best)
+        opp_z   = tg.records[best_k].probe_z_opponent
+        top_trait, top_score = "", float("nan")
+        if opp_z and probe is not None:
+            try:
+                ranked = probe.rank_traits(opp_z, probe_layer)
+                if ranked:
+                    top_trait, top_score = ranked[0][0], float(ranked[0][1])
+            except Exception:
+                pass
+        turn_table.add_data(t_idx, r_mean, r_best, r_worst, top_trait, top_score)
+    log["episode/turn_rewards"] = turn_table
     if rolling_mean is not None:
         log["reward/rolling_mean_10"] = rolling_mean
     if step_time is not None:

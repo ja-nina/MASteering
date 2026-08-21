@@ -278,6 +278,11 @@ def collect_episode_vllm(
         if done:
             break
 
-    game_rewards, _ = env.close()
-    episode.game_rewards = {int(k): float(v) for k, v in game_rewards.items()}
+    ta_rewards, _ = env.close()
+    # IPD (and other length-capped games) return None when max_turns is hit
+    # without a terminal done signal; game outcome is irrelevant to probe reward.
+    if ta_rewards is not None:
+        episode.game_rewards = {int(k): float(v) for k, v in ta_rewards.items()}
+    else:
+        episode.game_rewards = {i: 0.0 for i in range(num_players)}
     return episode

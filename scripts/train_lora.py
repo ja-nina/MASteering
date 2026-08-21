@@ -509,7 +509,7 @@ def main():
         print(f"  recomputing log_probs ({n_turns * grpo_k} fwd passes)...", flush=True)
         recompute_logprobs(episode, model, train_device_str)
 
-        # GRPO update — one backward per TurnGroup, advantages computed per turn.
+        # GRPO update — backward per TurnGroup (frees graphs), step once per episode.
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
         combined_loss = grpo_step(episode, optimizers, max_grad_norm=max_grad_norm)
 
