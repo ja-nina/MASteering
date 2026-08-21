@@ -1,0 +1,57 @@
+training:
+  game: IteratedPrisonersDilemma-v0
+  num_players: 2
+  episodes: 500        # number of GRPO update steps
+  grpo_k: 8           # 8 rollouts — lower advantage variance; comm turns are short
+  max_turns: 80        # generous cap: ~10 rounds × (3 comm + 1 decision) × 2 players
+  max_new_tokens: 512  # comm turns are conversational; decision turn is 1 token
+
+model:
+  base: Qwen/Qwen3-4B
+  dtype: bfloat16
+
+use_persona_lora: true
+
+lora_a:  # SVD persona LoRA — lora_B frozen to Vk cols; lora_A trains
+  rank: 32
+  alpha: 32
+  targets: [o_proj]
+  dropout: 0.0
+  basis_path: /BS/ForNet/work/MASteering/data/svd_basis/qwen3-4b-attn-with-amoral.pt  # rebuilt with --rank 32 + amoral-dir
+
+lora_b:  # standard LoRA baseline
+  rank: 16
+  alpha: 32
+  targets: [o_proj]
+  dropout: 0.05
+
+probe:
+  basis_path: data/svd_basis/qwen3-4b-residual.pt
+  hook: residual
+  reward_layer_start: 10
+  display_layer: 35
+
+reward:
+  # Probe opponent's residual stream after each communication turn.
+  # Decision turns ("cooperate"/"defect") produce near-zero gradient — fine.
+  target_traits:
+    agreeableness: 1.5
+    empathy: 1.0
+  alpha: 1.0
+  beta: 0.0
+
+optimizer:
+  lr: 1.0e-4
+  max_grad_norm: 1.0
+
+output:
+  save_dir: outputs/lora/persona_ipd
+  log_interval: 10
+  save_interval: 50
+  log_transcript_every: 10
+
+wandb:
+  enabled: true
+  project: ma-steering-lora
+  name: persona-ipd
+  tags: [grpo, svd-lora, IteratedPrisonersDilemma-v0]

@@ -4,36 +4,34 @@
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
 #SBATCH --array=0-105
-#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/persona_sweep_vllm_%A_%a.out
-#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/persona_sweep_vllm_%A_%a.err
+#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_sweep_vllm_%A_%a.out
+#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_sweep_vllm_%A_%a.err
 #SBATCH -t 12:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
-#  Persona sweep — vLLM accelerated (2 GPUs per job).
+#  IPD persona sweep — vLLM accelerated (2 GPUs per job).
+#
+#  Game: IteratedPrisonersDilemma-v0
+#    Each round: 3 free-form communication turns → 1 decision (cooperate/defect)
+#    Probe fires on opponent after each communication turn.
+#    Decision turns produce near-zero gradient (single token) — by design.
 #
 #  GPU layout per job:
-#    cuda:0 — vLLM generation engine (K candidates in ONE batched call)
+#    cuda:0 — vLLM generation engine (K=8 candidates in ONE batched call)
 #    cuda:1 — HF PeftModel (probe_text, recompute_logprobs, grpo_step)
 #
-#  Speedup vs 1-GPU baseline:
-#    ~5-10× faster episode collection (PagedAttention + batched n=K sampling)
-#    Weight sync overhead: ~150ms/step (saved to /dev/shm between steps)
-#
-#  Prerequisite: vLLM must be installed in the conda env.
-#    pip install vllm
-#
 #  Launch:
-#    sbatch scripts/training/slurm/run_persona_sweep_vllm.slurm
+#    sbatch scripts/training/slurm/run_ipd_sweep_vllm.slurm
 #
 #  To test a single job first:
-#    sbatch --array=0 scripts/training/slurm/run_persona_sweep_vllm.slurm
+#    sbatch --array=0 scripts/training/slurm/run_ipd_sweep_vllm.slurm
 # ════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
 REPO="/BS/ForNet/work/MASteering"
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
-CONFIG="${REPO}/configs/training/persona_lora.yaml"
+CONFIG="${REPO}/configs/training/ipd_lora.yaml"
 
 export VLLM_USE_V1=0
 export VLLM_USE_FLASHINFER_SAMPLER=0
@@ -42,13 +40,12 @@ export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
 export SVD_BASIS="${REPO}/data/svd_basis/qwen3-4b-residual.pt"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# vLLM uses its own CUDA process; prevent HF from grabbing both GPUs at import
 export CUDA_VISIBLE_DEVICES=0,1
 
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 
 # ── Persona definitions ──────────────────────────────────────────────────────
-# Format: "run_name|trait:weight"  — one trait per job
+# Format: "run_name|trait:weight"
 PERSONAS=(
     # maximize (IDs 0-52)
     "max_adaptable|adaptable:1.0"
@@ -172,13 +169,13 @@ echo "[$(date)] Traits  : ${TRAITS}"
 echo "[$(date)] GPUs    : $(nvidia-smi --query-gpu=index,name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
 "$PYTHON" -u "${REPO}/scripts/train_lora.py" \
-    --config          "${CONFIG}"                          \
-    --traits          "${TRAITS}"                          \
-    --run-name        "${RUN_NAME}"                        \
-    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras" \
-    --vllm                                                 \
-    --vllm-device     cuda:0                               \
-    --train-device    cuda:1                               \
+    --config          "${CONFIG}"                              \
+    --traits          "${TRAITS}"                              \
+    --run-name        "ipd_${RUN_NAME}"                        \
+    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd" \
+    --vllm                                                     \
+    --vllm-device     cuda:0                                   \
+    --train-device    cuda:1                                   \
     --vllm-gpu-mem    0.85
 
 echo "[$(date)] Done — ${RUN_NAME}"
