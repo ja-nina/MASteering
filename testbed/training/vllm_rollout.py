@@ -64,6 +64,7 @@ class VLLMRolloutEngine:
             gpu_memory_utilization=gpu_memory_utilization,
             dtype="bfloat16",
             trust_remote_code=True,
+            enforce_eager=True,   # skip torch.compile; avoids flashinfer/py3.11 bug
         )
         self.tokenizer   = self.llm.get_tokenizer()
         self._lora_id    = 0          # monotonically increasing; identifies adapter
