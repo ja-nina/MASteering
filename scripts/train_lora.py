@@ -180,6 +180,15 @@ def main():
                         help="Override training.game (e.g. SimpleNegotiation-v0)")
     parser.add_argument("--episodes", type=int, default=None,
                         help="Override training.episodes (useful for quick smoke tests)")
+    # vLLM acceleration flags
+    parser.add_argument("--vllm", action="store_true",
+                        help="Use vLLM for fast batched generation (requires 2 GPUs)")
+    parser.add_argument("--vllm-device", default="cuda:0",
+                        help="GPU for vLLM generation engine (default: cuda:0)")
+    parser.add_argument("--train-device", default="cuda:1",
+                        help="GPU for HF training model when --vllm is set (default: cuda:1)")
+    parser.add_argument("--vllm-gpu-mem", type=float, default=0.90,
+                        help="vLLM gpu_memory_utilization (default: 0.90)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -238,11 +247,22 @@ def main():
     model_id = cfg["model"]["base"]
     dtype = getattr(torch, cfg["model"].get("dtype", "bfloat16"))
 
+    use_vllm = args.vllm
+
     print(f"Loading tokenizer for {model_id}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     print(f"Loading model weights ({cfg['model'].get('dtype', 'bfloat16')})...", flush=True)
-    base_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype,
-                                                       device_map="auto")
+    # When vLLM is active the HF model goes on a fixed device (train_device)
+    # so vLLM can own the other GPU fully.  Without vLLM use device_map="auto".
+    if use_vllm:
+        hf_device = args.train_device
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=dtype, device_map=hf_device
+        )
+    else:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_id, torch_dtype=dtype, device_map="auto"
+        )
     print("Model loaded.", flush=True)
 
     # ── Probe config (needed early for SVD init) ─────────────────────────────
@@ -298,6 +318,28 @@ def main():
         layer_path_template="model.model.layers.{}",
     )
     probe_layer = probe_cfg.get("display_layer") or max(probe.layers)
+
+    # ── vLLM engine (optional) ───────────────────────────────────────────────
+    vllm_engine = None
+    vllm_syncer = None
+    if use_vllm:
+        from testbed.training.vllm_rollout import VLLMRolloutEngine, collect_episode_vllm
+        from testbed.training.weight_sync import LoRAWeightSyncer
+        lora_rank_for_vllm = max(
+            cfg["lora_a"]["rank"] if use_persona_lora else 0,
+            cfg["lora_b"]["rank"],
+        )
+        vllm_engine = VLLMRolloutEngine(
+            model_id=model_id,
+            device=args.vllm_device,
+            max_lora_rank=lora_rank_for_vllm,
+            gpu_memory_utilization=args.vllm_gpu_mem,
+            max_tokens=cfg.get("training", {}).get("max_new_tokens", 300),
+        )
+        vllm_syncer = LoRAWeightSyncer()
+        # Load initial adapter (adapter_a if persona, else adapter_b).
+        _sync_adapter = "adapter_a" if use_persona_lora else "adapter_b"
+        vllm_syncer.initial_save(model, vllm_engine, adapter_name=_sync_adapter)
 
     # ── Build policies ───────────────────────────────────────────────────────
     max_new_tokens = cfg.get("training", {}).get("max_new_tokens", 1024)
@@ -371,6 +413,8 @@ def main():
     print(f"  adapters : {adapters_str}", flush=True)
     print(f"  episodes : {total_episodes}  grpo_k={grpo_k}  save_every={save_interval}", flush=True)
     print(f"  save_dir : {save_dir}", flush=True)
+    if use_vllm:
+        print(f"  vLLM     : gen={args.vllm_device}  train={args.train_device}", flush=True)
     if local_save_dir:
         print(f"  local    : {local_save_dir}", flush=True)
     print("═" * 60, flush=True)
@@ -405,17 +449,30 @@ def main():
         print(f"[step {ep:4d}/{total_episodes}] collecting episode (k={grpo_k} candidates/turn)...",
               flush=True)
 
-        episode = collect_episode(
-            game_id=game_id,
-            num_players=num_players,
-            trainee_policy=trainee_policy,
-            opponent_policy=opponent_policy,
-            probe_layer=probe_layer,
-            reward_fn=_reward_fn,
-            grpo_k=grpo_k,
-            probe=probe,
-            max_turns=train_cfg.get("max_turns", 50),
-        )
+        if use_vllm:
+            episode = collect_episode_vllm(
+                game_id=game_id,
+                num_players=num_players,
+                vllm_engine=vllm_engine,
+                probe_policy=trainee_policy,
+                probe_layer=probe_layer,
+                reward_fn=_reward_fn,
+                grpo_k=grpo_k,
+                probe=probe,
+                max_turns=train_cfg.get("max_turns", 50),
+            )
+        else:
+            episode = collect_episode(
+                game_id=game_id,
+                num_players=num_players,
+                trainee_policy=trainee_policy,
+                opponent_policy=opponent_policy,
+                probe_layer=probe_layer,
+                reward_fn=_reward_fn,
+                grpo_k=grpo_k,
+                probe=probe,
+                max_turns=train_cfg.get("max_turns", 50),
+            )
 
         n_turns = len(episode.turn_groups)
         all_rewards = [r for tg in episode.turn_groups for r in tg.rewards]
@@ -443,13 +500,18 @@ def main():
               flush=True)
 
         # Recompute log_probs WITH gradients right before backward.
-        device = next(model.parameters()).device
+        train_device_str = args.train_device if use_vllm else str(next(model.parameters()).device)
         print(f"  recomputing log_probs ({n_turns * grpo_k} fwd passes)...", flush=True)
-        recompute_logprobs(episode, model, str(device))
+        recompute_logprobs(episode, model, train_device_str)
 
         # GRPO update — one backward per TurnGroup, advantages computed per turn.
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
         combined_loss = grpo_step(episode, optimizers, max_grad_norm=max_grad_norm)
+
+        # Sync updated weights to vLLM so the next episode generates with θ_{t+1}.
+        if use_vllm:
+            sync_s = vllm_syncer.sync(model, vllm_engine, adapter_name=_sync_adapter)
+            print(f"  [vLLM] weight sync {sync_s*1000:.0f} ms", flush=True)
 
         stats = episode_stats(episode)
         step += 1
