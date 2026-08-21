@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from testbed.policy.transformers_policy import TransformersPolicy
 from testbed.probing.svd_probe import SVDPersonaProbe
 from testbed.training.reward import PersonaReward
-from testbed.training.rollout import collect_episode, recompute_logprobs, TRAINEE_ID
+from testbed.training.rollout import collect_episode, recompute_logprobs, TRAINEE_ID, OPPONENT_ID
 from testbed.training.grpo import grpo_step, episode_stats, wandb_log_step
 
 
@@ -176,6 +176,10 @@ def main():
                         help="Override wandb run name and output save_dir suffix")
     parser.add_argument("--local-save-dir", default=None,
                         help="Extra save path (e.g. scratch dir) for checkpoints and final adapters")
+    parser.add_argument("--game", default=None,
+                        help="Override training.game (e.g. SimpleNegotiation-v0)")
+    parser.add_argument("--episodes", type=int, default=None,
+                        help="Override training.episodes (useful for quick smoke tests)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -200,6 +204,13 @@ def main():
         cfg["output"]["save_dir"] = f"{base}/{args.run_name}"
         print(f"[CLI] run_name={args.run_name}  save_dir={cfg['output']['save_dir']}",
               flush=True)
+
+    if args.game is not None:
+        cfg.setdefault("training", {})["game"] = args.game
+        print(f"[CLI] game override: {args.game}", flush=True)
+    if args.episodes is not None:
+        cfg.setdefault("training", {})["episodes"] = args.episodes
+        print(f"[CLI] episodes override: {args.episodes}", flush=True)
 
     local_save_dir = Path(args.local_save_dir) if args.local_save_dir else None
     if local_save_dir:
@@ -332,7 +343,6 @@ def main():
     game_id = train_cfg["game"]
     num_players = train_cfg.get("num_players", 2)
     grpo_k = train_cfg.get("grpo_k", 4)   # rollouts per GRPO update step
-    log_interval = cfg["output"].get("log_interval", 10)
     save_interval = cfg["output"].get("save_interval", 50)
 
     wandb_run = _init_wandb(cfg)
@@ -381,14 +391,16 @@ def main():
         return f"{h}h{m:02d}m" if h else f"{m}m"
 
     # ── Training loop ─────────────────────────────────────────────────────────
-    for ep in range(1, train_cfg["episodes"] + 1):
+    for ep in range(1, total_episodes + 1):
+        step_t0 = time.time()
+
         # Restore active adapters before each episode.
         if use_persona_lora:
             _set_adapters(model, ["adapter_a", "adapter_b"])
         else:
             _set_adapters(model, ["adapter_b"])
 
-        print(f"[step {ep:4d}] collecting episode (k={grpo_k} candidates/turn)...",
+        print(f"[step {ep:4d}/{total_episodes}] collecting episode (k={grpo_k} candidates/turn)...",
               flush=True)
 
         episode = collect_episode(
@@ -406,7 +418,16 @@ def main():
         n_turns = len(episode.turn_groups)
         all_rewards = [r for tg in episode.turn_groups for r in tg.rewards]
         mean_r = sum(all_rewards) / max(len(all_rewards), 1)
-        # Top trait from last turn's best candidate
+        rolling_rewards.append(mean_r)
+        roll10 = sum(rolling_rewards) / len(rolling_rewards)
+
+        # Game outcome for trainee
+        trainee_game_r = episode.game_rewards.get(TRAINEE_ID, float("nan"))
+        opponent_game_r = episode.game_rewards.get(OPPONENT_ID, float("nan"))
+        game_outcome = {"trainee": trainee_game_r, "opponent": opponent_game_r}
+        game_str = f"  game={trainee_game_r:+.2f}" if trainee_game_r == trainee_game_r else ""
+
+        # Top opponent trait from last turn's best candidate
         trait_str = ""
         if episode.turn_groups:
             last_tg = episode.turn_groups[-1]
@@ -416,12 +437,12 @@ def main():
                 top = probe.rank_traits(opp_z, probe_layer)
                 if top:
                     trait_str = f"  top={top[0][0]}:{top[0][1]:+.2f}"
-        print(f"  {n_turns} trainee turns  r={mean_r:+.4f}{trait_str}", flush=True)
+        print(f"  {n_turns} turns  r={mean_r:+.4f} (roll10={roll10:+.4f}){game_str}{trait_str}",
+              flush=True)
 
         # Recompute log_probs WITH gradients right before backward.
         device = next(model.parameters()).device
-        print(f"  recomputing log_probs ({n_turns * grpo_k} forward passes)...",
-              flush=True)
+        print(f"  recomputing log_probs ({n_turns * grpo_k} fwd passes)...", flush=True)
         recompute_logprobs(episode, model, str(device))
 
         # GRPO update — one backward per TurnGroup, advantages computed per turn.
@@ -430,12 +451,17 @@ def main():
 
         stats = episode_stats(episode)
         step += 1
+        step_time = time.time() - step_t0
+        elapsed = time.time() - train_start
+        eta = _fmt_eta(elapsed, step, total_episodes)
 
         entry = {
             "step": step,
             "loss": combined_loss,
             "reward": stats,
             "num_turns": n_turns,
+            "game_reward_trainee": trainee_game_r,
+            "step_time_s": step_time,
         }
         episode_log.append(entry)
 
@@ -449,12 +475,18 @@ def main():
             probe_layer=probe_layer,
             use_persona_lora=use_persona_lora,
             log_transcript_every=cfg["output"].get("log_transcript_every", 50),
+            rolling_mean=roll10,
+            game_outcome=game_outcome,
+            step_time=step_time,
+            target_trait_slugs=target_trait_slugs,
         )
 
-        if ep % log_interval == 0:
-            print(f"[step {step:4d}] "
-                  f"r={stats['mean']:+.4f}±{stats['std']:.3f}  "
-                  f"loss={combined_loss:.4f}  turns={n_turns}")
+        print(
+            f"  ✓ step {step:4d}  loss={combined_loss:.4f}  "
+            f"r={stats['mean']:+.4f}±{stats['std']:.3f}  "
+            f"roll10={roll10:+.4f}  {step_time:.0f}s  ETA {eta}",
+            flush=True,
+        )
 
         if ep % save_interval == 0:
             ckpt = save_dir / f"checkpoint_step{step:05d}"
@@ -465,20 +497,38 @@ def main():
                                   selected_adapters=["adapter_b"])
             tokenizer.save_pretrained(str(ckpt))
             print(f"  Saved checkpoint → {ckpt}", flush=True)
+            if local_save_dir:
+                local_ckpt = local_save_dir / f"checkpoint_step{step:05d}"
+                shutil.copytree(str(ckpt), str(local_ckpt), dirs_exist_ok=True)
+                print(f"  Saved checkpoint → {local_ckpt} (local)", flush=True)
 
     # ── Final save ────────────────────────────────────────────────────────────
+    final_dir = save_dir / "final"
     if use_persona_lora:
-        model.save_pretrained(str(save_dir / "final" / "adapter_a"),
+        model.save_pretrained(str(final_dir / "adapter_a"),
                               selected_adapters=["adapter_a"])
-    model.save_pretrained(str(save_dir / "final" / "adapter_b"),
+    model.save_pretrained(str(final_dir / "adapter_b"),
                           selected_adapters=["adapter_b"])
-    tokenizer.save_pretrained(str(save_dir / "final"))
+    tokenizer.save_pretrained(str(final_dir))
     with open(save_dir / "training_log.jsonl", "w") as f:
         for entry in episode_log:
             f.write(json.dumps(entry) + "\n")
+
+    if local_save_dir:
+        local_final = local_save_dir / "final"
+        shutil.copytree(str(final_dir), str(local_final), dirs_exist_ok=True)
+        shutil.copy(str(save_dir / "training_log.jsonl"),
+                    str(local_save_dir / "training_log.jsonl"))
+        print(f"  Saved final → {local_final} (local)", flush=True)
+
+    total_time = time.time() - train_start
+    h, rem = divmod(int(total_time), 3600)
+    m = rem // 60
+    print(f"\nTraining complete in {h}h{m:02d}m. Outputs in {save_dir}")
+    if local_save_dir:
+        print(f"Local copy: {local_save_dir}")
     if wandb_run is not None:
         wandb_run.finish()
-    print(f"\nTraining complete. Outputs in {save_dir}")
 
 
 if __name__ == "__main__":

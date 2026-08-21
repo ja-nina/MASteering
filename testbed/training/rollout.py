@@ -95,6 +95,11 @@ def collect_episode(
             rewards: List[float] = []
 
             for k in range(grpo_k):
+                # Probe hooks fire on every decode step — for K>0 the result is
+                # discarded, so skip the hooks entirely (saves ~26 × gen_len hook
+                # firings per wasted candidate).
+                if k > 0:
+                    _probe_bak, trainee_policy.probe = trainee_policy.probe, None
                 action, (full_ids, input_len) = trainee_policy.act(
                     system_prompt=system_prompt,
                     user_prompt=obs_str,
@@ -102,8 +107,10 @@ def collect_episode(
                     steering=None,
                     return_full_ids=True,
                 )
+                if k > 0:
+                    trainee_policy.probe = _probe_bak
 
-                # Trainee's own probe (logging only; captured by act())
+                # Trainee's own probe (logging only; captured by act(), K=0 only)
                 probe_z = None
                 probe_z_all = None
                 if k == 0 and trainee_policy._last_probe:
@@ -168,12 +175,15 @@ def collect_episode(
             if verbose:
                 print(f"    turn {turn_count+1} opponent...", flush=True)
             t0 = time.time()
+            # Disable probe during opponent generation — we never use these scores.
+            _probe_bak, trainee_policy.probe = trainee_policy.probe, None
             action, _ = opponent_policy.act(
                 system_prompt=system_prompt,
                 user_prompt=obs_str,
                 agent_id=str(player_id),
                 steering=None,
             )
+            trainee_policy.probe = _probe_bak
             elapsed = time.time() - t0
             if verbose:
                 print(f"    turn {turn_count+1} done  {elapsed:.1f}s", flush=True)

@@ -76,8 +76,9 @@ echo "[$(date)] Traits  : ${TRAITS}"
 echo "[$(date)] GPU     : $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
 "$PYTHON" -u "${REPO}/scripts/train_lora.py" \
-    --config   "${CONFIG}"  \
-    --traits   "${TRAITS}"  \
-    --run-name "${RUN_NAME}"
+    --config          "${CONFIG}"   \
+    --traits          "${TRAITS}"   \
+    --run-name        "${RUN_NAME}" \
+    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras"
 
 echo "[$(date)] Done — ${RUN_NAME}"

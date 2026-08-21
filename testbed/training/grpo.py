@@ -252,7 +252,55 @@ def wandb_log_step(
     except Exception:
         pass
 
-    # ── 7. Full transcript — all turns, all K candidates (every N steps) ─────
+    # ── 7. Transcript HTML — every step (readable inline in wandb) ───────────
+    if episode.turn_groups:
+        try:
+            import wandb as _wandb
+            html_parts = [
+                "<style>"
+                "body{font-family:monospace;font-size:13px;padding:8px}"
+                ".turn{border:1px solid #444;border-radius:4px;margin:6px 0;padding:8px}"
+                ".turn-header{font-weight:bold;margin-bottom:4px;color:#aaa;font-size:11px}"
+                ".obs{color:#888;white-space:pre-wrap;margin-bottom:6px;font-size:11px}"
+                ".action{white-space:pre-wrap;color:#eee}"
+                ".meta{margin-top:4px;font-size:11px;color:#6cf}"
+                ".reward-pos{color:#4f4}</style>"
+                "<h3 style='margin:0 0 8px;color:#ccc'>Rollout transcript — "
+                f"step {step} &nbsp; ({len(episode.turn_groups)} trainee turns)</h3>"
+            ]
+            for t_idx, tg in enumerate(episode.turn_groups):
+                record = tg.records[0]  # candidate played
+                reward = tg.rewards[0]
+                adv_str = (f"adv={tg.advantages[0]:+.3f}"
+                           if tg.advantages else "")
+                best_r = max(tg.rewards)
+                top_trait_str = ""
+                if record.probe_z_opponent:
+                    try:
+                        top = probe.rank_traits(record.probe_z_opponent, probe_layer)
+                        if top:
+                            top_trait_str = f"  top_trait={top[0][0]}:{top[0][1]:+.2f}"
+                    except Exception:
+                        pass
+                r_cls = "reward-pos" if reward > 0 else ""
+                obs_snip = (record.obs[-400:].replace("<", "&lt;")
+                            .replace(">", "&gt;").replace("\n", "↵\n"))
+                action_txt = record.action.replace("<", "&lt;").replace(">", "&gt;")
+                html_parts.append(
+                    f"<div class='turn'>"
+                    f"<div class='turn-header'>TURN {t_idx+1}</div>"
+                    f"<div class='obs'>…{obs_snip}</div>"
+                    f"<div class='action'>{action_txt}</div>"
+                    f"<div class='meta'>"
+                    f"<span class='{r_cls}'>r={reward:+.4f}</span> "
+                    f"best={best_r:+.4f}  {adv_str}{top_trait_str}"
+                    f"</div></div>"
+                )
+            log["rollout/transcript"] = _wandb.Html("".join(html_parts))
+        except Exception:
+            pass
+
+    # ── 8. Detailed Table — every N steps (for offline filtering) ────────────
     if step % log_transcript_every == 0 and episode.turn_groups:
         try:
             import wandb as _wandb
@@ -270,17 +318,18 @@ def wandb_log_step(
                             pass
                     rows.append([
                         turn_idx, k,
-                        record.obs[:300],
-                        record.action[:400],
+                        record.obs[-300:],
+                        record.action[:500],
                         round(reward, 4),
                         round(adv, 4) if adv == adv else float("nan"),
                         top_trait,
                         round(top_sim, 4) if top_sim == top_sim else float("nan"),
                     ])
             if rows:
-                log["rollouts/transcripts"] = _wandb.Table(
-                    columns=["turn", "candidate", "observation", "action",
-                             "reward", "advantage", "top_trait", "top_sim"],
+                log["rollout/transcript_table"] = _wandb.Table(
+                    columns=["turn", "candidate", "observation_tail",
+                             "action", "reward", "advantage",
+                             "top_trait", "top_sim"],
                     data=rows,
                 )
         except Exception:
