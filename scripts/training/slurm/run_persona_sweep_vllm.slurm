@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -p gpu17
+#SBATCH -p gpu22
 #SBATCH -c 10
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
@@ -35,6 +35,9 @@ REPO="/BS/ForNet/work/MASteering"
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 CONFIG="${REPO}/configs/training/persona_lora.yaml"
 
+export VLLM_USE_V1=0
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export CUDA_HOME="/BS/conformal-circuits/work/mamba/pkgs/cuda-nvcc-tools-12.9.86-he02047a_2/bin/nvcc"
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
 export SVD_BASIS="${REPO}/data/svd_basis/qwen3-4b-residual.pt"
