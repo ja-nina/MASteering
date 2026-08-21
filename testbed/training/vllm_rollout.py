@@ -54,14 +54,13 @@ class VLLMRolloutEngine:
         self.top_k      = top_k
         self.max_tokens = max_tokens
 
-        print(f"  [vLLM] loading {model_id} on {device} "
+        print(f"  [vLLM] loading {model_id} "
               f"(gpu_mem={gpu_memory_utilization})...", flush=True)
         self.llm = LLM(
             model=model_id,
             enable_lora=True,
             max_loras=2,                         # current + one being swapped in
             max_lora_rank=max_lora_rank,
-            device=device,
             gpu_memory_utilization=gpu_memory_utilization,
             dtype="bfloat16",
             trust_remote_code=True,
