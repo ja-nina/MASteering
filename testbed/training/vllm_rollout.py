@@ -175,6 +175,7 @@ def collect_episode_vllm(
     grpo_k: int = 4,
     probe=None,
     system_prompt: str = "You are a strategic game player. Respond concisely.",
+    trainee_system_prompt: Optional[str] = None,
     max_turns: int = 50,
     verbose: bool = True,
 ) -> Episode:
@@ -189,9 +190,14 @@ def collect_episode_vllm(
     available when generating with vLLM (no hook access).  These fields
     are left None; the adapter_a/inject breakdown still works because it
     runs a separate HF forward pass at log time.
+
+    trainee_system_prompt: when set, used for trainee turns instead of
+    system_prompt (which goes to the opponent).  Enables secret nudge
+    instructions unknown to the opponent.
     """
     import textarena as ta
     env = ta.make(game_id)
+    _trainee_sp = trainee_system_prompt if trainee_system_prompt is not None else system_prompt
     env.reset(num_players=num_players)
     episode = Episode()
     turn_count = 0
@@ -207,7 +213,7 @@ def collect_episode_vllm(
 
             # K candidates in ONE vLLM call — the core speedup
             candidates = vllm_engine.generate_candidates(
-                system_prompt, obs_str, K=grpo_k
+                _trainee_sp, obs_str, K=grpo_k
             )
 
             records: List[TurnRecord] = []

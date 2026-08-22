@@ -91,6 +91,18 @@ def lora_inject_breakdown(
     return {s: v / count for s, v in slug_cos_sums.items()}
 
 
+def _compute_log_prob(model, full_ids: torch.Tensor, input_len: int) -> torch.Tensor:
+    """Teacher-forcing log prob for the generated tokens (requires_grad=True)."""
+    import torch.nn.functional as F
+
+    gen_len = full_ids.shape[1] - input_len
+    logits = model(full_ids).logits                           # [1, T, vocab]
+    gen_logits = logits[0, input_len - 1: input_len - 1 + gen_len, :]
+    log_probs_matrix = F.log_softmax(gen_logits, dim=-1)
+    gen_ids = full_ids[0, input_len:]
+    return log_probs_matrix[torch.arange(gen_len, device=full_ids.device), gen_ids].sum()
+
+
 def grpo_step(
     episode: Episode,
     optimizers,
@@ -98,18 +110,25 @@ def grpo_step(
     eps: float = 1e-8,
     zero_grad: bool = True,
     do_step: bool = True,
+    model=None,
+    device: str = "cuda",
 ) -> float:
     """Accumulate GRPO gradients for one episode; optionally step the optimizers.
 
     For each TurnGroup:
+      - (optionally) recompute log_probs with gradient tracking
       - normalise K rewards → K advantages
       - accumulate loss: Σ_k  −log_prob_k × advantage_k
       - backward() immediately → frees this turn's K graphs
 
-    zero_grad: call opt.zero_grad() before accumulating (False when caller
-               manages gradient accumulation across multiple episodes).
-    do_step:   call clip_grad_norm + opt.step() after backward (False when
-               accumulating across multiple episodes before one combined step).
+    model/device: when provided, log_probs are computed inside this function
+                  one turn group at a time, so only K graphs are live at once.
+                  This avoids the OOM caused by front-loading all N_turns×K
+                  forward passes before any backward.  When None, record.log_prob
+                  must already be filled (legacy path).
+
+    zero_grad: call opt.zero_grad() before accumulating.
+    do_step:   call clip_grad_norm + opt.step() after all backwards.
 
     Returns total scalar loss (summed across all turn groups).
     """
@@ -136,13 +155,23 @@ def grpo_step(
         advantages = [(r - mu) / (std + eps) for r in tg.rewards]
         tg.advantages = advantages
 
+        # Recompute log_probs for this turn group only — keeps K graphs live,
+        # not K×N_turns.  Falls back to pre-filled record.log_prob if no model.
         tg_loss = torch.tensor(0.0)
         for record, adv in zip(tg.records, advantages):
+            if model is not None and record.full_ids is not None:
+                full_ids = record.full_ids.to(device)
+                gen_len  = full_ids.shape[1] - record.input_len
+                if gen_len > 0:
+                    log_prob = _compute_log_prob(model, full_ids, record.input_len)
+                    record.log_prob = log_prob
+                else:
+                    record.log_prob = None
             if record.log_prob is not None:
                 tg_loss = tg_loss + (-record.log_prob * float(adv))
 
         if tg_loss.requires_grad:
-            tg_loss.backward()   # frees this turn group's graphs immediately
+            tg_loss.backward()   # frees this turn group's K graphs immediately
             total_loss += tg_loss.item()
 
     if do_step:
