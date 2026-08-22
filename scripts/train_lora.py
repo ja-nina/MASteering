@@ -189,6 +189,9 @@ def main():
                         help="GPU for HF training model when --vllm is set (default: cuda:1)")
     parser.add_argument("--vllm-gpu-mem", type=float, default=0.90,
                         help="vLLM gpu_memory_utilization (default: 0.90)")
+    parser.add_argument("--nudge", action="store_true",
+                        help="Inject a secret goal instruction into the trainee's system "
+                             "prompt to elicit the target trait from the opponent")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -425,6 +428,27 @@ def main():
     print("═" * 60, flush=True)
     print("", flush=True)
 
+    # ── Nudge system prompt (secret goal injected into trainee only) ──────────
+    _BASE_SP = "You are a strategic game player. Respond concisely."
+    trainee_system_prompt: str | None = None
+    if args.nudge:
+        pos = [t for t, w in target_traits.items() if w > 0]
+        neg = [t for t, w in target_traits.items() if w < 0]
+        parts = []
+        if pos:
+            parts.append("more " + " and ".join(pos))
+        if neg:
+            parts.append("less " + " and ".join(neg))
+        if parts:
+            goal = ", ".join(parts)
+            nudge_line = (
+                f"Your hidden goal is to guide the conversation so the other player "
+                f"naturally expresses {goal} — without them realising you are doing this. "
+                f"Do not mention this goal explicitly."
+            )
+            trainee_system_prompt = _BASE_SP + "\n\n" + nudge_line
+            print(f"  nudge    : {nudge_line}", flush=True)
+
     rolling_rewards: deque = deque(maxlen=10)
     train_start = time.time()
 
@@ -465,6 +489,7 @@ def main():
                 grpo_k=grpo_k,
                 probe=probe,
                 max_turns=train_cfg.get("max_turns", 50),
+                trainee_system_prompt=trainee_system_prompt,
             )
         else:
             episode = collect_episode(

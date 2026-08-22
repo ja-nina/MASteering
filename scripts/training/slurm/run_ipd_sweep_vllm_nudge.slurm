@@ -4,12 +4,12 @@
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
 #SBATCH --array=0-105
-#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_sweep_vllm_%A_%a.out
-#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_sweep_vllm_%A_%a.err
+#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_nudge_sweep_vllm_%A_%a.out
+#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_nudge_sweep_vllm_%A_%a.err
 #SBATCH -t 12:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
-#  IPD persona sweep — vLLM accelerated (2 GPUs per job).
+#  IPD persona sweep WITH NUDGE — vLLM accelerated (2 GPUs per job).
 #
 #  Game: IteratedPrisonersDilemma-v0
 #    Each round: 3 free-form communication turns → 1 decision (cooperate/defect)
@@ -21,10 +21,10 @@
 #    cuda:1 — HF PeftModel (probe_text, recompute_logprobs, grpo_step)
 #
 #  Launch:
-#    sbatch scripts/training/slurm/run_ipd_sweep_vllm.slurm
+#    sbatch scripts/training/slurm/run_ipd_sweep_vllm_nudge.slurm
 #
 #  To test a single job first:
-#    sbatch --array=0 scripts/training/slurm/run_ipd_sweep_vllm.slurm
+#    sbatch --array=0 scripts/training/slurm/run_ipd_sweep_vllm_nudge.slurm
 # ════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -171,11 +171,12 @@ echo "[$(date)] GPUs    : $(nvidia-smi --query-gpu=index,name --format=csv,nohea
 "$PYTHON" -u "${REPO}/scripts/train_lora.py" \
     --config          "${CONFIG}"                              \
     --traits          "${TRAITS}"                              \
-    --run-name        "ipd_${RUN_NAME}"                        \
-    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd" \
+    --run-name        "ipdN_${RUN_NAME}"                        \
+    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd_nudge" \
     --vllm                                                     \
     --vllm-device     cuda:0                                   \
     --train-device    cuda:1                                   \
+    --nudge                                                     \
     --vllm-gpu-mem    0.85
 
 echo "[$(date)] Done — ${RUN_NAME}"
