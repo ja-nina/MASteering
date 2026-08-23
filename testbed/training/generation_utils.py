@@ -2,6 +2,13 @@
 from __future__ import annotations
 import re
 
+# Regex for vLLM guided (constrained) decoding.
+# Enforces <strategy>...</strategy><action>... at the token level so the format
+# is guaranteed by the sampler rather than penalised after the fact.
+# Lazy +? on the strategy body lets the FSM close </strategy> as soon as it
+# appears; the action body is greedy (runs to max_tokens or EOS).
+FORMAT_REGEX = r"<strategy>[\s\S]+?</strategy>\s*<action>[\s\S]+"
+
 STRUCTURED_FORMAT_INSTRUCTION = (
     "\n\nAlways respond in this exact format:\n"
     "<strategy>\n"

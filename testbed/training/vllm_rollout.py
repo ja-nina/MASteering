@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 
 from testbed.training.rollout import Episode, TurnGroup, TurnRecord, TRAINEE_ID, OPPONENT_ID
-from testbed.training.generation_utils import STRUCTURED_FORMAT_INSTRUCTION, _extract_action, _has_action_tag
+from testbed.training.generation_utils import FORMAT_REGEX, STRUCTURED_FORMAT_INSTRUCTION, _extract_action, _has_action_tag
 
 
 class VLLMRolloutEngine:
@@ -47,14 +47,16 @@ class VLLMRolloutEngine:
         top_p: float = 0.8,
         top_k: int = 20,
         max_tokens: int = 300,
+        use_guided_decoding: bool = True,
     ):
         from vllm import LLM
 
         self.model_id   = model_id
-        self.temperature = temperature
-        self.top_p      = top_p
-        self.top_k      = top_k
-        self.max_tokens = max_tokens
+        self.temperature          = temperature
+        self.top_p               = top_p
+        self.top_k               = top_k
+        self.max_tokens          = max_tokens
+        self.use_guided_decoding = use_guided_decoding
 
         print(f"  [vLLM] loading {model_id} "
               f"(gpu_mem={gpu_memory_utilization})...", flush=True)
@@ -117,13 +119,24 @@ class VLLMRolloutEngine:
 
     def _sampling_params(self, n: int):
         from vllm import SamplingParams
-        return SamplingParams(
+        kwargs = dict(
             n=n,
             temperature=self.temperature,
             top_p=self.top_p,
             top_k=self.top_k,
             max_tokens=self.max_tokens,
         )
+        if self.use_guided_decoding:
+            try:
+                from vllm.sampling_params import GuidedDecodingParams
+                kwargs["guided_decoding"] = GuidedDecodingParams(regex=FORMAT_REGEX)
+            except (ImportError, TypeError):
+                # Older vLLM versions use guided_regex directly on SamplingParams
+                try:
+                    kwargs["guided_regex"] = FORMAT_REGEX
+                except TypeError:
+                    pass
+        return SamplingParams(**kwargs)
 
     def generate_candidates(
         self,
