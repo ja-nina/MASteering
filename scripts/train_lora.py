@@ -558,21 +558,12 @@ def main():
         rolling_rewards.append(mean_r)
         roll10 = sum(rolling_rewards) / len(rolling_rewards)
 
-        # Game outcome for trainee
-        trainee_game_r = episode.game_rewards.get(TRAINEE_ID, float("nan"))
-        opponent_game_r = episode.game_rewards.get(OPPONENT_ID, float("nan"))
-        game_outcome = {"trainee": trainee_game_r, "opponent": opponent_game_r,
-                        "decision": ipd_decision}
-        game_str = f"  game={trainee_game_r:+.2f}" if trainee_game_r == trainee_game_r else ""
-
         # Extract IPD decision (cooperate/defect) from the trainee's last turn
         # whose observation explicitly asks for a decision.
         ipd_decision = None
         for tg in reversed(episode.turn_groups):
             obs_lower = tg.obs.lower()
             if "cooperate" in obs_lower or "defect" in obs_lower:
-                action_lower = tg.records[0].action.lower()
-                # strip thinking before checking
                 import re as _re
                 visible = _re.sub(r"<think>.*?</think>", "", tg.records[0].action,
                                   flags=_re.DOTALL).strip().lower()
@@ -583,6 +574,13 @@ def main():
                 else:
                     ipd_decision = f"invalid: {visible[:60]}"
                 break
+
+        # Game outcome for trainee
+        trainee_game_r = episode.game_rewards.get(TRAINEE_ID, float("nan"))
+        opponent_game_r = episode.game_rewards.get(OPPONENT_ID, float("nan"))
+        game_outcome = {"trainee": trainee_game_r, "opponent": opponent_game_r,
+                        "decision": ipd_decision}
+        game_str = f"  game={trainee_game_r:+.2f}" if trainee_game_r == trainee_game_r else ""
 
         # Top opponent trait from last turn's best candidate
         trait_str = ""
