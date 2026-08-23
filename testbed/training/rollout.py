@@ -19,6 +19,9 @@ from typing import Dict, List, Optional
 
 import torch
 
+
+from testbed.training.generation_utils import STRUCTURED_FORMAT_INSTRUCTION, _extract_action, _has_action_tag
+
 OPPONENT_ID = 0
 TRAINEE_ID  = 1
 
@@ -52,6 +55,11 @@ class TurnGroup:
 class Episode:
     turn_groups: List[TurnGroup] = field(default_factory=list)
     game_rewards: Dict[int, float] = field(default_factory=dict)
+    system_prompt: str = ""
+    trainee_system_prompt: Optional[str] = None
+    # Chronological log of every turn (trainee and opponent), for transcripts.
+    # Each entry: {"player": "trainee"|"opponent", "obs": str, "action": str}
+    episode_log: List[Dict] = field(default_factory=list)
 
 
 def collect_episode(
@@ -79,8 +87,10 @@ def collect_episode(
     """
     import textarena as ta
     env = ta.make(game_id)
+    _sp_with_format = system_prompt + STRUCTURED_FORMAT_INSTRUCTION
     env.reset(num_players=num_players)
     episode = Episode()
+    episode.system_prompt = system_prompt
     turn_count = 0
 
     while turn_count < max_turns:
@@ -101,7 +111,7 @@ def collect_episode(
                 if k > 0:
                     _probe_bak, trainee_policy.probe = trainee_policy.probe, None
                 action, (full_ids, input_len) = trainee_policy.act(
-                    system_prompt=system_prompt,
+                    system_prompt=_sp_with_format,
                     user_prompt=obs_str,
                     agent_id=str(player_id),
                     steering=None,
@@ -130,7 +140,8 @@ def collect_episode(
                 opp_scores = trainee_policy.probe_text(action)
                 ld_opp = opp_scores.get(str(probe_layer), {})
                 opp_z = ld_opp.get("z") or None   # display-layer z for logging
-                reward = reward_fn(opp_scores) if opp_scores else 0.0
+                reward = (reward_fn(opp_scores)
+                          if (opp_scores and _has_action_tag(action)) else 0.0)
 
                 records.append(TurnRecord(
                     obs=obs_str,
@@ -168,8 +179,10 @@ def collect_episode(
 
             episode.turn_groups.append(TurnGroup(obs=obs_str, records=records,
                                                   rewards=rewards))
+            episode.episode_log.append({"player": "trainee", "obs": obs_str,
+                                        "action": records[0].action})
             # Advance the game with the first candidate response.
-            done, _ = env.step(records[0].action)
+            done, _ = env.step(_extract_action(records[0].action))
 
         else:
             if verbose:
@@ -178,7 +191,7 @@ def collect_episode(
             # Disable probe during opponent generation — we never use these scores.
             _probe_bak, trainee_policy.probe = trainee_policy.probe, None
             action, _ = opponent_policy.act(
-                system_prompt=system_prompt,
+                system_prompt=_sp_with_format,
                 user_prompt=obs_str,
                 agent_id=str(player_id),
                 steering=None,
@@ -187,7 +200,9 @@ def collect_episode(
             elapsed = time.time() - t0
             if verbose:
                 print(f"    turn {turn_count+1} done  {elapsed:.1f}s", flush=True)
-            done, _ = env.step(action)
+            episode.episode_log.append({"player": "opponent", "obs": obs_str,
+                                        "action": action})
+            done, _ = env.step(_extract_action(action))
 
         turn_count += 1
         if done:

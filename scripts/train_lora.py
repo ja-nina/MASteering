@@ -513,8 +513,28 @@ def main():
         # Game outcome for trainee
         trainee_game_r = episode.game_rewards.get(TRAINEE_ID, float("nan"))
         opponent_game_r = episode.game_rewards.get(OPPONENT_ID, float("nan"))
-        game_outcome = {"trainee": trainee_game_r, "opponent": opponent_game_r}
+        game_outcome = {"trainee": trainee_game_r, "opponent": opponent_game_r,
+                        "decision": ipd_decision}
         game_str = f"  game={trainee_game_r:+.2f}" if trainee_game_r == trainee_game_r else ""
+
+        # Extract IPD decision (cooperate/defect) from the trainee's last turn
+        # whose observation explicitly asks for a decision.
+        ipd_decision = None
+        for tg in reversed(episode.turn_groups):
+            obs_lower = tg.obs.lower()
+            if "cooperate" in obs_lower or "defect" in obs_lower:
+                action_lower = tg.records[0].action.lower()
+                # strip thinking before checking
+                import re as _re
+                visible = _re.sub(r"<think>.*?</think>", "", tg.records[0].action,
+                                  flags=_re.DOTALL).strip().lower()
+                if "cooperate" in visible:
+                    ipd_decision = "cooperate"
+                elif "defect" in visible:
+                    ipd_decision = "defect"
+                else:
+                    ipd_decision = f"invalid: {visible[:60]}"
+                break
 
         # Top opponent trait from last turn's best candidate
         trait_str = ""
@@ -526,7 +546,8 @@ def main():
                 top = probe.rank_traits(opp_z, probe_layer)
                 if top:
                     trait_str = f"  top={top[0][0]}:{top[0][1]:+.2f}"
-        print(f"  {n_turns} turns  r={mean_r:+.4f} (roll10={roll10:+.4f}){game_str}{trait_str}",
+        decision_str = f"  decision={ipd_decision}" if ipd_decision is not None else ""
+        print(f"  {n_turns} turns  r={mean_r:+.4f} (roll10={roll10:+.4f}){game_str}{trait_str}{decision_str}",
               flush=True)
 
         # GRPO update — recompute log_probs and backward per TurnGroup (one group's

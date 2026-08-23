@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 
 from testbed.training.rollout import Episode, TurnGroup, TurnRecord, TRAINEE_ID, OPPONENT_ID
+from testbed.training.generation_utils import STRUCTURED_FORMAT_INSTRUCTION, _extract_action, _has_action_tag
 
 
 class VLLMRolloutEngine:
@@ -99,12 +100,19 @@ class VLLMRolloutEngine:
 
     def _build_prompt(self, system_prompt: str, user_prompt: str) -> str:
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": system_prompt + STRUCTURED_FORMAT_INSTRUCTION},
             {"role": "user",   "content": user_prompt},
         ]
-        return self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False,   # disable Qwen3 native <think> mode
+            )
+        except TypeError:
+            # older tokenizer version without enable_thinking
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
 
     def _sampling_params(self, n: int):
         from vllm import SamplingParams
@@ -200,6 +208,8 @@ def collect_episode_vllm(
     _trainee_sp = trainee_system_prompt if trainee_system_prompt is not None else system_prompt
     env.reset(num_players=num_players)
     episode = Episode()
+    episode.system_prompt = system_prompt
+    episode.trainee_system_prompt = trainee_system_prompt
     turn_count = 0
 
     while turn_count < max_turns:
@@ -223,7 +233,8 @@ def collect_episode_vllm(
                 opp_scores  = probe_policy.probe_text(action)
                 ld_opp      = opp_scores.get(str(probe_layer), {})
                 opp_z       = ld_opp.get("z") or None
-                reward      = reward_fn(opp_scores) if opp_scores else 0.0
+                reward      = (reward_fn(opp_scores)
+                               if (opp_scores and _has_action_tag(action)) else 0.0)
 
                 records.append(TurnRecord(
                     obs=obs_str,
@@ -264,7 +275,9 @@ def collect_episode_vllm(
             episode.turn_groups.append(
                 TurnGroup(obs=obs_str, records=records, rewards=rewards)
             )
-            done, _ = env.step(records[0].action)
+            episode.episode_log.append({"player": "trainee", "obs": obs_str,
+                                        "action": records[0].action})
+            done, _ = env.step(_extract_action(records[0].action))
 
         else:
             if verbose:
@@ -278,7 +291,9 @@ def collect_episode_vllm(
             if verbose:
                 print(f"    turn {turn_count+1} done  {elapsed:.1f}s",
                       flush=True)
-            done, _ = env.step(action)
+            episode.episode_log.append({"player": "opponent", "obs": obs_str,
+                                        "action": action})
+            done, _ = env.step(_extract_action(action))
 
         turn_count += 1
         if done:
