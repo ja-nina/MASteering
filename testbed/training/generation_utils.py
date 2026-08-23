@@ -15,17 +15,24 @@ STRUCTURED_FORMAT_INSTRUCTION = (
 
 
 def _has_action_tag(text: str) -> bool:
-    """Return True only if the model produced a well-formed <action>…</action> block."""
-    return bool(re.search(r"<action>.*?</action>", text, flags=re.DOTALL))
+    """Return True if the model opened an <action> block (closing tag optional)."""
+    return bool(re.search(r"<action>", text))
 
 
 def _extract_action(text: str) -> str:
-    """Extract the <action>...</action> block from structured output.
+    """Extract the action content from structured output.
 
-    Falls back to the full text (stripped of any <think> blocks) if the
-    model did not follow the format.
+    Accepts both closed (<action>…</action>) and unclosed (<action>…EOF) forms —
+    the model often omits the closing tag without it being a meaningful error.
+    Falls back to stripping <think> blocks when no <action> tag is present at all.
     """
+    # Prefer the closed form
     m = re.search(r"<action>(.*?)</action>", text, flags=re.DOTALL)
     if m:
         return m.group(1).strip()
+    # Accept unclosed: take everything after <action>
+    m2 = re.search(r"<action>(.*)", text, flags=re.DOTALL)
+    if m2:
+        return m2.group(1).strip()
+    # Last resort: strip native <think> blocks
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()

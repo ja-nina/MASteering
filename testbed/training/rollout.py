@@ -141,7 +141,7 @@ def collect_episode(
                 ld_opp = opp_scores.get(str(probe_layer), {})
                 opp_z = ld_opp.get("z") or None   # display-layer z for logging
                 reward = (reward_fn(opp_scores)
-                          if (opp_scores and _has_action_tag(action)) else 0.0)
+                          if (opp_scores and _has_action_tag(action)) else -1.0)
 
                 records.append(TurnRecord(
                     obs=obs_str,
