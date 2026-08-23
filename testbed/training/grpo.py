@@ -262,6 +262,11 @@ def wandb_log_step(
     if game_outcome is not None:
         log["episode/trainee_game_reward"] = game_outcome.get("trainee", float("nan"))
         log["episode/opponent_game_reward"] = game_outcome.get("opponent", float("nan"))
+        decision = game_outcome.get("decision")
+        if decision is not None:
+            log["episode/decision"] = decision
+            log["episode/cooperated"] = 1.0 if decision == "cooperate" else (
+                0.0 if decision == "defect" else float("nan"))
 
     # ── 2. Persona projections at display_layer only (trainee, K=0) ─────────
     # Averaging over all trainee turns keeps this representative without logging
@@ -398,49 +403,97 @@ def wandb_log_step(
         pass
 
     # ── 7. Transcript HTML — every step (readable inline in wandb) ───────────
-    if episode.turn_groups:
+    if episode.episode_log or episode.turn_groups:
         try:
             import wandb as _wandb
+
+            def _esc(s: str) -> str:
+                return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            # System prompt header — show trainee's (nudge) prompt if different
+            _sp_main = episode.system_prompt or ""
+            _sp_trainee = episode.trainee_system_prompt
+            sp_section = (
+                f"<div class='sysprompt'>"
+                f"<div class='sp-label'>SYSTEM PROMPT (opponent / base)</div>"
+                f"<div class='sp-body'>{_esc(_sp_main)}</div>"
+            )
+            if _sp_trainee is not None and _sp_trainee != _sp_main:
+                sp_section += (
+                    f"<div class='sp-label' style='margin-top:6px'>SYSTEM PROMPT (trainee / nudge)</div>"
+                    f"<div class='sp-body'>{_esc(_sp_trainee)}</div>"
+                )
+            sp_section += "</div>"
+
+            n_trainee = len(episode.turn_groups)
             html_parts = [
                 "<style>"
-                "body{font-family:monospace;font-size:13px;padding:8px}"
+                "body{font-family:monospace;font-size:13px;padding:8px;background:#1a1a1a;color:#ddd}"
+                ".sysprompt{border:1px solid #555;border-radius:4px;margin:0 0 10px;padding:8px;background:#252525}"
+                ".sp-label{font-weight:bold;font-size:10px;color:#888;margin-bottom:3px;letter-spacing:.05em}"
+                ".sp-body{white-space:pre-wrap;color:#aaa;font-size:11px}"
                 ".turn{border:1px solid #444;border-radius:4px;margin:6px 0;padding:8px}"
-                ".turn-header{font-weight:bold;margin-bottom:4px;color:#aaa;font-size:11px}"
-                ".obs{color:#888;white-space:pre-wrap;margin-bottom:6px;font-size:11px}"
-                ".action{white-space:pre-wrap;color:#eee}"
-                ".meta{margin-top:4px;font-size:11px;color:#6cf}"
-                ".reward-pos{color:#4f4}</style>"
+                ".turn.trainee{border-color:#3a5a3a}"
+                ".turn.opponent{border-color:#3a3a5a}"
+                ".turn-header{font-weight:bold;margin-bottom:6px;font-size:11px}"
+                ".turn.trainee .turn-header{color:#6f6}"
+                ".turn.opponent .turn-header{color:#88f}"
+                ".section-label{font-size:10px;color:#666;margin-bottom:2px;letter-spacing:.05em}"
+                ".obs{color:#888;white-space:pre-wrap;margin-bottom:6px;font-size:11px;border-left:2px solid #444;padding-left:6px}"
+                ".action{white-space:pre-wrap;color:#eee;border-left:2px solid #555;padding-left:6px}"
+                ".meta{margin-top:6px;font-size:11px;color:#6cf}"
+                ".reward-pos{color:#4f4}"
+                "</style>"
                 "<h3 style='margin:0 0 8px;color:#ccc'>Rollout transcript — "
-                f"step {step} &nbsp; ({len(episode.turn_groups)} trainee turns)</h3>"
+                f"step {step} &nbsp; ({n_trainee} trainee turns, "
+                f"{len(episode.episode_log)} total)</h3>"
             ]
-            for t_idx, tg in enumerate(episode.turn_groups):
-                record = tg.records[0]  # candidate played
-                reward = tg.rewards[0]
-                adv_str = (f"adv={tg.advantages[0]:+.3f}"
-                           if tg.advantages else "")
-                best_r = max(tg.rewards)
-                top_trait_str = ""
-                if record.probe_z_opponent:
-                    try:
-                        top = probe.rank_traits(record.probe_z_opponent, probe_layer)
-                        if top:
-                            top_trait_str = f"  top_trait={top[0][0]}:{top[0][1]:+.2f}"
-                    except Exception:
-                        pass
-                r_cls = "reward-pos" if reward > 0 else ""
-                obs_snip = (record.obs[-400:].replace("<", "&lt;")
-                            .replace(">", "&gt;").replace("\n", "↵\n"))
-                action_txt = record.action.replace("<", "&lt;").replace(">", "&gt;")
-                html_parts.append(
-                    f"<div class='turn'>"
-                    f"<div class='turn-header'>TURN {t_idx+1}</div>"
-                    f"<div class='obs'>…{obs_snip}</div>"
-                    f"<div class='action'>{action_txt}</div>"
-                    f"<div class='meta'>"
-                    f"<span class='{r_cls}'>r={reward:+.4f}</span> "
-                    f"best={best_r:+.4f}  {adv_str}{top_trait_str}"
-                    f"</div></div>"
-                )
+            html_parts.append(sp_section)
+
+            # Build a lookup: episode_log index → TurnGroup (for trainee reward/adv)
+            trainee_log_idx = 0  # walks through turn_groups
+            for log_entry in episode.episode_log:
+                player = log_entry["player"]
+                obs_txt = _esc(log_entry["obs"])
+                action_txt = _esc(log_entry["action"])
+                if player == "trainee":
+                    tg = (episode.turn_groups[trainee_log_idx]
+                          if trainee_log_idx < len(episode.turn_groups) else None)
+                    trainee_log_idx += 1
+                    reward = tg.rewards[0] if tg else float("nan")
+                    best_r = max(tg.rewards) if tg else float("nan")
+                    adv_str = (f"adv={tg.advantages[0]:+.3f}" if tg and tg.advantages else "")
+                    top_trait_str = ""
+                    if tg and tg.records[0].probe_z_opponent:
+                        try:
+                            top = probe.rank_traits(tg.records[0].probe_z_opponent, probe_layer)
+                            if top:
+                                top_trait_str = f"  top_trait={top[0][0]}:{top[0][1]:+.2f}"
+                        except Exception:
+                            pass
+                    r_cls = "reward-pos" if reward > 0 else ""
+                    html_parts.append(
+                        f"<div class='turn trainee'>"
+                        f"<div class='turn-header'>TRAINEE</div>"
+                        f"<div class='section-label'>OBSERVATION (full prompt context)</div>"
+                        f"<div class='obs'>{obs_txt}</div>"
+                        f"<div class='section-label'>RESPONSE (full, including strategy)</div>"
+                        f"<div class='action'>{action_txt}</div>"
+                        f"<div class='meta'>"
+                        f"<span class='{r_cls}'>r={reward:+.4f}</span> "
+                        f"best={best_r:+.4f}  {adv_str}{top_trait_str}"
+                        f"</div></div>"
+                    )
+                else:
+                    html_parts.append(
+                        f"<div class='turn opponent'>"
+                        f"<div class='turn-header'>OPPONENT</div>"
+                        f"<div class='section-label'>OBSERVATION (full prompt context)</div>"
+                        f"<div class='obs'>{obs_txt}</div>"
+                        f"<div class='section-label'>RESPONSE (full, including strategy)</div>"
+                        f"<div class='action'>{action_txt}</div>"
+                        f"</div>"
+                    )
             log["rollout/transcript"] = _wandb.Html("".join(html_parts))
         except Exception:
             pass
@@ -449,6 +502,8 @@ def wandb_log_step(
     if step % log_transcript_every == 0 and episode.turn_groups:
         try:
             import wandb as _wandb
+            _sp_main = episode.system_prompt or ""
+            _sp_trainee = episode.trainee_system_prompt or _sp_main
             rows = []
             for turn_idx, tg in enumerate(episode.turn_groups):
                 for k, (record, reward) in enumerate(zip(tg.records, tg.rewards)):
@@ -463,8 +518,9 @@ def wandb_log_step(
                             pass
                     rows.append([
                         turn_idx, k,
-                        record.obs[-300:],
-                        record.action[:500],
+                        _sp_trainee,
+                        record.obs,
+                        record.action,
                         round(reward, 4),
                         round(adv, 4) if adv == adv else float("nan"),
                         top_trait,
@@ -472,8 +528,8 @@ def wandb_log_step(
                     ])
             if rows:
                 log["rollout/transcript_table"] = _wandb.Table(
-                    columns=["turn", "candidate", "observation_tail",
-                             "action", "reward", "advantage",
+                    columns=["turn", "candidate", "system_prompt",
+                             "observation", "action", "reward", "advantage",
                              "top_trait", "top_sim"],
                     data=rows,
                 )
