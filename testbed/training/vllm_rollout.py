@@ -47,7 +47,7 @@ class VLLMRolloutEngine:
         top_p: float = 0.8,
         top_k: int = 20,
         max_tokens: int = 300,
-        use_guided_decoding: bool = True,
+        use_guided_decoding: bool = False,
     ):
         from vllm import LLM
 

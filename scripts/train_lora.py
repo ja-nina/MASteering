@@ -229,6 +229,10 @@ def main():
                         help="GPU for HF training model when --vllm is set (default: cuda:1)")
     parser.add_argument("--vllm-gpu-mem", type=float, default=0.90,
                         help="vLLM gpu_memory_utilization (default: 0.90)")
+    parser.add_argument("--bind", action="store_true",
+                        help="Enforce <strategy>…</strategy><action>… format via vLLM guided "
+                             "decoding (constrained sampling).  Off by default so old runs "
+                             "are unaffected; enable for cleaner format compliance.")
     parser.add_argument("--nudge", action="store_true",
                         help="Inject a secret goal instruction into the trainee's system "
                              "prompt to elicit the target trait from the opponent")
@@ -391,6 +395,7 @@ def main():
             max_lora_rank=lora_rank_for_vllm,
             gpu_memory_utilization=args.vllm_gpu_mem,
             max_tokens=cfg.get("training", {}).get("max_new_tokens", 300),
+            use_guided_decoding=args.bind,
         )
         vllm_syncer = LoRAWeightSyncer()
         # Load initial adapter (adapter_a if persona, else adapter_b).
@@ -470,7 +475,8 @@ def main():
     print(f"  episodes : {total_episodes}  grpo_k={grpo_k}  save_every={save_interval}", flush=True)
     print(f"  save_dir : {save_dir}", flush=True)
     if use_vllm:
-        print(f"  vLLM     : gen={args.vllm_device}  train={args.train_device}", flush=True)
+        print(f"  vLLM     : gen={args.vllm_device}  train={args.train_device}"
+              f"  bind={'ON' if args.bind else 'off'}", flush=True)
     if local_save_dir:
         print(f"  local    : {local_save_dir}", flush=True)
     print("═" * 60, flush=True)
