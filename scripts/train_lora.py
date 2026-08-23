@@ -134,6 +134,46 @@ def _init_svd_lora_a(model, basis_path: str, adapter_name: str):
           f" (o_proj only; lora_A remains trainable)")
 
 
+def _build_persona_projector(model, basis_path: str, device: str):
+    """Pre-build per-layer projection matrices for adapter_b orthogonalisation.
+
+    Returns a list of (param, P) pairs where P = [k, d_out] is the row-
+    normalised persona basis for that layer.  Call _project_out_persona(pairs)
+    after every optimizer step to keep adapter_b's lora_B out of persona space.
+    """
+    basis = torch.load(os.path.expandvars(basis_path), map_location="cpu",
+                       weights_only=False)
+    Vk = basis["Vk"]  # {layer_int: Tensor[k, d_out]}
+
+    pairs = []
+    for name, param in model.named_parameters():
+        if "lora_B" not in name or "adapter_b" not in name or "o_proj" not in name:
+            continue
+        parts = name.split(".")
+        try:
+            layer_idx = next(int(p) for p in parts if p.isdigit())
+        except StopIteration:
+            continue
+        if layer_idx not in Vk:
+            continue
+        vk = Vk[layer_idx].float().to(device)          # [k, d_out]
+        vk = vk / vk.norm(dim=1, keepdim=True).clamp(min=1e-8)   # normalise rows
+        pairs.append((param, vk))
+
+    print(f"  persona projector: will orthogonalise adapter_b lora_B "
+          f"at {len(pairs)} o_proj layers after each step")
+    return pairs
+
+
+@torch.no_grad()
+def _project_out_persona(pairs):
+    """Remove persona-subspace components from adapter_b lora_B in-place."""
+    for param, vk in pairs:
+        W = param.data          # [d_out, r]
+        proj = vk @ W           # [k, r]  — how much each persona dir is in each col
+        W -= vk.T @ proj        # subtract those components
+
+
 def _set_adapters(model, adapter_names: list):
     """Activate one or more LoRA adapters, compatible across PEFT versions."""
     if len(adapter_names) == 1:
@@ -295,10 +335,18 @@ def main():
         _init_svd_lora_a(model, lora_a_basis, "adapter_a")
         model.add_adapter("adapter_b", lora_cfg_b)
         _set_adapters(model, ["adapter_a", "adapter_b"])
+        _persona_proj_pairs = _build_persona_projector(
+            model, lora_a_basis,
+            device=str(next(base_model.parameters()).device),
+        )
+        # Run one initial projection so the randomly-initialised lora_B of
+        # adapter_b starts with zero persona component.
+        _project_out_persona(_persona_proj_pairs)
     else:
         print("  use_persona_lora=False — training adapter_b only", flush=True)
         model = get_peft_model(base_model, lora_cfg_b, adapter_name="adapter_b")
         _set_adapters(model, ["adapter_b"])
+        _persona_proj_pairs = None
 
     # Gradient checkpointing: recompute activations during backward instead of
     # caching them.  Halves activation memory at ~20% extra compute cost.
@@ -561,6 +609,10 @@ def main():
             model=model,
             device=train_device_str,
         )
+
+        # Keep adapter_b orthogonal to persona subspace — project out after every step.
+        if _persona_proj_pairs:
+            _project_out_persona(_persona_proj_pairs)
 
         # Sync updated weights to vLLM so the next episode generates with θ_{t+1}.
         if use_vllm:
