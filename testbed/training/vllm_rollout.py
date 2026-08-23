@@ -19,6 +19,7 @@ using the same episode data, but generation runs under adapter_a only.
 """
 from __future__ import annotations
 
+import copy
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -168,6 +169,23 @@ class VLLMRolloutEngine:
         )
         return outputs[0].outputs[0].text
 
+    def generate_batch_prompts(
+        self,
+        prompt_pairs: List[Tuple[str, str]],
+    ) -> List[str]:
+        """Generate one response per (system_prompt, user_prompt) pair.
+
+        Used for counterfactual opponent responses: given K trainee actions,
+        produce K opponent replies in a single vLLM call (no LoRA).
+        """
+        texts = [self._build_prompt(sp, up) for sp, up in prompt_pairs]
+        outputs = self.llm.generate(
+            texts,
+            sampling_params=self._sampling_params(1),
+            lora_request=None,
+        )
+        return [out.outputs[0].text for out in outputs]
+
 
 # ----------------------------------------------------------------------
 # vLLM episode collector
@@ -226,11 +244,41 @@ def collect_episode_vllm(
                 _trainee_sp, obs_str, K=grpo_k
             )
 
+            # Counterfactual opponent probing: for each candidate, deep-copy the
+            # env and step with that candidate's extracted action to get the
+            # opponent's resulting observation, then batch-generate K opponent
+            # responses and probe each one.  This measures the opponent's actual
+            # hidden state when RESPONDING to the trainee — not just when reading.
+            opp_prompt_pairs: List[Optional[Tuple[str, str]]] = []
+            for action, _, _ in candidates:
+                try:
+                    env_cf = copy.deepcopy(env)
+                    done_cf, _ = env_cf.step(_extract_action(action))
+                    if done_cf:
+                        opp_prompt_pairs.append(None)
+                    else:
+                        _, opp_obs_cf = env_cf.get_observation()
+                        opp_prompt_pairs.append((system_prompt, opp_obs_cf))
+                except Exception:
+                    opp_prompt_pairs.append(None)
+
+            valid_idxs = [i for i, p in enumerate(opp_prompt_pairs) if p is not None]
+            if valid_idxs:
+                batch_pairs = [opp_prompt_pairs[i] for i in valid_idxs]
+                batch_opp_responses = vllm_engine.generate_batch_prompts(batch_pairs)
+                opp_resp_map = dict(zip(valid_idxs, batch_opp_responses))
+            else:
+                opp_resp_map = {}
+
             records: List[TurnRecord] = []
             rewards: List[float] = []
 
-            for action, full_ids, input_len in candidates:
-                opp_scores  = probe_policy.probe_text(action)
+            for k, (action, full_ids, input_len) in enumerate(candidates):
+                opp_resp = opp_resp_map.get(k)
+                # Probe the opponent's generated response (strategy + action) if
+                # available; fall back to trainee's action if the game ended early.
+                probe_input = opp_resp if opp_resp is not None else _extract_action(action)
+                opp_scores  = probe_policy.probe_text(probe_input)
                 ld_opp      = opp_scores.get(str(probe_layer), {})
                 opp_z       = ld_opp.get("z") or None
                 reward      = (reward_fn(opp_scores)

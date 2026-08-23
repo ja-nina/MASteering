@@ -13,6 +13,7 @@ Generation is decoupled from gradient computation:
                           per GRPO step just before backward.
 """
 from __future__ import annotations
+import copy
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -132,12 +133,28 @@ def collect_episode(
                         if v.get("z")
                     }
 
-                # Opponent's reaction to this specific response (reward signal).
-                # probe_text() runs a single forward pass on the action text with
-                # the probe hooks active and adapters disabled — no generation.
-                # reward_fn takes the full per-layer scores dict and averages
-                # cosine-sim over all layers >= reward_layer_start.
-                opp_scores = trainee_policy.probe_text(action)
+                # Counterfactual opponent response: deep-copy the env, step with
+                # this candidate's action, generate the opponent's reply, then
+                # probe that reply (strategy + action) to get the reward signal.
+                # This measures what the opponent actually SAYS in response, not
+                # just what they would passively read.
+                try:
+                    env_cf = copy.deepcopy(env)
+                    done_cf, _ = env_cf.step(_extract_action(action))
+                    if not done_cf:
+                        _, opp_obs_cf = env_cf.get_observation()
+                        cf_opp_action, _ = opponent_policy.act(
+                            system_prompt=_sp_with_format,
+                            user_prompt=opp_obs_cf,
+                            agent_id=str(OPPONENT_ID),
+                            steering=None,
+                        )
+                        probe_input = cf_opp_action
+                    else:
+                        probe_input = _extract_action(action)
+                except Exception:
+                    probe_input = _extract_action(action)
+                opp_scores = trainee_policy.probe_text(probe_input)
                 ld_opp = opp_scores.get(str(probe_layer), {})
                 opp_z = ld_opp.get("z") or None   # display-layer z for logging
                 reward = (reward_fn(opp_scores)
