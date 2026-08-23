@@ -44,9 +44,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -197,6 +199,105 @@ def _mean_trait_score(scores: Dict, probe, layer: int) -> Optional[float]:
     return top[0][1] if top else None
 
 
+# ─── logging ─────────────────────────────────────────────────────────────────
+
+def _build_turn_record(rec: Dict, probe, probe_layer: int) -> Dict:
+    """Serialisable summary of one turn for JSONL / wandb."""
+    out: Dict[str, Any] = {
+        "turn":        rec["turn"],
+        "player_id":   rec["player_id"],
+        "is_trainee":  rec["is_trainee"],
+        "action_text": rec["action_text"],
+        "top_traits":  [],
+        "top_trait_score": None,
+    }
+    ps = rec.get("probe_scores")
+    if ps:
+        ld = ps.get(str(probe_layer), {})
+        z  = ld.get("z")
+        if z and probe is not None:
+            top = probe.rank_traits(z, probe_layer)
+            out["top_traits"]      = [[s, round(v, 4)] for s, v in top[:5]]
+            out["top_trait_score"] = round(top[0][1], 4) if top else None
+            out["z"] = [round(v, 4) for v in z]
+    return out
+
+
+def _build_condition_record(
+    condition_label: str,
+    adapter_names: Optional[List[str]],
+    checkpoint: str,
+    game_id: Optional[str],
+    turn_records: List[Dict],
+    ta_rewards: Optional[Dict],
+    probe, probe_layer: int,
+) -> Dict:
+    turns = [_build_turn_record(r, probe, probe_layer) for r in turn_records]
+
+    trainee_scores = [t["top_trait_score"] for t in turns if t["is_trainee"]
+                      and t["top_trait_score"] is not None]
+    opp_scores     = [t["top_trait_score"] for t in turns if not t["is_trainee"]
+                      and t["top_trait_score"] is not None]
+
+    return {
+        "timestamp":   time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "checkpoint":  checkpoint,
+        "game_id":     game_id,
+        "condition":   condition_label,
+        "adapter_names": adapter_names,
+        "turns":       turns,
+        "mean_top_trait_trainee":  round(sum(trainee_scores)/len(trainee_scores), 4)
+                                   if trainee_scores else None,
+        "mean_top_trait_opponent": round(sum(opp_scores)/len(opp_scores), 4)
+                                   if opp_scores else None,
+        "game_rewards": {str(k): v for k, v in (ta_rewards or {}).items()},
+        "n_turns":     len(turns),
+    }
+
+
+def _log_jsonl(record: Dict, path: str) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"  [log] → {path}", flush=True)
+
+
+def _log_wandb(record: Dict, wandb_run) -> None:
+    import wandb as wb
+
+    cond  = record["condition"]
+    ckpt  = record["checkpoint"]
+    label = f"{Path(ckpt).parent.name}/{Path(ckpt).name} | {cond}"
+
+    # Summary scalars
+    summary: Dict[str, Any] = {
+        f"{cond}/mean_top_trait_trainee":  record["mean_top_trait_trainee"],
+        f"{cond}/mean_top_trait_opponent": record["mean_top_trait_opponent"],
+    }
+    game_rewards = record.get("game_rewards", {})
+    for pid, score in game_rewards.items():
+        role = "trainee" if int(pid) == TRAINEE_ID else "opponent"
+        summary[f"{cond}/game_score_{role}"] = score
+    wandb_run.log(summary)
+
+    # Per-turn table
+    rows = []
+    for t in record["turns"]:
+        top_str = ", ".join(f"{s}:{v:+.3f}" for s, v in t["top_traits"][:3])
+        rows.append([
+            label, cond,
+            t["turn"], "trainee" if t["is_trainee"] else "opponent",
+            t["action_text"][:120],
+            t["top_trait_score"],
+            top_str,
+        ])
+    tbl = wb.Table(
+        columns=["run", "condition", "turn", "player", "action",
+                 "top_trait_score", "top_traits"],
+        data=rows,
+    )
+    wandb_run.log({f"ablation/turns/{cond.replace(' ', '_')}": tbl})
+
+
 # ─── mode 1: sampling ─────────────────────────────────────────────────────────
 
 def run_sampling(model, tokenizer, probe, peft_model, conditions,
@@ -342,12 +443,19 @@ def _print_episode(records, ta_rewards, probe, probe_layer, label):
 
 def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   game_id, num_players, max_turns,
-                  system, max_new_tokens, device, probe_layer):
+                  system, max_new_tokens, device, probe_layer,
+                  checkpoint: str = "",
+                  output_jsonl: Optional[str] = None,
+                  wandb_run=None):
     print(f"\n{'═' * W}")
     print(f"ABLATION — GAME MODE   ({game_id})")
     print(f"  system : {system[:80]}{'…' if len(system) > 80 else ''}")
     print(f"  trainee_id={TRAINEE_ID}  opponent_id={OPPONENT_ID}"
           f"  max_turns={max_turns}")
+    if output_jsonl:
+        print(f"  logging → {output_jsonl}")
+    if wandb_run:
+        print(f"  wandb   → {wandb_run.project}/{wandb_run.name}")
     print(f"{'═' * W}")
 
     for label, adapter_names in conditions:
@@ -357,6 +465,16 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             system, max_new_tokens, device, probe_layer,
         )
         _print_episode(records, ta_rewards, probe, probe_layer, label)
+
+        if probe is not None and (output_jsonl or wandb_run):
+            rec = _build_condition_record(
+                label, adapter_names, checkpoint, game_id,
+                records, ta_rewards, probe, probe_layer,
+            )
+            if output_jsonl:
+                _log_jsonl(rec, output_jsonl)
+            if wandb_run:
+                _log_wandb(rec, wandb_run)
 
     print(f"\n{'═' * W}")
     print("[ablate] done.")
@@ -395,6 +513,15 @@ def main() -> None:
                          "(e.g. IteratedPrisonersDilemma-v0)")
     ap.add_argument("--num-players", type=int, default=2)
     ap.add_argument("--max-turns",   type=int, default=50)
+
+    # Logging
+    ap.add_argument("--output", default=None, metavar="FILE.jsonl",
+                    help="Append one JSON record per condition to this JSONL file")
+    ap.add_argument("--wandb", action="store_true",
+                    help="Log results to wandb")
+    ap.add_argument("--wandb-project", default="ma-steering-lora-ablations")
+    ap.add_argument("--wandb-name", default=None,
+                    help="wandb run name (default: checkpoint basename)")
 
     args = ap.parse_args()
 
@@ -461,6 +588,26 @@ def main() -> None:
     if has_a and has_b:
         conditions.append(("both  [adapter_a + adapter_b]", ["adapter_a", "adapter_b"]))
 
+    # ── wandb ─────────────────────────────────────────────────────────────────
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_name or Path(args.checkpoint).name,
+                config={
+                    "checkpoint":   args.checkpoint,
+                    "model":        args.model,
+                    "game_id":      args.eval_game,
+                    "probe_layer":  args.probe_layer,
+                    "has_adapter_a": has_a,
+                    "has_adapter_b": has_b,
+                },
+            )
+        except ImportError:
+            print("[ablate] wandb not installed — skipping.", flush=True)
+
     # ── Dispatch ──────────────────────────────────────────────────────────────
     system = args.system_prompt or DEFAULT_SYSTEM
 
@@ -474,6 +621,9 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             device=device,
             probe_layer=args.probe_layer,
+            checkpoint=args.checkpoint,
+            output_jsonl=args.output,
+            wandb_run=wandb_run,
         )
     else:
         user = args.user_prompt or DEFAULT_USER
@@ -486,6 +636,9 @@ def main() -> None:
             device=device,
             probe_layer=args.probe_layer,
         )
+
+    if wandb_run:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
