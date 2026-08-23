@@ -9,7 +9,7 @@ STRUCTURED_FORMAT_INSTRUCTION = (
     "serves your goals best. The more thoroughly you reason here, the better your decisions.\n"
     "</strategy>\n"
     "<action>\n"
-    "What you actually say to the other player (20-100 words).\n"
+    "What you actually want to say to the other player (an optimal action is between 100-200 words).\n"
     "</action>"
 )
 
