@@ -4,8 +4,13 @@ import re
 
 STRUCTURED_FORMAT_INSTRUCTION = (
     "\n\nAlways respond in this exact format:\n"
-    "<strategy>\nyour private reasoning (never shown to the other player)\n</strategy>\n"
-    "<action>\nwhat you actually say to the other player\n</action>"
+    "<strategy>\n"
+    "Think carefully through your position, what the other player wants, and what move "
+    "serves your goals best. The more thoroughly you reason here, the better your decisions.\n"
+    "</strategy>\n"
+    "<action>\n"
+    "What you actually say to the other player (20-100 words).\n"
+    "</action>"
 )
 
 
