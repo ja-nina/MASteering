@@ -67,7 +67,12 @@ echo "[$(date)] GPU     : $(nvidia-smi --query-gpu=name --format=csv,noheader 2>
 ABS_TARGET="${REPO}/${TARGET}"
 
 is_single_ckpt() {
-    [ -d "${ABS_TARGET}/adapter_a" ] || [ -d "${ABS_TARGET}/adapter_b" ]
+    # flat:   <ckpt>/adapter_a/adapter_config.json
+    # nested: <ckpt>/adapter_a/adapter_a/adapter_config.json
+    [ -f "${ABS_TARGET}/adapter_a/adapter_config.json" ]        || \
+    [ -f "${ABS_TARGET}/adapter_a/adapter_a/adapter_config.json" ] || \
+    [ -f "${ABS_TARGET}/adapter_b/adapter_config.json" ]        || \
+    [ -f "${ABS_TARGET}/adapter_b/adapter_b/adapter_config.json" ]
 }
 
 if is_single_ckpt; then

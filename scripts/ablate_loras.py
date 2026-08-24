@@ -82,6 +82,18 @@ W = 72   # display width
 
 # ─── adapter helpers ──────────────────────────────────────────────────────────
 
+def _adapter_path(ckpt: Path, name: str) -> Optional[Path]:
+    """Return the PEFT adapter directory, handling nested or flat layouts.
+
+    train_lora.py saves as  <ckpt>/<name>/<name>/adapter_config.json  (nested).
+    The flat layout        <ckpt>/<name>/adapter_config.json  is also accepted.
+    """
+    for candidate in [ckpt / name / name, ckpt / name]:
+        if (candidate / "adapter_config.json").exists():
+            return candidate
+    return None
+
+
 def _set_adapters(model, names: List[str]) -> None:
     for module in model.modules():
         if hasattr(module, "set_adapter"):
@@ -549,12 +561,15 @@ def main() -> None:
     args = ap.parse_args()
 
     ckpt = Path(args.checkpoint)
-    has_a = (ckpt / "adapter_a").exists() and not args.adapter_b_only
-    has_b = (ckpt / "adapter_b").exists() and not args.adapter_a_only
+    path_a = _adapter_path(ckpt, "adapter_a") if not args.adapter_b_only else None
+    path_b = _adapter_path(ckpt, "adapter_b") if not args.adapter_a_only else None
+    has_a = path_a is not None
+    has_b = path_b is not None
 
     if not has_a and not has_b:
         sys.exit(
             f"[ablate] Neither adapter_a/ nor adapter_b/ found under {ckpt}.\n"
+            f"         Tried flat (<ckpt>/adapter_X/) and nested (<ckpt>/adapter_X/adapter_X/).\n"
             f"         Check --checkpoint is a step or final checkpoint dir."
         )
 
@@ -577,18 +592,18 @@ def main() -> None:
     peft_model: Optional[PeftModel] = None
 
     if has_a:
-        print(f"[ablate] adapter_a  ← {ckpt / 'adapter_a'}", flush=True)
+        print(f"[ablate] adapter_a  ← {path_a}", flush=True)
         peft_model = PeftModel.from_pretrained(
-            base_model, str(ckpt / "adapter_a"), adapter_name="adapter_a",
+            base_model, str(path_a), adapter_name="adapter_a",
         )
     if has_b:
-        print(f"[ablate] adapter_b  ← {ckpt / 'adapter_b'}", flush=True)
+        print(f"[ablate] adapter_b  ← {path_b}", flush=True)
         if peft_model is None:
             peft_model = PeftModel.from_pretrained(
-                base_model, str(ckpt / "adapter_b"), adapter_name="adapter_b",
+                base_model, str(path_b), adapter_name="adapter_b",
             )
         else:
-            peft_model.load_adapter(str(ckpt / "adapter_b"), adapter_name="adapter_b")
+            peft_model.load_adapter(str(path_b), adapter_name="adapter_b")
 
     model = (peft_model if peft_model is not None else base_model).to(device)
     model.eval()
