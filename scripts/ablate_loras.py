@@ -95,13 +95,9 @@ def _adapter_path(ckpt: Path, name: str) -> Optional[Path]:
 
 
 def _set_adapters(model, names: List[str]) -> None:
-    from peft import PeftModel as _PeftModel
+    from peft.tuners.lora import LoraLayer
     for module in model.modules():
-        # PeftModel.set_adapter() doesn't accept a list; only LoRA layer
-        # modules do — skip the top-level wrapper.
-        if isinstance(module, _PeftModel):
-            continue
-        if hasattr(module, "set_adapter"):
+        if isinstance(module, LoraLayer):
             module.set_adapter(names)
 
 
