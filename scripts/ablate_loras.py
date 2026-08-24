@@ -221,22 +221,39 @@ def _mean_trait_score(scores: Dict, probe, layer: int) -> Optional[float]:
 def _build_turn_record(rec: Dict, probe, probe_layer: int) -> Dict:
     """Serialisable summary of one turn for JSONL / wandb."""
     out: Dict[str, Any] = {
-        "turn":        rec["turn"],
-        "player_id":   rec["player_id"],
-        "is_trainee":  rec["is_trainee"],
-        "action_text": rec["action_text"],
-        "top_traits":  [],
+        "turn":          rec["turn"],
+        "player_id":     rec["player_id"],
+        "is_trainee":    rec["is_trainee"],
+        "full_response": rec.get("full_response", rec["action_text"]),
+        "action_text":   rec["action_text"],
+        "top_traits":    [],
         "top_trait_score": None,
     }
     ps = rec.get("probe_scores")
-    if ps:
+    if ps and probe is not None:
+        # Primary display layer (used for top_traits / top_trait_score summary)
         ld = ps.get(str(probe_layer), {})
         z  = ld.get("z")
-        if z and probe is not None:
+        if z:
             top = probe.rank_traits(z, probe_layer)
             out["top_traits"]      = [[s, round(v, 4)] for s, v in top[:5]]
             out["top_trait_score"] = round(top[0][1], 4) if top else None
-            out["z"] = [round(v, 4) for v in z]
+
+        # All layers — store full z-vector + top traits per layer
+        out["layers"] = {}
+        for layer_str, ld_all in ps.items():
+            z_all = ld_all.get("z")
+            if not z_all:
+                continue
+            try:
+                layer_int = int(layer_str)
+                top_all = probe.rank_traits(z_all, layer_int)
+                out["layers"][layer_str] = {
+                    "z":         [round(v, 4) for v in z_all],
+                    "top_traits": [[s, round(v, 4)] for s, v in top_all[:5]],
+                }
+            except Exception:
+                pass
     return out
 
 
@@ -305,13 +322,14 @@ def _log_wandb(record: Dict, wandb_run) -> None:
         rows.append([
             label, cond,
             t["turn"], "trainee" if t["is_trainee"] else "opponent",
+            t.get("full_response", t["action_text"]),
             t["action_text"],
             t["top_trait_score"],
             top_str,
         ])
     tbl = wb.Table(
-        columns=["run", "condition", "turn", "player", "action",
-                 "top_trait_score", "top_traits"],
+        columns=["run", "condition", "turn", "player", "full_response",
+                 "action", "top_trait_score", "top_traits"],
         data=rows,
     )
     wandb_run.log({f"ablation/turns/{cond.replace(' ', '_')}": tbl})
@@ -410,7 +428,7 @@ def _run_episode(
             "player_id": player_id,
             "is_trainee": is_trainee,
             "obs": obs_str,
-            "action": action,
+            "full_response": action,      # raw output: <strategy>…</strategy><action>…
             "action_text": action_text,
             "probe_scores": probe_scores,
         })
@@ -436,10 +454,11 @@ def _print_episode(records, ta_rewards, probe, probe_layer, label):
         role = "TRAINEE" if rec["is_trainee"] else "OPPONENT"
         role_marker = "▶" if rec["is_trainee"] else "◀"
         print(f"\n  {role_marker} Turn {rec['turn']} | {role} (Player {rec['player_id']})")
-        print(f"    action : {rec['action_text']}")
+        print(rec.get("full_response", rec["action_text"]))
 
         if rec["probe_scores"] and probe is not None:
-            print(_fmt_probe(rec["probe_scores"], probe, probe_layer, indent=4))
+            for layer_key in sorted(rec["probe_scores"].keys(), key=lambda x: int(x)):
+                print(_fmt_probe(rec["probe_scores"], probe, int(layer_key), indent=4))
 
     # Summary table: mean top-trait score per player
     if probe is not None:
