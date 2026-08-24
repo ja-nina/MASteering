@@ -536,6 +536,20 @@ def _print_episode(records, ta_rewards, probe, probe_layer, label,
             print(f"    Player {pid} ({role}): {score:.1f} pts")
 
 
+def _safe_mean(vals: List[Optional[float]]) -> Optional[float]:
+    vals = [v for v in vals if v is not None]
+    return round(sum(vals) / len(vals), 4) if vals else None
+
+
+def _safe_std(vals: List[Optional[float]]) -> Optional[float]:
+    import math
+    vals = [v for v in vals if v is not None]
+    if len(vals) < 2:
+        return None
+    m = sum(vals) / len(vals)
+    return round(math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1)), 4)
+
+
 def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   game_id, num_players, max_turns,
                   system, max_new_tokens, device, probe_layer,
@@ -543,7 +557,8 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   output_jsonl: Optional[str] = None,
                   wandb_run=None,
                   trainee_system: Optional[str] = None,
-                  nudge_trait: Optional[str] = None):
+                  nudge_trait: Optional[str] = None,
+                  n_episodes: int = 1):
     # Derive the primary target slug from "slug:weight" spec (first positive slug)
     target_slug: Optional[str] = None
     if nudge_trait:
@@ -562,36 +577,89 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     if trainee_system and trainee_system != system:
         print(f"  system (trainee): {trainee_system}")
     print(f"  trainee_id={TRAINEE_ID}  opponent_id={OPPONENT_ID}"
-          f"  max_turns={max_turns}")
+          f"  max_turns={max_turns}  n_episodes={n_episodes}")
     if output_jsonl:
         print(f"  logging → {output_jsonl}")
     if wandb_run:
         print(f"  wandb   → {wandb_run.project}/{wandb_run.name}")
     print(f"{'═' * W}")
 
+    # condition_label → mean target trait score (for Δ table)
+    condition_summary: Dict[str, Dict] = {}
+
     for label, adapter_names in conditions:
-        records, ta_rewards = _run_episode(
-            model, tokenizer, probe, peft_model, adapter_names,
-            game_id, num_players, max_turns,
-            system, max_new_tokens, device, probe_layer,
-            trainee_system=trainee_system,
-        )
-        _print_episode(records, ta_rewards, probe, probe_layer, label,
-                       target_slug=target_slug)
+        ep_target_opp:  List[Optional[float]] = []
+        ep_target_train: List[Optional[float]] = []
+        ep_top_opp:     List[Optional[float]] = []
 
-        if probe is not None and (output_jsonl or wandb_run):
-            rec = _build_condition_record(
-                label, adapter_names, checkpoint, game_id,
-                records, ta_rewards, probe, probe_layer,
-                nudge_trait=nudge_trait,
-                target_slug=target_slug,
+        for ep_i in range(n_episodes):
+            ep_label = f"{label}  [ep {ep_i+1}/{n_episodes}]"
+            records, ta_rewards = _run_episode(
+                model, tokenizer, probe, peft_model, adapter_names,
+                game_id, num_players, max_turns,
+                system, max_new_tokens, device, probe_layer,
+                trainee_system=trainee_system,
             )
-            if output_jsonl:
-                _log_jsonl(rec, output_jsonl)
-            if wandb_run:
-                _log_wandb(rec, wandb_run)
+            _print_episode(records, ta_rewards, probe, probe_layer, ep_label,
+                           target_slug=target_slug)
 
+            if probe is not None and (output_jsonl or wandb_run):
+                rec = _build_condition_record(
+                    label, adapter_names, checkpoint, game_id,
+                    records, ta_rewards, probe, probe_layer,
+                    nudge_trait=nudge_trait,
+                    target_slug=target_slug,
+                )
+                rec["episode"] = ep_i
+                if output_jsonl:
+                    _log_jsonl(rec, output_jsonl)
+                if wandb_run:
+                    _log_wandb(rec, wandb_run)
+
+                ep_target_opp.append(rec.get("mean_target_trait_opponent"))
+                ep_target_train.append(rec.get("mean_target_trait_trainee"))
+                ep_top_opp.append(rec.get("mean_top_trait_opponent"))
+
+        condition_summary[label] = {
+            "mean_target_opp":  _safe_mean(ep_target_opp),
+            "std_target_opp":   _safe_std(ep_target_opp),
+            "mean_target_train": _safe_mean(ep_target_train),
+            "mean_top_opp":     _safe_mean(ep_top_opp),
+            "n":                len([v for v in ep_target_opp if v is not None]),
+        }
+
+    # ── Attribution Δ table ───────────────────────────────────────────────────
     print(f"\n{'═' * W}")
+    print(f"ATTRIBUTION TABLE  (target: {target_slug or 'n/a'})  n_episodes={n_episodes}")
+    print(f"{'─' * W}")
+    print(f"  {'condition':<42} {'mean_tgt_opp':>12} {'std':>7} {'Δ vs base':>10}")
+    print(f"{'─' * W}")
+    base_score = None
+    rows_delta = []
+    for label, _ in conditions:
+        s = condition_summary.get(label, {})
+        m = s.get("mean_target_opp")
+        sd = s.get("std_target_opp")
+        if "base" in label.lower() and base_score is None:
+            base_score = m
+        delta = round(m - base_score, 4) if (m is not None and base_score is not None) else None
+        delta_str = f"{delta:+.4f}" if delta is not None else "  —"
+        m_str  = f"{m:+.4f}"  if m  is not None else "  n/a"
+        sd_str = f"{sd:.4f}"  if sd is not None else "  n/a"
+        print(f"  {label:<42} {m_str:>12} {sd_str:>7} {delta_str:>10}")
+        rows_delta.append((label, m, sd, delta))
+    print(f"{'═' * W}")
+
+    if wandb_run and probe is not None:
+        import wandb as wb
+        for label, m, sd, delta in rows_delta:
+            cond_key = label.split("[")[0].strip().replace(" ", "_")
+            wandb_run.log({
+                f"delta/{cond_key}/mean_target_opp":  m,
+                f"delta/{cond_key}/std_target_opp":   sd,
+                f"delta/{cond_key}/delta_vs_base":    delta,
+            })
+
     print("[ablate] done.")
 
 
@@ -636,6 +704,9 @@ def main() -> None:
                          "(e.g. IteratedPrisonersDilemma-v0)")
     ap.add_argument("--num-players", type=int, default=2)
     ap.add_argument("--max-turns",   type=int, default=50)
+    ap.add_argument("--n-episodes",  type=int, default=1,
+                    help="Number of game episodes per condition (default 1). "
+                         "Use ≥5 for reliable delta estimates.")
 
     # Logging
     ap.add_argument("--output", default=None, metavar="FILE.jsonl",
@@ -783,6 +854,7 @@ def main() -> None:
             wandb_run=wandb_run,
             trainee_system=trainee_system,
             nudge_trait=args.nudge_trait,
+            n_episodes=args.n_episodes,
         )
     else:
         user = args.user_prompt or DEFAULT_USER
