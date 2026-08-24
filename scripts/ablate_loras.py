@@ -366,57 +366,68 @@ def _log_jsonl(record: Dict, path: str) -> None:
     print(f"  [log] → {path}", flush=True)
 
 
+_COND_SHORT = {
+    "base":           "base",
+    "adapter_a only": "lora_a",
+    "adapter_b only": "lora_b",
+    "both":           "lora_ab",
+}
+
+def _cond_short(label: str) -> str:
+    """Map a condition label to a short wandb-friendly key."""
+    key = label.split("[")[0].strip()
+    return _COND_SHORT.get(key, key.replace(" ", "_"))
+
+
 def _log_wandb(record: Dict, wandb_run) -> None:
     import wandb as wb
 
     cond  = record["condition"]
     ckpt  = record["checkpoint"]
-    label = f"{Path(ckpt).parent.name}/{Path(ckpt).name} | {cond}"
+    cs    = _cond_short(cond)
+    label = f"{Path(ckpt).parent.name}/{Path(ckpt).name} | {cs}"
 
-    # Summary scalars
-    summary: Dict[str, Any] = {
-        f"{cond}/mean_top_trait_trainee":     record["mean_top_trait_trainee"],
-        f"{cond}/mean_top_trait_opponent":    record["mean_top_trait_opponent"],
-        # Display-layer target score
-        f"{cond}/mean_target_trait_trainee":  record.get("mean_target_trait_trainee"),
-        f"{cond}/mean_target_trait_opponent": record.get("mean_target_trait_opponent"),
-        # Training-equivalent reward: mean over layers >= 10 (matches PersonaReward)
-        f"{cond}/persona_reward_trainee":     record.get("mean_target_trait_trainee_multilayer"),
-        f"{cond}/persona_reward_opponent":    record.get("mean_target_trait_opponent_multilayer"),
+    # ── per-episode scalars ───────────────────────────────────────────────────
+    # Grouped by condition short-name so wandb panels stay tidy.
+    # persona_reward = mean cosine-sim over layers >= 10 (matches PersonaReward).
+    scalars: Dict[str, Any] = {
+        f"{cs}/trainee/persona_reward":   record.get("mean_target_trait_trainee_multilayer"),
+        f"{cs}/trainee/top_trait_score":  record["mean_top_trait_trainee"],
+        f"{cs}/opponent/persona_reward":  record.get("mean_target_trait_opponent_multilayer"),
+        f"{cs}/opponent/top_trait_score": record["mean_top_trait_opponent"],
     }
     game_rewards = record.get("game_rewards", {})
     for pid, score in game_rewards.items():
         role = "trainee" if int(pid) == TRAINEE_ID else "opponent"
-        summary[f"{cond}/game_score_{role}"] = score
-    wandb_run.log(summary)
+        scalars[f"{cs}/game_score/{role}"] = score
+    wandb_run.log(scalars)
 
-    # Per-turn table with single-layer scores
+    # ── per-turn table ────────────────────────────────────────────────────────
     target_slug = record.get("target_slug")
     rows = []
     for t in record["turns"]:
         top_str = ", ".join(f"{s}:{v:+.3f}" for s, v in t["top_traits"][:3])
-        ml_score = _compute_multilayer_target_score(t)
         rows.append([
-            label, cond,
+            label, cs,
             t["turn"], "trainee" if t["is_trainee"] else "opponent",
             t.get("full_response", t["action_text"]),
             t["action_text"],
             target_slug,
-            t.get("target_trait_score"),
+            _compute_multilayer_target_score(t),   # persona_reward for this turn
+            t.get("target_trait_score"),            # single display-layer reference
             t.get("target_trait_rank"),
-            ml_score,
             t["top_trait_score"],
             top_str,
         ])
-    tbl = wb.Table(
+    wandb_run.log({f"turns/{cs}": wb.Table(
         columns=["run", "condition", "turn", "player", "full_response",
-                 "action", "target_trait", "target_trait_score", "target_trait_rank",
-                 "persona_reward_equiv", "top_trait_score", "top_traits"],
+                 "action", "target_trait",
+                 "persona_reward", "target_score_layer35", "target_rank",
+                 "top_trait_score", "top_traits"],
         data=rows,
-    )
-    wandb_run.log({f"ablation/turns/{cond.replace(' ', '_')}": tbl})
+    )})
 
-    # Per-layer target trait score table (one row per turn × layer)
+    # ── per-layer table ───────────────────────────────────────────────────────
     layer_rows = []
     for t in record["turns"]:
         player = "trainee" if t["is_trainee"] else "opponent"
@@ -426,20 +437,19 @@ def _log_wandb(record: Dict, wandb_run) -> None:
             except ValueError:
                 continue
             layer_rows.append([
-                label, cond, t["turn"], player, layer_int,
+                label, cs, t["turn"], player, layer_int,
                 ld.get("target_trait_score"),
                 ld.get("target_trait_rank"),
                 ld["top_traits"][0][0] if ld.get("top_traits") else None,
                 ld["top_traits"][0][1] if ld.get("top_traits") else None,
             ])
     if layer_rows:
-        layer_tbl = wb.Table(
+        wandb_run.log({f"layers/{cs}": wb.Table(
             columns=["run", "condition", "turn", "player", "layer",
                      "target_trait_score", "target_trait_rank",
                      "top_trait", "top_trait_score"],
             data=layer_rows,
-        )
-        wandb_run.log({f"ablation/layers/{cond.replace(' ', '_')}": layer_tbl})
+        )})
 
 
 # ─── mode 1: sampling ─────────────────────────────────────────────────────────
@@ -655,6 +665,8 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     for label, adapter_names in conditions:
         ep_target_opp:   List[Optional[float]] = []
         ep_target_train: List[Optional[float]] = []
+        ep_ml_opp:       List[Optional[float]] = []   # multilayer (≥10), matches PersonaReward
+        ep_ml_train:     List[Optional[float]] = []
         ep_top_opp:      List[Optional[float]] = []
         ep_top_train:    List[Optional[float]] = []
         ep_reward_train: List[Optional[float]] = []
@@ -685,6 +697,8 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
 
             ep_target_opp.append(rec.get("mean_target_trait_opponent"))
             ep_target_train.append(rec.get("mean_target_trait_trainee"))
+            ep_ml_opp.append(rec.get("mean_target_trait_opponent_multilayer"))
+            ep_ml_train.append(rec.get("mean_target_trait_trainee_multilayer"))
             ep_top_opp.append(rec.get("mean_top_trait_opponent"))
             ep_top_train.append(rec.get("mean_top_trait_trainee"))
             gr = rec.get("game_rewards", {})
@@ -696,6 +710,10 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             "std_target_opp":    _safe_std(ep_target_opp),
             "mean_target_train": _safe_mean(ep_target_train),
             "std_target_train":  _safe_std(ep_target_train),
+            # Training-equivalent persona reward (mean cosine-sim layers >= 10)
+            "persona_reward_train": _safe_mean(ep_ml_train),
+            "persona_reward_opp":   _safe_mean(ep_ml_opp),
+            "std_persona_reward_train": _safe_std(ep_ml_train),
             "mean_top_opp":      _safe_mean(ep_top_opp),
             "mean_top_train":    _safe_mean(ep_top_train),
             "mean_reward_train": _safe_mean(ep_reward_train),
@@ -707,15 +725,18 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     base_s = condition_summary.get(conditions[0][0], {})
     base_tgt_opp   = base_s.get("mean_target_opp")
     base_tgt_train = base_s.get("mean_target_train")
+    base_pr_train  = base_s.get("persona_reward_train")   # multilayer baseline
+    base_pr_opp    = base_s.get("persona_reward_opp")
     base_reward_t  = base_s.get("mean_reward_train")
 
-    W2 = max(W, 110)
+    W2 = max(W, 120)
     print(f"\n{'═' * W2}")
     print(f"ATTRIBUTION TABLE   target={target_slug or 'n/a'}   n_episodes={n_episodes}")
+    print(f"  persona_reward = mean cosine-sim layers>=10  (matches PersonaReward used in training)")
     print(f"{'─' * W2}")
     hdr = (f"  {'condition':<38}  {'n':>2}  "
-           f"{'tgt_opp':>8} {'±':>6}  {'Δtgt_opp':>9}  "
-           f"{'tgt_train':>9} {'Δtgt_trn':>9}  "
+           f"{'pr_train':>9} {'Δpr_trn':>8}  "
+           f"{'pr_opp':>8} {'Δpr_opp':>8}  "
            f"{'top_opp':>8}  "
            f"{'reward_T':>8} {'Δreward':>8}")
     print(hdr)
@@ -723,25 +744,26 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
 
     rows_delta = []
     for label, _ in conditions:
-        s = condition_summary.get(label, {})
+        s  = condition_summary.get(label, {})
         n  = s.get("n", 0)
-        mo = s.get("mean_target_opp");   so = s.get("std_target_opp")
-        mt = s.get("mean_target_train"); to = s.get("mean_top_opp")
-        rt = s.get("mean_reward_train")
+        pr_t = s.get("persona_reward_train")
+        pr_o = s.get("persona_reward_opp")
+        to   = s.get("mean_top_opp")
+        rt   = s.get("mean_reward_train")
 
         def _d(val, base): return round(val - base, 4) if (val is not None and base is not None) else None
         def _f(v, fmt="+.4f"): return format(v, fmt) if v is not None else "  n/a"
 
-        delta_opp   = _d(mo, base_tgt_opp)
-        delta_train = _d(mt, base_tgt_train)
-        delta_rew   = _d(rt, base_reward_t)
+        delta_pr_train = _d(pr_t, base_pr_train)
+        delta_pr_opp   = _d(pr_o, base_pr_opp)
+        delta_rew      = _d(rt,   base_reward_t)
 
         print(f"  {label:<38}  {n:>2}  "
-              f"{_f(mo):>8} {_f(so, '.4f'):>6}  {_f(delta_opp):>9}  "
-              f"{_f(mt):>9} {_f(delta_train):>9}  "
+              f"{_f(pr_t):>9} {_f(delta_pr_train):>8}  "
+              f"{_f(pr_o):>8} {_f(delta_pr_opp):>8}  "
               f"{_f(to):>8}  "
               f"{_f(rt):>8} {_f(delta_rew):>8}")
-        rows_delta.append((label, s, delta_opp, delta_train, delta_rew))
+        rows_delta.append((label, s, delta_pr_train, delta_pr_opp, delta_rew))
 
     # Interaction effect: Δ(both) vs Δ(a) + Δ(b)
     if len(rows_delta) == 4:
@@ -768,32 +790,33 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     if wandb_run:
         import wandb as wb
 
-        # Per-condition delta scalars
-        for label, s, delta_opp, delta_train, delta_rew in rows_delta:
-            cond_key = label.split("[")[0].strip().replace(" ", "_").rstrip("_")
+        # ── summary scalars + deltas vs base ─────────────────────────────────
+        # Keys follow: summary/{cond}/...  and  delta_vs_base/{cond}/...
+        # persona_reward = mean cosine-sim over layers >= 10 (matches PersonaReward)
+        for label, s, delta_pr_train, delta_pr_opp, delta_rew in rows_delta:
+            cs = _cond_short(label)
             wandb_run.log({
-                f"delta/{cond_key}/mean_target_opp":    s.get("mean_target_opp"),
-                f"delta/{cond_key}/std_target_opp":     s.get("std_target_opp"),
-                f"delta/{cond_key}/delta_tgt_opp":      delta_opp,
-                f"delta/{cond_key}/mean_target_train":  s.get("mean_target_train"),
-                f"delta/{cond_key}/delta_tgt_train":    delta_train,
-                f"delta/{cond_key}/mean_reward_train":  s.get("mean_reward_train"),
-                f"delta/{cond_key}/delta_reward_train": delta_rew,
+                f"summary/{cs}/trainee/persona_reward":         s.get("persona_reward_train"),
+                f"summary/{cs}/trainee/persona_reward_std":     s.get("std_persona_reward_train"),
+                f"summary/{cs}/opponent/persona_reward":        s.get("persona_reward_opp"),
+                f"summary/{cs}/trainee/game_score":             s.get("mean_reward_train"),
+                f"delta_vs_base/{cs}/trainee/persona_reward":   delta_pr_train,
+                f"delta_vs_base/{cs}/opponent/persona_reward":  delta_pr_opp,
+                f"delta_vs_base/{cs}/game_score":               delta_rew,
             })
 
-        # Side-by-side comparison table across all four conditions
+        # ── side-by-side comparison table ─────────────────────────────────────
         compare_rows = []
-        for label, s, delta_opp, delta_train, delta_rew in rows_delta:
-            cond_key = label.split("[")[0].strip()
+        for label, s, delta_pr_train, delta_pr_opp, delta_rew in rows_delta:
             compare_rows.append([
                 target_slug,
-                cond_key,
+                _cond_short(label),
                 s.get("n"),
-                s.get("mean_target_opp"),
-                s.get("std_target_opp"),
-                delta_opp,
-                s.get("mean_target_train"),
-                delta_train,
+                s.get("persona_reward_train"),
+                s.get("std_persona_reward_train"),
+                delta_pr_train,
+                s.get("persona_reward_opp"),
+                delta_pr_opp,
                 s.get("mean_top_opp"),
                 s.get("mean_reward_train"),
                 s.get("mean_reward_opp"),
@@ -808,33 +831,35 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             if all(v is not None for v in [da, db, dab]):
                 interaction = round(dab - da - db, 4)
                 compare_rows.append([
-                    target_slug, "INTERACTION", None,
+                    target_slug, "interaction", None,
                     None, None, interaction,
                     None, None, None, None, None, None,
                 ])
 
-        cmp_tbl = wb.Table(
+        wandb_run.log({"summary/condition_comparison": wb.Table(
             columns=[
                 "target_trait", "condition", "n_episodes",
-                "mean_target_opp", "std_target_opp", "delta_tgt_opp",
-                "mean_target_train", "delta_tgt_train",
-                "mean_top_opp",
-                "mean_reward_train", "mean_reward_opp", "delta_reward_train",
+                "trainee_persona_reward", "trainee_persona_reward_std",
+                "delta_vs_base_trainee",
+                "opponent_persona_reward",
+                "delta_vs_base_opponent",
+                "opponent_top_trait_score",
+                "trainee_game_score", "opponent_game_score",
+                "delta_vs_base_game_score",
             ],
             data=compare_rows,
-        )
-        wandb_run.log({"ablation/condition_comparison": cmp_tbl})
+        )})
 
-        # Append computed deltas to the wandb run name
+        # Append persona_reward deltas to the wandb run name for quick scan
         if len(rows_delta) >= 2:
             name_suffix = ""
-            _, _, da, _, _ = rows_delta[1]
+            _, _, da, _, _ = rows_delta[1]   # lora_a trainee delta
             if da is not None:
-                name_suffix += f"_Δa{da:+.3f}"
+                name_suffix += f"_lora_a{da:+.3f}"
             if len(rows_delta) >= 3:
                 _, _, db, _, _ = rows_delta[2]
                 if db is not None:
-                    name_suffix += f"_Δb{db:+.3f}"
+                    name_suffix += f"_lora_b{db:+.3f}"
             if name_suffix:
                 wandb_run.name = wandb_run.name + name_suffix
                 wandb_run.update()
