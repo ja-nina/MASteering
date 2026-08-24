@@ -765,6 +765,21 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
         )
         wandb_run.log({"ablation/condition_comparison": cmp_tbl})
 
+        # Append computed deltas to the wandb run name
+        if len(rows_delta) >= 2:
+            name_suffix = ""
+            _, _, da, _, _ = rows_delta[1]
+            if da is not None:
+                name_suffix += f"_Δa{da:+.3f}"
+            if len(rows_delta) >= 3:
+                _, _, db, _, _ = rows_delta[2]
+                if db is not None:
+                    name_suffix += f"_Δb{db:+.3f}"
+            if name_suffix:
+                wandb_run.name = wandb_run.name + name_suffix
+                wandb_run.update()
+                print(f"[ablate] wandb run name → {wandb_run.name}")
+
     if n_paired_episodes > 0:
         _run_paired_episodes(
             model, tokenizer, probe, peft_model, conditions,
