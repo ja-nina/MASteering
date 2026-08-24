@@ -175,7 +175,7 @@ echo "[$(date)] output   : ${OUTPUT_JSONL}"
     --probe-basis   "${SVD_BASIS}"                       \
     --probe-layer   35                                   \
     --nudge-trait   "${TRAIT_SPEC}"                      \
-    --max-turns     20                                   \
+    --max-turns     8                                    \
     --n-episodes    10                                   \
     --n-paired-episodes 5                                \
     --max-new-tokens 2048                                \
