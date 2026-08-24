@@ -37,6 +37,7 @@ class TurnRecord:
     probe_z: Optional[List[float]]         # trainee's own hidden state (logging)
     probe_z_opponent: Optional[List[float]] = None   # opponent reaction (reward)
     probe_z_all: Optional[Dict[str, List[float]]] = None
+    opp_decision: Optional[str] = None    # extracted action from counterfactual opponent
 
 
 @dataclass
@@ -138,6 +139,7 @@ def collect_episode(
                 # probe that reply (strategy + action) to get the reward signal.
                 # This measures what the opponent actually SAYS in response, not
                 # just what they would passively read.
+                cf_opp_action = None
                 try:
                     env_cf = copy.deepcopy(env)
                     done_cf, _ = env_cf.step(_extract_action(action))
@@ -160,6 +162,11 @@ def collect_episode(
                 reward = (reward_fn(opp_scores)
                           if (opp_scores and _has_action_tag(action)) else -1.0)
 
+                # Extract opponent's game decision for behavioral tracking across K candidates
+                opp_decision = None
+                if cf_opp_action is not None:
+                    opp_decision = _extract_action(cf_opp_action).lower()
+
                 records.append(TurnRecord(
                     obs=obs_str,
                     action=action,
@@ -169,6 +176,7 @@ def collect_episode(
                     probe_z=probe_z,
                     probe_z_opponent=opp_z,
                     probe_z_all=probe_z_all,
+                    opp_decision=opp_decision,
                 ))
                 rewards.append(reward)
 

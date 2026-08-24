@@ -112,6 +112,7 @@ def grpo_step(
     do_step: bool = True,
     model=None,
     device: str = "cuda",
+    kl_coef: float = 0.0,
 ) -> float:
     """Accumulate GRPO gradients for one episode; optionally step the optimizers.
 
@@ -129,6 +130,12 @@ def grpo_step(
 
     zero_grad: call opt.zero_grad() before accumulating.
     do_step:   call clip_grad_norm + opt.step() after all backwards.
+
+    kl_coef: per-token KL penalty weight (Shao et al. 2024 GRPO formulation).
+        Adds β * (log π - log π_ref) / gen_len to the loss for each record.
+        Reference log-probs are computed by temporarily disabling all LoRA
+        adapters on `model` (requires a PEFT model; noop when kl_coef=0).
+        β=0.02–0.04 works well for persona rewards in [-1, 1].
 
     Returns total scalar loss (summed across all turn groups).
     """
@@ -159,6 +166,8 @@ def grpo_step(
         # not K×N_turns.  Falls back to pre-filled record.log_prob if no model.
         tg_loss = torch.tensor(0.0)
         for record, adv in zip(tg.records, advantages):
+            full_ids = None
+            gen_len  = 0
             if model is not None and record.full_ids is not None:
                 full_ids = record.full_ids.to(device)
                 gen_len  = full_ids.shape[1] - record.input_len
@@ -168,7 +177,27 @@ def grpo_step(
                 else:
                     record.log_prob = None
             if record.log_prob is not None:
-                tg_loss = tg_loss + (-record.log_prob * float(adv))
+                pg_loss = -record.log_prob * float(adv)
+
+                # Token-level KL penalty (GRPO formulation, Shao et al. 2024):
+                #   β * (log π_θ − log π_ref) / T
+                # Reference = base model with all LoRA adapters disabled.
+                # Prevents reward hacking and format collapse without a second
+                # model in memory.  noop when kl_coef == 0.
+                kl_loss = torch.tensor(0.0)
+                if kl_coef > 0.0 and full_ids is not None and gen_len > 0:
+                    try:
+                        with torch.no_grad(), model.disable_adapter():
+                            log_prob_ref = _compute_log_prob(
+                                model, full_ids, record.input_len
+                            )
+                        kl_loss = kl_coef * (
+                            record.log_prob - log_prob_ref.detach()
+                        ) / gen_len
+                    except Exception:
+                        pass   # disable_adapter unavailable (non-PEFT model)
+
+                tg_loss = tg_loss + pg_loss + kl_loss
 
         if tg_loss.requires_grad:
             tg_loss.backward()   # frees this turn group's K graphs immediately
@@ -234,9 +263,13 @@ def wandb_log_step(
         ),
     }
 
-    # ── 1b. Per-turn reward breakdown ────────────────────────────────────────
+    # ── 1b. Per-turn reward breakdown + opponent decision rates ─────────────
+    # With K=8 candidates, opp_coop_rate is continuous in {0, 1/8, ..., 1}.
+    # This directly measures behavioral influence, not just persona cosine-sim.
     turn_table = _wandb.Table(columns=["turn", "reward_mean", "reward_best", "reward_worst",
-                                       "top_trait", "top_trait_score"])
+                                       "top_trait", "top_trait_score",
+                                       "opp_coop_rate", "opp_defect_rate", "opp_invalid_rate"])
+    all_coop_rates: List[float] = []
     for t_idx, tg in enumerate(episode.turn_groups):
         if not tg.rewards:
             continue
@@ -245,6 +278,18 @@ def wandb_log_step(
         r_worst = min(tg.rewards)
         best_k  = tg.rewards.index(r_best)
         opp_z   = tg.records[best_k].probe_z_opponent
+
+        # Opponent decision rates across K candidates
+        decisions = [r.opp_decision or "" for r in tg.records]
+        K = len(decisions)
+        n_coop    = sum(1 for d in decisions if "cooperat" in d)
+        n_defect  = sum(1 for d in decisions if "defect"   in d)
+        n_invalid = K - n_coop - n_defect
+        opp_coop_rate    = n_coop    / K if K else float("nan")
+        opp_defect_rate  = n_defect  / K if K else float("nan")
+        opp_invalid_rate = n_invalid / K if K else float("nan")
+        if K > 0:
+            all_coop_rates.append(opp_coop_rate)
         top_trait, top_score = "", float("nan")
         if opp_z and probe is not None:
             try:
@@ -253,8 +298,14 @@ def wandb_log_step(
                     top_trait, top_score = ranked[0][0], float(ranked[0][1])
             except Exception:
                 pass
-        turn_table.add_data(t_idx, r_mean, r_best, r_worst, top_trait, top_score)
+        turn_table.add_data(t_idx, r_mean, r_best, r_worst, top_trait, top_score,
+                            opp_coop_rate, opp_defect_rate, opp_invalid_rate)
     log["episode/turn_rewards"] = turn_table
+
+    # Episode-level mean opponent coop rate across all turns (continuous, K=8)
+    if all_coop_rates:
+        log["opponent/coop_rate"]   = sum(all_coop_rates) / len(all_coop_rates)
+        log["opponent/defect_rate"] = 1.0 - log["opponent/coop_rate"]
     if rolling_mean is not None:
         log["reward/rolling_mean_10"] = rolling_mean
     if step_time is not None:

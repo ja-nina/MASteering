@@ -167,6 +167,17 @@ class SVDPersonaProbe:
         z = torch.tensor(z_list, dtype=torch.float32)
         return self._nearest_traits(z, layer)
 
+    def score_trait(self, z_list: List[float], slug: str, layer: int) -> Optional[float]:
+        """Cosine similarity for a specific slug at a given layer, bypassing top-k limit."""
+        import torch
+        if slug not in self._slugs:
+            return None
+        idx = self._slugs.index(slug)
+        C = self._C[layer]   # [N_dedup, k]
+        c = C[idx].float()   # [k]
+        z = torch.tensor(z_list, dtype=torch.float32)
+        return (z @ c).item() / (z.norm().clamp(min=1e-8) * c.norm().clamp(min=1e-8)).item()
+
     def _nearest_traits(self, z: "torch.Tensor", layer: int) -> List[List]:
         """Return top-k [[slug, cosine_sim], ...] for z against C[layer]."""
         C = self._C[layer].to(z.device)  # [N_dedup, k]

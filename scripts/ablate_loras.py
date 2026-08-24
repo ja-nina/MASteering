@@ -287,9 +287,16 @@ def _build_turn_record(
             top = probe.rank_traits(z, probe_layer)
             out["top_traits"]      = [[s, round(v, 4)] for s, v in top[:5]]
             out["top_trait_score"] = round(top[0][1], 4) if top else None
-            tscore, trank = _target_trait_score_and_rank(top, target_slug)
-            out["target_trait_score"] = tscore
-            out["target_trait_rank"]  = trank
+            # Use score_trait to get the target sim directly (not limited by top-k)
+            if target_slug:
+                raw = probe.score_trait(z, target_slug, probe_layer)
+                out["target_trait_score"] = round(raw, 4) if raw is not None else None
+                _, trank = _target_trait_score_and_rank(top, target_slug)
+                out["target_trait_rank"] = trank
+            else:
+                tscore, trank = _target_trait_score_and_rank(top, target_slug)
+                out["target_trait_score"] = tscore
+                out["target_trait_rank"]  = trank
 
         # All layers — z-vector + top traits + target trait score/rank per layer
         out["layers"] = {}
@@ -300,7 +307,13 @@ def _build_turn_record(
             try:
                 layer_int = int(layer_str)
                 top_all = probe.rank_traits(z_all, layer_int)
-                tscore_l, trank_l = _target_trait_score_and_rank(top_all, target_slug)
+                # Direct score bypasses top-k so target trait is always captured
+                if target_slug:
+                    raw_l = probe.score_trait(z_all, target_slug, layer_int)
+                    tscore_l = round(raw_l, 4) if raw_l is not None else None
+                    _, trank_l = _target_trait_score_and_rank(top_all, target_slug)
+                else:
+                    tscore_l, trank_l = _target_trait_score_and_rank(top_all, target_slug)
                 out["layers"][layer_str] = {
                     "z":                  [round(v, 4) for v in z_all],
                     "top_traits":         [[s, round(v, 4)] for s, v in top_all[:5]],
@@ -367,15 +380,19 @@ def _log_jsonl(record: Dict, path: str) -> None:
 
 
 _COND_SHORT = {
-    "base":           "base",
-    "adapter_a only": "lora_a",
-    "adapter_b only": "lora_b",
-    "both":           "lora_ab",
+    "base":                   "base",
+    "adapter_a only":         "lora_a",
+    "adapter_b only":         "lora_b",
+    "both":                   "lora_ab",
+    "base [nudge]":           "base_nudge",
+    "adapter_a only [nudge]": "lora_a_nudge",
+    "adapter_b only [nudge]": "lora_b_nudge",
+    "both [nudge]":           "lora_ab_nudge",
 }
 
 def _cond_short(label: str) -> str:
     """Map a condition label to a short wandb-friendly key."""
-    key = label.split("[")[0].strip()
+    key = label.split("[ep ")[0].strip()   # strip [ep N/N] suffix if present
     return _COND_SHORT.get(key, key.replace(" ", "_"))
 
 
@@ -462,7 +479,7 @@ def run_sampling(model, tokenizer, probe, peft_model, conditions,
     print(f"  user   : {user[:100]}{'…' if len(user) > 100 else ''}")
     print(f"{'═' * W}\n")
 
-    for label, adapter_names in conditions:
+    for label, adapter_names, cond_sys in conditions:
         print(f"\n{'╔' + '═' * (W - 2) + '╗'}")
         print(f"║  {label:<{W - 4}}║")
         print(f"{'╚' + '═' * (W - 2) + '╝'}")
@@ -470,7 +487,8 @@ def run_sampling(model, tokenizer, probe, peft_model, conditions,
         ctx = _enter_condition(peft_model, adapter_names)
         for i in range(n):
             print(f"\n─── sample {i + 1} / {n} ───")
-            text = _generate(model, tokenizer, system, user, max_new_tokens, device)
+            prompt = cond_sys or system
+            text = _generate(model, tokenizer, prompt, user, max_new_tokens, device)
             print(text)
             if probe is not None:
                 scores = _probe_text(model, tokenizer, text, probe, device,
@@ -662,7 +680,7 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     # condition_label → mean target trait score (for Δ table)
     condition_summary: Dict[str, Dict] = {}
 
-    for label, adapter_names in conditions:
+    for label, adapter_names, cond_sys in conditions:
         ep_target_opp:   List[Optional[float]] = []
         ep_target_train: List[Optional[float]] = []
         ep_ml_opp:       List[Optional[float]] = []   # multilayer (≥10), matches PersonaReward
@@ -678,7 +696,7 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                 model, tokenizer, probe, peft_model, adapter_names,
                 game_id, num_players, max_turns,
                 system, max_new_tokens, device, probe_layer,
-                trainee_system=trainee_system,
+                trainee_system=cond_sys,
             )
             _print_episode(records, ta_rewards, probe, probe_layer, ep_label,
                            target_slug=target_slug)
@@ -718,151 +736,155 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             "mean_top_train":    _safe_mean(ep_top_train),
             "mean_reward_train": _safe_mean(ep_reward_train),
             "mean_reward_opp":   _safe_mean(ep_reward_opp),
-            "n":                 len([v for v in ep_target_opp if v is not None]),
+            "n":                 len([v for v in ep_ml_train if v is not None]),
         }
 
-    # ── Attribution Δ table ───────────────────────────────────────────────────
-    base_s = condition_summary.get(conditions[0][0], {})
-    base_tgt_opp   = base_s.get("mean_target_opp")
-    base_tgt_train = base_s.get("mean_target_train")
-    base_pr_train  = base_s.get("persona_reward_train")   # multilayer baseline
-    base_pr_opp    = base_s.get("persona_reward_opp")
-    base_reward_t  = base_s.get("mean_reward_train")
+    # ── Attribution Δ tables — one per setting (no-nudge / nudge) ────────────
+    # Group conditions by whether they use the nudge prompt.
+    def _is_nudge(lbl): return "[nudge]" in lbl
+
+    setting_groups = [
+        ("no_nudge", [c for c in conditions if not _is_nudge(c[0])]),
+        ("nudge",    [c for c in conditions if     _is_nudge(c[0])]),
+    ]
+
+    def _d(val, base): return round(val - base, 4) if (val is not None and base is not None) else None
+    def _f(v, fmt="+.4f"): return format(v, fmt) if v is not None else "  n/a"
 
     W2 = max(W, 120)
-    print(f"\n{'═' * W2}")
-    print(f"ATTRIBUTION TABLE   target={target_slug or 'n/a'}   n_episodes={n_episodes}")
-    print(f"  persona_reward = mean cosine-sim layers>=10  (matches PersonaReward used in training)")
-    print(f"{'─' * W2}")
-    hdr = (f"  {'condition':<38}  {'n':>2}  "
-           f"{'pr_train':>9} {'Δpr_trn':>8}  "
-           f"{'pr_opp':>8} {'Δpr_opp':>8}  "
-           f"{'top_opp':>8}  "
-           f"{'reward_T':>8} {'Δreward':>8}")
-    print(hdr)
-    print(f"{'─' * W2}")
+    all_rows_delta = {}   # setting_name → rows_delta (for wandb)
 
-    rows_delta = []
-    for label, _ in conditions:
-        s  = condition_summary.get(label, {})
-        n  = s.get("n", 0)
-        pr_t = s.get("persona_reward_train")
-        pr_o = s.get("persona_reward_opp")
-        to   = s.get("mean_top_opp")
-        rt   = s.get("mean_reward_train")
+    for setting_name, grp in setting_groups:
+        if not grp:
+            continue
 
-        def _d(val, base): return round(val - base, 4) if (val is not None and base is not None) else None
-        def _f(v, fmt="+.4f"): return format(v, fmt) if v is not None else "  n/a"
+        base_label = grp[0][0]
+        base_s     = condition_summary.get(base_label, {})
+        base_pr_t  = base_s.get("persona_reward_train")
+        base_pr_o  = base_s.get("persona_reward_opp")
+        base_rew   = base_s.get("mean_reward_train")
 
-        delta_pr_train = _d(pr_t, base_pr_train)
-        delta_pr_opp   = _d(pr_o, base_pr_opp)
-        delta_rew      = _d(rt,   base_reward_t)
+        print(f"\n{'═' * W2}")
+        title = f"ATTRIBUTION TABLE [{setting_name.upper()}]   target={target_slug or 'n/a'}   n_episodes={n_episodes}"
+        print(title)
+        print(f"  persona_reward = mean cosine-sim layers>=10  (matches PersonaReward used in training)")
+        print(f"{'─' * W2}")
+        print(f"  {'condition':<38}  {'n':>2}  "
+              f"{'pr_train':>9} {'Δpr_trn':>8}  "
+              f"{'pr_opp':>8} {'Δpr_opp':>8}  "
+              f"{'top_opp':>8}  "
+              f"{'reward_T':>8} {'Δreward':>8}")
+        print(f"{'─' * W2}")
 
-        print(f"  {label:<38}  {n:>2}  "
-              f"{_f(pr_t):>9} {_f(delta_pr_train):>8}  "
-              f"{_f(pr_o):>8} {_f(delta_pr_opp):>8}  "
-              f"{_f(to):>8}  "
-              f"{_f(rt):>8} {_f(delta_rew):>8}")
-        rows_delta.append((label, s, delta_pr_train, delta_pr_opp, delta_rew))
+        rows_delta = []
+        for label, _, _sys in grp:
+            s    = condition_summary.get(label, {})
+            n_ep = s.get("n", 0)
+            pr_t = s.get("persona_reward_train")
+            pr_o = s.get("persona_reward_opp")
+            to   = s.get("mean_top_opp")
+            rt   = s.get("mean_reward_train")
 
-    # Interaction effect: Δ(both) vs Δ(a) + Δ(b)
-    if len(rows_delta) == 4:
-        _, _, da, _, _ = rows_delta[1]
-        _, _, db, _, _ = rows_delta[2]
-        _, _, dab, _, _ = rows_delta[3]
-        if all(v is not None for v in [da, db, dab]):
-            interaction = round(dab - da - db, 4)
-            print(f"{'─' * W2}")
-            print(f"  interaction effect  Δ(both) − Δ(a) − Δ(b) = {interaction:+.4f}"
-                  f"  ({'super-additive' if interaction > 0 else 'sub-additive'})")
-    print(f"{'═' * W2}")
+            dpt = _d(pr_t, base_pr_t)
+            dpo = _d(pr_o, base_pr_o)
+            dr  = _d(rt,   base_rew)
 
-    # Dominant adapter summary
-    if len(rows_delta) >= 3:
-        _, _, da, _, _ = rows_delta[1]
-        _, _, db, _, _ = rows_delta[2]
-        if da is not None and db is not None:
-            dominant = "adapter_a (persona LoRA)" if abs(da) >= abs(db) else "adapter_b (task LoRA)"
-            print(f"  dominant adapter    : {dominant}  "
-                  f"(Δa={da:+.4f}, Δb={db:+.4f})")
-    print(f"{'═' * W2}")
+            print(f"  {label:<38}  {n_ep:>2}  "
+                  f"{_f(pr_t):>9} {_f(dpt):>8}  "
+                  f"{_f(pr_o):>8} {_f(dpo):>8}  "
+                  f"{_f(to):>8}  "
+                  f"{_f(rt):>8} {_f(dr):>8}")
+            rows_delta.append((label, s, dpt, dpo, dr))
 
-    if wandb_run:
-        import wandb as wb
-
-        # ── summary scalars + deltas vs base ─────────────────────────────────
-        # Keys follow: summary/{cond}/...  and  delta_vs_base/{cond}/...
-        # persona_reward = mean cosine-sim over layers >= 10 (matches PersonaReward)
-        for label, s, delta_pr_train, delta_pr_opp, delta_rew in rows_delta:
-            cs = _cond_short(label)
-            wandb_run.log({
-                f"summary/{cs}/trainee/persona_reward":         s.get("persona_reward_train"),
-                f"summary/{cs}/trainee/persona_reward_std":     s.get("std_persona_reward_train"),
-                f"summary/{cs}/opponent/persona_reward":        s.get("persona_reward_opp"),
-                f"summary/{cs}/trainee/game_score":             s.get("mean_reward_train"),
-                f"delta_vs_base/{cs}/trainee/persona_reward":   delta_pr_train,
-                f"delta_vs_base/{cs}/opponent/persona_reward":  delta_pr_opp,
-                f"delta_vs_base/{cs}/game_score":               delta_rew,
-            })
-
-        # ── side-by-side comparison table ─────────────────────────────────────
-        compare_rows = []
-        for label, s, delta_pr_train, delta_pr_opp, delta_rew in rows_delta:
-            compare_rows.append([
-                target_slug,
-                _cond_short(label),
-                s.get("n"),
-                s.get("persona_reward_train"),
-                s.get("std_persona_reward_train"),
-                delta_pr_train,
-                s.get("persona_reward_opp"),
-                delta_pr_opp,
-                s.get("mean_top_opp"),
-                s.get("mean_reward_train"),
-                s.get("mean_reward_opp"),
-                delta_rew,
-            ])
-
-        # Interaction effect row
+        # Interaction effect: Δ(both) − Δ(a) − Δ(b)
         if len(rows_delta) == 4:
             _, _, da, _, _ = rows_delta[1]
             _, _, db, _, _ = rows_delta[2]
             _, _, dab, _, _ = rows_delta[3]
             if all(v is not None for v in [da, db, dab]):
                 interaction = round(dab - da - db, 4)
+                print(f"{'─' * W2}")
+                print(f"  interaction effect  Δ(both) − Δ(a) − Δ(b) = {interaction:+.4f}"
+                      f"  ({'super-additive' if interaction > 0 else 'sub-additive'})")
+
+        # Dominant adapter
+        if len(rows_delta) >= 3:
+            _, _, da, _, _ = rows_delta[1]
+            _, _, db, _, _ = rows_delta[2]
+            if da is not None and db is not None:
+                dom = "adapter_a (persona LoRA)" if abs(da) >= abs(db) else "adapter_b (task LoRA)"
+                print(f"  dominant adapter    : {dom}  (Δa={da:+.4f}, Δb={db:+.4f})")
+
+        print(f"{'═' * W2}")
+        all_rows_delta[setting_name] = rows_delta
+
+    if wandb_run:
+        import wandb as wb
+
+        for setting_name, rows_delta in all_rows_delta.items():
+            # ── summary scalars + deltas vs base ─────────────────────────────
+            # persona_reward = mean cosine-sim layers >= 10 (matches PersonaReward)
+            # All conditions logged in one call so they land at the same wandb step
+            all_metrics: Dict[str, Any] = {}
+            for label, s, dpt, dpo, dr in rows_delta:
+                cs = _cond_short(label)
+                all_metrics.update({
+                    f"summary/{cs}/trainee/persona_reward":        s.get("persona_reward_train"),
+                    f"summary/{cs}/trainee/persona_reward_std":    s.get("std_persona_reward_train"),
+                    f"summary/{cs}/opponent/persona_reward":       s.get("persona_reward_opp"),
+                    f"summary/{cs}/trainee/game_score":            s.get("mean_reward_train"),
+                    f"delta_vs_base/{cs}/trainee/persona_reward":  dpt,
+                    f"delta_vs_base/{cs}/opponent/persona_reward": dpo,
+                    f"delta_vs_base/{cs}/game_score":              dr,
+                })
+            wandb_run.log(all_metrics)
+
+            # ── side-by-side comparison table ─────────────────────────────────
+            compare_rows = []
+            for label, s, dpt, dpo, dr in rows_delta:
                 compare_rows.append([
-                    target_slug, "interaction", None,
-                    None, None, interaction,
-                    None, None, None, None, None, None,
+                    target_slug, _cond_short(label), s.get("n"),
+                    s.get("persona_reward_train"), s.get("std_persona_reward_train"), dpt,
+                    s.get("persona_reward_opp"),   dpo,
+                    s.get("mean_top_opp"),
+                    s.get("mean_reward_train"), s.get("mean_reward_opp"), dr,
                 ])
+            # Interaction row
+            if len(rows_delta) == 4:
+                _, _, da, _, _ = rows_delta[1]
+                _, _, db, _, _ = rows_delta[2]
+                _, _, dab, _, _ = rows_delta[3]
+                if all(v is not None for v in [da, db, dab]):
+                    compare_rows.append([
+                        target_slug, "interaction", None,
+                        None, None, round(dab - da - db, 4),
+                        None, None, None, None, None, None,
+                    ])
 
-        wandb_run.log({"summary/condition_comparison": wb.Table(
-            columns=[
-                "target_trait", "condition", "n_episodes",
-                "trainee_persona_reward", "trainee_persona_reward_std",
-                "delta_vs_base_trainee",
-                "opponent_persona_reward",
-                "delta_vs_base_opponent",
-                "opponent_top_trait_score",
-                "trainee_game_score", "opponent_game_score",
-                "delta_vs_base_game_score",
-            ],
-            data=compare_rows,
-        )})
+            wandb_run.log({f"summary/{setting_name}/condition_comparison": wb.Table(
+                columns=[
+                    "target_trait", "condition", "n_episodes",
+                    "trainee_persona_reward", "trainee_persona_reward_std", "delta_vs_base_trainee",
+                    "opponent_persona_reward", "delta_vs_base_opponent",
+                    "opponent_top_trait_score",
+                    "trainee_game_score", "opponent_game_score", "delta_vs_base_game_score",
+                ],
+                data=compare_rows,
+            )})
 
-        # Append persona_reward deltas to the wandb run name for quick scan
-        if len(rows_delta) >= 2:
+        # Append no-nudge lora_a/lora_b deltas to run name
+        no_nudge_rows = all_rows_delta.get("no_nudge", [])
+        if len(no_nudge_rows) >= 2:
             name_suffix = ""
-            _, _, da, _, _ = rows_delta[1]   # lora_a trainee delta
+            _, _, da, _, _ = no_nudge_rows[1]
             if da is not None:
                 name_suffix += f"_lora_a{da:+.3f}"
-            if len(rows_delta) >= 3:
-                _, _, db, _, _ = rows_delta[2]
+            if len(no_nudge_rows) >= 3:
+                _, _, db, _, _ = no_nudge_rows[2]
                 if db is not None:
                     name_suffix += f"_lora_b{db:+.3f}"
             if name_suffix:
                 wandb_run.name = wandb_run.name + name_suffix
-                wandb_run.update()
                 print(f"[ablate] wandb run name → {wandb_run.name}")
 
     if n_paired_episodes > 0:
@@ -893,7 +915,7 @@ def _run_paired_episodes(
     import math
 
     # per-seed scores: {label: [score_seed0, ...]}
-    seed_scores: Dict[str, List[Optional[float]]] = {lbl: [] for lbl, _ in conditions}
+    seed_scores: Dict[str, List[Optional[float]]] = {lbl: [] for lbl, _, _s in conditions}
 
     print(f"\n{'═' * W}")
     print(f"PAIRED EPISODES  n={n_paired}  (same seed per row → all conditions)")
@@ -904,12 +926,12 @@ def _run_paired_episodes(
     for seed_i in range(n_paired):
         seed = 1000 + seed_i
         print(f"\n── seed {seed_i+1}/{n_paired}  (seed={seed}) ──────────")
-        for label, adapter_names in conditions:
+        for label, adapter_names, cond_sys in conditions:
             records, ta_rewards = _run_episode(
                 model, tokenizer, probe, peft_model, adapter_names,
                 game_id, num_players, max_turns,
                 system, max_new_tokens, device, probe_layer,
-                trainee_system=trainee_system,
+                trainee_system=cond_sys,
                 seed=seed,
             )
             rec = _build_condition_record(
@@ -926,7 +948,7 @@ def _run_paired_episodes(
             print(f"  {label:<42}  {score:+.4f}" if score is not None else f"  {label:<42}  n/a")
 
     # All pairwise Δ: (X, Y) means Δ = X - Y
-    cond_labels = [lbl for lbl, _ in conditions]
+    cond_labels = [lbl for lbl, _, _s in conditions]
 
     def _pairwise(lbl_x, lbl_y):
         xs, ys = seed_scores[lbl_x], seed_scores[lbl_y]
@@ -1029,7 +1051,10 @@ def main() -> None:
                     help="Append one JSON record per condition to this JSONL file")
     ap.add_argument("--wandb", action="store_true",
                     help="Log results to wandb")
-    ap.add_argument("--wandb-project", default="ma-steering-lora-ablation-inspect")
+    ap.add_argument("--wandb-project", default="ma-lora-ablation-nudge-study")
+    ap.add_argument("--run-both-nudge", action="store_true",
+                    help="Run all adapter conditions twice: once without nudge and once "
+                         "with the nudge prompt (requires --nudge-trait)")
     ap.add_argument("--wandb-name", default=None,
                     help="wandb run name (default: checkpoint basename)")
 
@@ -1091,15 +1116,29 @@ def main() -> None:
         probe = SVDPersonaProbe(basis_path=args.probe_basis, hook=args.probe_hook)
 
     # ── Conditions ────────────────────────────────────────────────────────────
-    conditions: List[Tuple[str, Optional[List[str]]]] = [
-        ("base  (no adapters)", None),
+    # Each condition is (label, adapter_names, trainee_system).
+    # No-nudge block always comes first; nudge block appended when --run-both-nudge.
+    _base_sys = system   # shared opponent system prompt / trainee fallback
+
+    no_nudge_conditions: List[Tuple[str, Optional[List[str]], Optional[str]]] = [
+        ("base", None, _base_sys),
     ]
     if has_a:
-        conditions.append(("adapter_a only  [persona LoRA — SVD-constrained]", ["adapter_a"]))
+        no_nudge_conditions.append(("adapter_a only", ["adapter_a"], _base_sys))
     if has_b:
-        conditions.append(("adapter_b only  [task LoRA — free weights]", ["adapter_b"]))
+        no_nudge_conditions.append(("adapter_b only", ["adapter_b"], _base_sys))
     if has_a and has_b:
-        conditions.append(("both  [adapter_a + adapter_b]", ["adapter_a", "adapter_b"]))
+        no_nudge_conditions.append(("both", ["adapter_a", "adapter_b"], _base_sys))
+
+    nudge_conditions: List[Tuple[str, Optional[List[str]], Optional[str]]] = []
+    if args.run_both_nudge and trainee_system:
+        for label, adapters, _ in no_nudge_conditions:
+            nudge_conditions.append((f"{label} [nudge]", adapters, trainee_system))
+    elif args.run_both_nudge and not trainee_system:
+        print("[ablate] WARNING: --run-both-nudge requires --nudge-trait or "
+              "--trainee-system-prompt; nudge block skipped.", flush=True)
+
+    conditions = no_nudge_conditions + nudge_conditions
 
     # ── wandb ─────────────────────────────────────────────────────────────────
     wandb_run = None

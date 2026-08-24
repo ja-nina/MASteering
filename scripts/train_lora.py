@@ -236,12 +236,23 @@ def main():
     parser.add_argument("--nudge", action="store_true",
                         help="Inject a secret goal instruction into the trainee's system "
                              "prompt to elicit the target trait from the opponent")
+    parser.add_argument("--kl-coef", type=float, default=0.0,
+                        help="Per-token KL penalty weight β added to the GRPO loss: "
+                             "β*(log π - log π_ref)/T where π_ref is the base model "
+                             "with LoRA adapters disabled. Prevents reward hacking and "
+                             "format collapse. Recommended range: 0.01–0.04 (GRPO paper "
+                             "used 0.04). Default 0 (disabled) to preserve backward "
+                             "compatibility.")
+    parser.add_argument("--wandb-project", default=None,
+                        help="Override wandb.project from config (e.g. nothink-kl-pen)")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
     # CLI overrides
+    if args.wandb_project:
+        cfg.setdefault("wandb", {})["project"] = args.wandb_project
     if args.no_persona_lora:
         cfg["use_persona_lora"] = False
     if args.rank is not None:
@@ -473,6 +484,8 @@ def main():
     print(f"  traits   : {traits_str}", flush=True)
     print(f"  adapters : {adapters_str}", flush=True)
     print(f"  episodes : {total_episodes}  grpo_k={grpo_k}  save_every={save_interval}", flush=True)
+    if args.kl_coef > 0:
+        print(f"  kl_coef  : {args.kl_coef}  (per-token KL vs base model)", flush=True)
     print(f"  save_dir : {save_dir}", flush=True)
     if use_vllm:
         print(f"  vLLM     : gen={args.vllm_device}  train={args.train_device}"
@@ -617,6 +630,7 @@ def main():
             max_grad_norm=max_grad_norm,
             model=model,
             device=train_device_str,
+            kl_coef=args.kl_coef,
         )
 
         # Keep adapter_b orthogonal to persona subspace — project out after every step.
