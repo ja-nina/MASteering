@@ -214,6 +214,10 @@ def main(argv=None):
     p.add_argument("--red-team-model",   default="grok-4")
     p.add_argument("--red-team-base-url", default="https://api.x.ai/v1")
     p.add_argument("--red-team-api-key", default=None)
+    p.add_argument("--wandb-project",    default="redteam-baseline",
+                   help="W&B project name (set to 'disabled' to skip)")
+    p.add_argument("--wandb-run-name",   default=None,
+                   help="W&B run name (defaults to rt_<trait>_<direction>)")
     args = p.parse_args(argv)
 
     # ── Load base model (no LoRA) ────────────────────────────────────────────
@@ -244,6 +248,29 @@ def main(argv=None):
         target_traits={args.target_trait: 1.0},
         layer_start=args.probe_layer,
     )
+
+    # ── W&B ─────────────────────────────────────────────────────────────────
+    wandb_run = None
+    if args.wandb_project and args.wandb_project != "disabled":
+        try:
+            import wandb
+            run_name = args.wandb_run_name or f"rt_{args.target_trait}_{args.direction}"
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=run_name,
+                config={
+                    "target_trait":   args.target_trait,
+                    "direction":      args.direction,
+                    "red_team_model": args.red_team_model,
+                    "local_model":    args.model,
+                    "n_episodes":     args.n_episodes,
+                    "probe_layer":    args.probe_layer,
+                    "game":           args.game,
+                },
+            )
+            print(f"[redteam_eval] wandb run: {wandb_run.url}")
+        except Exception as e:
+            print(f"[redteam_eval] wandb init failed: {e} — continuing without logging")
 
     # ── Instantiate red-team ─────────────────────────────────────────────────
     red_team = APIOpponentPolicy(
@@ -303,6 +330,19 @@ def main(argv=None):
               f"target_cos={ep_mean_target:+.3f}{game_str}  "
               f"({elapsed:.1f}s)")
 
+        if wandb_run is not None:
+            log = {"episode": ep_idx + 1, "elapsed_s": elapsed,
+                   "n_turns": len(records)}
+            if ep_mean_reward is not None:
+                log["persona_reward"] = ep_mean_reward
+            if ep_mean_target is not None:
+                log["target_cos_sim"] = ep_mean_target
+            if ta_rewards:
+                for pid, score in ta_rewards.items():
+                    role = "local" if int(pid) == LOCAL_PLAYER_ID else "redteam"
+                    log[f"game_score/{role}"] = float(score)
+            wandb_run.log(log, step=ep_idx + 1)
+
         episode_results.append({
             "episode":          ep_idx + 1,
             "target_trait":     args.target_trait,
@@ -334,6 +374,19 @@ def main(argv=None):
     print(f"\n  Compare these numbers against ablate_loras.py (base condition)")
     print(f"  to see how much trait expression the red-team elicits.")
     print(f"{'═' * W}\n")
+
+    if wandb_run is not None:
+        summary = {}
+        if all_persona_rewards:
+            summary["summary/mean_persona_reward"] = sum(all_persona_rewards) / len(all_persona_rewards)
+            summary["summary/std_persona_reward"]  = (
+                sum((r - summary["summary/mean_persona_reward"]) ** 2
+                    for r in all_persona_rewards) / len(all_persona_rewards)
+            ) ** 0.5
+        if all_target_scores:
+            summary["summary/mean_target_cos_sim"] = sum(all_target_scores) / len(all_target_scores)
+        wandb_run.log(summary)
+        wandb_run.finish()
 
     if args.output:
         out_path = Path(args.output)
