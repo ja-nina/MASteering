@@ -240,6 +240,27 @@ def _target_trait_score_and_rank(
     return None, None
 
 
+def _compute_multilayer_target_score(
+    turn_record: Dict, layer_start: int = 10
+) -> Optional[float]:
+    """Mean target_trait_score across all layers >= layer_start (mirrors PersonaReward).
+
+    Uses the already-computed per-layer data in turn_record["layers"].
+    Returns None if no valid layers are found.
+    """
+    layers = turn_record.get("layers", {})
+    scores = []
+    for layer_str, ld in layers.items():
+        try:
+            if int(layer_str) >= layer_start and ld.get("target_trait_score") is not None:
+                scores.append(ld["target_trait_score"])
+        except (ValueError, TypeError):
+            pass
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 4)
+
+
 def _build_turn_record(
     rec: Dict, probe, probe_layer: int,
     target_slug: Optional[str] = None,
@@ -313,6 +334,10 @@ def _build_condition_record(
     trainee_tgt   = [t["target_trait_score"] for t in turns if t["is_trainee"]]
     opp_tgt       = [t["target_trait_score"] for t in turns if not t["is_trainee"]]
 
+    # Multi-layer mean (layers >= 10) — matches PersonaReward exactly
+    trainee_ml = [_compute_multilayer_target_score(t) for t in turns if t["is_trainee"]]
+    opp_ml     = [_compute_multilayer_target_score(t) for t in turns if not t["is_trainee"]]
+
     return {
         "timestamp":   time.strftime("%Y-%m-%dT%H:%M:%S"),
         "checkpoint":  checkpoint,
@@ -324,8 +349,12 @@ def _build_condition_record(
         "turns":       turns,
         "mean_top_trait_trainee":      _mean(trainee_top),
         "mean_top_trait_opponent":     _mean(opp_top),
+        # Single display-layer target score (for quick reference)
         "mean_target_trait_trainee":   _mean(trainee_tgt),
         "mean_target_trait_opponent":  _mean(opp_tgt),
+        # Multi-layer mean (layers >= 10) — equivalent to PersonaReward
+        "mean_target_trait_trainee_multilayer":  _mean(trainee_ml),
+        "mean_target_trait_opponent_multilayer": _mean(opp_ml),
         "game_rewards": {str(k): v for k, v in (ta_rewards or {}).items()},
         "n_turns":     len(turns),
     }
@@ -348,8 +377,12 @@ def _log_wandb(record: Dict, wandb_run) -> None:
     summary: Dict[str, Any] = {
         f"{cond}/mean_top_trait_trainee":     record["mean_top_trait_trainee"],
         f"{cond}/mean_top_trait_opponent":    record["mean_top_trait_opponent"],
+        # Display-layer target score
         f"{cond}/mean_target_trait_trainee":  record.get("mean_target_trait_trainee"),
         f"{cond}/mean_target_trait_opponent": record.get("mean_target_trait_opponent"),
+        # Training-equivalent reward: mean over layers >= 10 (matches PersonaReward)
+        f"{cond}/persona_reward_trainee":     record.get("mean_target_trait_trainee_multilayer"),
+        f"{cond}/persona_reward_opponent":    record.get("mean_target_trait_opponent_multilayer"),
     }
     game_rewards = record.get("game_rewards", {})
     for pid, score in game_rewards.items():
@@ -357,11 +390,12 @@ def _log_wandb(record: Dict, wandb_run) -> None:
         summary[f"{cond}/game_score_{role}"] = score
     wandb_run.log(summary)
 
-    # Per-turn table
+    # Per-turn table with single-layer scores
     target_slug = record.get("target_slug")
     rows = []
     for t in record["turns"]:
         top_str = ", ".join(f"{s}:{v:+.3f}" for s, v in t["top_traits"][:3])
+        ml_score = _compute_multilayer_target_score(t)
         rows.append([
             label, cond,
             t["turn"], "trainee" if t["is_trainee"] else "opponent",
@@ -370,16 +404,42 @@ def _log_wandb(record: Dict, wandb_run) -> None:
             target_slug,
             t.get("target_trait_score"),
             t.get("target_trait_rank"),
+            ml_score,
             t["top_trait_score"],
             top_str,
         ])
     tbl = wb.Table(
         columns=["run", "condition", "turn", "player", "full_response",
                  "action", "target_trait", "target_trait_score", "target_trait_rank",
-                 "top_trait_score", "top_traits"],
+                 "persona_reward_equiv", "top_trait_score", "top_traits"],
         data=rows,
     )
     wandb_run.log({f"ablation/turns/{cond.replace(' ', '_')}": tbl})
+
+    # Per-layer target trait score table (one row per turn × layer)
+    layer_rows = []
+    for t in record["turns"]:
+        player = "trainee" if t["is_trainee"] else "opponent"
+        for layer_str, ld in sorted(t.get("layers", {}).items(), key=lambda x: int(x[0])):
+            try:
+                layer_int = int(layer_str)
+            except ValueError:
+                continue
+            layer_rows.append([
+                label, cond, t["turn"], player, layer_int,
+                ld.get("target_trait_score"),
+                ld.get("target_trait_rank"),
+                ld["top_traits"][0][0] if ld.get("top_traits") else None,
+                ld["top_traits"][0][1] if ld.get("top_traits") else None,
+            ])
+    if layer_rows:
+        layer_tbl = wb.Table(
+            columns=["run", "condition", "turn", "player", "layer",
+                     "target_trait_score", "target_trait_rank",
+                     "top_trait", "top_trait_score"],
+            data=layer_rows,
+        )
+        wandb_run.log({f"ablation/layers/{cond.replace(' ', '_')}": layer_tbl})
 
 
 # ─── mode 1: sampling ─────────────────────────────────────────────────────────
@@ -944,7 +1004,7 @@ def main() -> None:
                     help="Append one JSON record per condition to this JSONL file")
     ap.add_argument("--wandb", action="store_true",
                     help="Log results to wandb")
-    ap.add_argument("--wandb-project", default="ma-steering-lora-ablations")
+    ap.add_argument("--wandb-project", default="ma-steering-lora-ablation-inspect")
     ap.add_argument("--wandb-name", default=None,
                     help="wandb run name (default: checkpoint basename)")
 
