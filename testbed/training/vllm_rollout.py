@@ -144,27 +144,80 @@ class VLLMRolloutEngine:
         user_prompt: str,
         K: int,
     ) -> List[Tuple[str, torch.Tensor, int]]:
-        """Generate K candidates from one prompt in a SINGLE vLLM call.
+        """Two-phase constrained generation of K trainee candidates.
+
+        Phase 1: ONE vLLM call (n=K) with <strategy> forced as the prompt
+                 suffix and stop=["</strategy>"] — K strategy blocks generated
+                 in parallel, each stopping the moment </strategy> appears.
+        Phase 2: K prompts (one per strategy) each ending with \\n<action>
+                 batched in a single vLLM call (n=1 each) to generate the
+                 action bodies.
 
         Returns list of K (text, full_ids_cpu, input_len) tuples where
-        full_ids is [1, prompt_len + gen_len] — same format as
-        TransformersPolicy._generate_with_full_ids.
+        full_ids is [1, p1_prompt_len + strat_len + action_tag_len + action_len]
+        and input_len = p1_prompt_len (prompt + forced <strategy> prefix), so
+        log-prob computation covers the full strategy + injected <action> + action.
         """
-        prompt_text = self._build_prompt(system_prompt, user_prompt)
-        outputs = self.llm.generate(
-            [prompt_text],
-            sampling_params=self._sampling_params(K),
+        from vllm import SamplingParams
+
+        base_prompt = self._build_prompt(system_prompt, user_prompt)
+        # Force <strategy> as the start of the assistant turn
+        p1_prompt = base_prompt + "<strategy>"
+
+        # ── Phase 1: K strategy blocks, stop at </strategy> ──────────────────
+        sp1_kwargs = dict(
+            n=K,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            max_tokens=self.max_tokens,
+            stop=["</strategy>"],
+            include_stop_str_in_output=True,
+        )
+        out1 = self.llm.generate(
+            [p1_prompt],
+            sampling_params=SamplingParams(**sp1_kwargs),
             lora_request=self._lora_req,
         )
-        req = outputs[0]
-        prompt_ids = list(req.prompt_token_ids)
-        input_len  = len(prompt_ids)
+        req1 = out1[0]
+        p1_prompt_ids = list(req1.prompt_token_ids)
 
-        result = []
-        for cand in req.outputs:   # K CompletionOutput objects
-            gen_ids = list(cand.token_ids)
-            full_ids = torch.tensor([prompt_ids + gen_ids], dtype=torch.long)
-            result.append((cand.text, full_ids, input_len))
+        strategies: List[str] = []
+        for cand in req1.outputs:
+            s = cand.text
+            if "</strategy>" not in s:
+                s = s.rstrip() + "\n</strategy>"
+            strategies.append(s)
+
+        # ── Phase 2: inject \n<action>, batch K action bodies ─────────────────
+        p2_prompts = [p1_prompt + s + "\n<action>" for s in strategies]
+        sp2_kwargs = dict(
+            n=1,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            max_tokens=self.max_tokens,
+        )
+        out2 = self.llm.generate(
+            p2_prompts,
+            sampling_params=SamplingParams(**sp2_kwargs),
+            lora_request=self._lora_req,
+        )
+
+        # ── Reconstruct full token sequences ──────────────────────────────────
+        action_tag_ids = self.tokenizer.encode("\n<action>", add_special_tokens=False)
+        result: List[Tuple[str, torch.Tensor, int]] = []
+        for i, (strat, o2_out) in enumerate(zip(strategies, out2)):
+            action_body = o2_out.outputs[0].text
+            full_text   = f"<strategy>{strat}\n<action>{action_body}"
+            strat_ids   = list(req1.outputs[i].token_ids)
+            action_ids  = list(o2_out.outputs[0].token_ids)
+            full_ids    = torch.tensor(
+                [p1_prompt_ids + strat_ids + action_tag_ids + action_ids],
+                dtype=torch.long,
+            )
+            # input_len = p1_prompt_len so log probs cover strat+tag+action
+            result.append((full_text, full_ids, len(p1_prompt_ids)))
         return result
 
     def generate_one(

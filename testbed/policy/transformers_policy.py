@@ -126,8 +126,19 @@ class TransformersPolicy:
         return self.tokenizer.decode(gen, skip_special_tokens=True), truncated
 
     def _generate_with_full_ids(self, inputs) -> tuple[str, "torch.Tensor"]:
-        """Generate with no_grad; return (text, full_ids_cpu) for deferred log_prob."""
+        """Two-phase constrained generation for GRPO rollout.
+
+        Phase 1: append a forced <strategy> token, generate until </strategy>
+                 is detected, then stop.
+        Phase 2: inject \\n<action> into the context and generate the action body.
+
+        Returns (text, (full_ids_cpu, input_len)) where input_len is the length
+        of the original prompt + the forced <strategy> prefix token(s), so that
+        log-prob computation in grpo.py covers strategy body + injected <action>
+        tag + action body — i.e. everything the model committed to.
+        """
         import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
 
         temperature = self._gen_kwargs.get("temperature", 0.7)
         kwargs = {
@@ -136,22 +147,73 @@ class TransformersPolicy:
             "temperature": max(temperature, 1e-5),
             "pad_token_id": self.tokenizer.eos_token_id,
         }
-        input_ids = inputs["input_ids"]
-        input_len = input_ids.shape[1]
+
+        input_ids = inputs["input_ids"]   # [1, prompt_len]
+        attn_mask  = inputs.get("attention_mask")
+
+        # ── Phase 1: force <strategy>, generate until </strategy> ─────────────
+        strat_open_ids = torch.tensor(
+            [self.tokenizer.encode("<strategy>", add_special_tokens=False)],
+            dtype=torch.long, device=input_ids.device,
+        )
+        p1_ids = torch.cat([input_ids, strat_open_ids], dim=1)
+        if attn_mask is not None:
+            attn_ext = torch.ones(1, strat_open_ids.shape[1],
+                                  dtype=attn_mask.dtype, device=attn_mask.device)
+            p1_mask = torch.cat([attn_mask, attn_ext], dim=1)
+        else:
+            p1_mask = None
+        p1_len = p1_ids.shape[1]
+
+        class _StopOnClose(StoppingCriteria):
+            def __call__(self_inner, ids, scores, **kw):
+                tail = self.tokenizer.decode(ids[0, p1_len:], skip_special_tokens=True)
+                return "</strategy>" in tail
+
+        p1_inputs = {"input_ids": p1_ids}
+        if p1_mask is not None:
+            p1_inputs["attention_mask"] = p1_mask
 
         with torch.no_grad():
-            out = self.model.generate(**inputs, **kwargs)
+            out1 = self.model.generate(
+                **p1_inputs, **kwargs,
+                stopping_criteria=StoppingCriteriaList([_StopOnClose()]),
+            )
 
-        gen = out[0, input_len:]
-        if self.enable_thinking or self.reasoning_cue:
-            text = self.tokenizer.decode(gen, skip_special_tokens=False)
-            eos = self.tokenizer.eos_token or ""
-            text = text.rstrip().removesuffix(eos).rstrip()
+        strat_gen_ids = out1[0, p1_len:]   # [strat_gen_len]
+        strat_text = self.tokenizer.decode(strat_gen_ids, skip_special_tokens=True)
+        if "</strategy>" not in strat_text:
+            close_ids = torch.tensor(
+                self.tokenizer.encode("\n</strategy>", add_special_tokens=False),
+                dtype=torch.long, device=input_ids.device,
+            )
+            strat_gen_ids = torch.cat([strat_gen_ids, close_ids])
+            strat_text = self.tokenizer.decode(strat_gen_ids, skip_special_tokens=True)
+
+        # ── Phase 2: inject \n<action>, generate action body ──────────────────
+        action_tag_ids = torch.tensor(
+            [self.tokenizer.encode("\n<action>", add_special_tokens=False)],
+            dtype=torch.long, device=input_ids.device,
+        )
+        p2_ids = torch.cat([p1_ids, strat_gen_ids.unsqueeze(0), action_tag_ids], dim=1)
+        p2_len = p2_ids.shape[1]
+        if p1_mask is not None:
+            p2_mask = torch.ones(1, p2_ids.shape[1],
+                                 dtype=p1_mask.dtype, device=p1_mask.device)
+            p2_inputs = {"input_ids": p2_ids, "attention_mask": p2_mask}
         else:
-            text = self.tokenizer.decode(gen, skip_special_tokens=True)
+            p2_inputs = {"input_ids": p2_ids}
 
-        full_ids = out[0:1].cpu()   # [1, input_len + gen_len], no grad, on cpu
-        return text, (full_ids, input_len)
+        with torch.no_grad():
+            out2 = self.model.generate(**p2_inputs, **kwargs)
+
+        action_gen_ids = out2[0, p2_len:]
+        action_text = self.tokenizer.decode(action_gen_ids, skip_special_tokens=True)
+
+        full_text = f"<strategy>{strat_text}\n<action>{action_text}"
+        full_ids  = out2[0:1].cpu()   # [1, p2_len + action_len]
+        # input_len = p1_len: log probs cover strategy body + \n<action> + action body
+        return full_text, (full_ids, p1_len)
 
     def _generate_with_logprob(self, inputs) -> tuple[str, "torch.Tensor"]:
         """Generate a response and compute its log-probability via teacher forcing.
