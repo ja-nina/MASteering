@@ -36,9 +36,29 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
-export RAW_VECTORS_DIR="${REPO}/data/vector_extraction/persona/qwen3-4b/bf16"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0
+
+# ── Vector directories ────────────────────────────────────────────────────────
+PVEC_ROOT="/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona"
+STD_VECTORS_DIR="${PVEC_ROOT}/qwen3-4b/bf16"
+AMORAL_VECTORS_DIR="${PVEC_ROOT}/qwen3-4b-amoral-roleplay/bf16"
+
+# Traits whose vectors live in the amoral-roleplay extraction
+AMORAL_TRAITS=(
+    "charismatic"
+    "curious"
+    "directive-stance"
+    "epistemic-humility"
+    "evil"
+    "exploratory-stance"
+    "humorous"
+    "optimistic"
+    "over-pathologizing"
+    "protocol-rigid-checklist-driven"
+    "repair-accountability"
+    "suggestible-leading"
+)
 
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/logs
 mkdir -p /scratch/inf0/user/nzukowsk/MASteer/redteam_results
@@ -159,11 +179,21 @@ TRAIT="${ENTRY%%|*}"
 DIRECTION="${ENTRY##*|}"
 OUT_FILE="/scratch/inf0/user/nzukowsk/MASteer/redteam_results/rt_${TRAIT}_${DIRECTION}.jsonl"
 
+# Pick the correct vector directory for this trait
+RAW_VECTORS_DIR="${STD_VECTORS_DIR}"
+for amoral in "${AMORAL_TRAITS[@]}"; do
+    if [[ "${TRAIT}" == "${amoral}" ]]; then
+        RAW_VECTORS_DIR="${AMORAL_VECTORS_DIR}"
+        break
+    fi
+done
+
 cd "${REPO}"
 
 echo "[$(date)] Job ${SLURM_JOB_ID}, array task ${SLURM_ARRAY_TASK_ID}"
 echo "[$(date)] Trait     : ${TRAIT}"
 echo "[$(date)] Direction : ${DIRECTION}"
+echo "[$(date)] Vectors   : ${RAW_VECTORS_DIR}"
 echo "[$(date)] Output    : ${OUT_FILE}"
 echo "[$(date)] GPU       : $(nvidia-smi --query-gpu=index,name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
