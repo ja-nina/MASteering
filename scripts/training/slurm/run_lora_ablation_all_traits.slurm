@@ -5,7 +5,7 @@
 #SBATCH --array=0-105
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/lora_ablation_traits_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/lora_ablation_traits_%A_%a.err
-#SBATCH -t 6:00:00
+#SBATCH -t 12:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
 #  LoRA ablation — all 106 persona traits × nudge prompt × step-50 checkpoint
@@ -177,6 +177,7 @@ echo "[$(date)] output   : ${OUTPUT_JSONL}"
     --nudge-trait   "${TRAIT_SPEC}"                      \
     --max-turns     20                                   \
     --n-episodes    10                                   \
+    --n-paired-episodes 5                                \
     --max-new-tokens 512                                 \
     --output        "${OUTPUT_JSONL}"                    \
     --wandb                                              \

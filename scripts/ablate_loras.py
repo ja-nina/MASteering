@@ -420,6 +420,7 @@ def _run_episode(
     game_id, num_players, max_turns,
     system, max_new_tokens, device, probe_layer,
     trainee_system: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> Tuple[List[Dict], Optional[Dict]]:
     """
     Run one full game episode.
@@ -438,7 +439,10 @@ def _run_episode(
     """
     import textarena as ta
     env = ta.make(game_id)
-    env.reset(num_players=num_players)
+    try:
+        env.reset(num_players=num_players, seed=seed)
+    except TypeError:
+        env.reset(num_players=num_players)
 
     _trainee_sp = trainee_system if trainee_system is not None else system
 
@@ -558,7 +562,8 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   wandb_run=None,
                   trainee_system: Optional[str] = None,
                   nudge_trait: Optional[str] = None,
-                  n_episodes: int = 1):
+                  n_episodes: int = 1,
+                  n_paired_episodes: int = 0):
     # Derive the primary target slug from "slug:weight" spec (first positive slug)
     target_slug: Optional[str] = None
     if nudge_trait:
@@ -760,7 +765,114 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
         )
         wandb_run.log({"ablation/condition_comparison": cmp_tbl})
 
+    if n_paired_episodes > 0:
+        _run_paired_episodes(
+            model, tokenizer, probe, peft_model, conditions,
+            game_id, num_players, max_turns,
+            system, max_new_tokens, device, probe_layer,
+            trainee_system=trainee_system,
+            target_slug=target_slug,
+            nudge_trait=nudge_trait,
+            checkpoint=checkpoint,
+            n_paired=n_paired_episodes,
+            output_jsonl=output_jsonl,
+            wandb_run=wandb_run,
+        )
+
     print("[ablate] done.")
+
+
+def _run_paired_episodes(
+    model, tokenizer, probe, peft_model, conditions,
+    game_id, num_players, max_turns,
+    system, max_new_tokens, device, probe_layer,
+    trainee_system, target_slug, nudge_trait, checkpoint,
+    n_paired, output_jsonl, wandb_run,
+):
+    """Run all conditions on the same N seeds; compute every pairwise Δ."""
+    import math
+
+    # per-seed scores: {label: [score_seed0, ...]}
+    seed_scores: Dict[str, List[Optional[float]]] = {lbl: [] for lbl, _ in conditions}
+
+    print(f"\n{'═' * W}")
+    print(f"PAIRED EPISODES  n={n_paired}  (same seed per row → all conditions)")
+    if target_slug:
+        print(f"  target trait : {target_slug}")
+    print(f"{'═' * W}")
+
+    for seed_i in range(n_paired):
+        seed = 1000 + seed_i
+        print(f"\n── seed {seed_i+1}/{n_paired}  (seed={seed}) ──────────")
+        for label, adapter_names in conditions:
+            records, ta_rewards = _run_episode(
+                model, tokenizer, probe, peft_model, adapter_names,
+                game_id, num_players, max_turns,
+                system, max_new_tokens, device, probe_layer,
+                trainee_system=trainee_system,
+                seed=seed,
+            )
+            rec = _build_condition_record(
+                label, adapter_names, checkpoint, game_id,
+                records, ta_rewards, probe, probe_layer,
+                nudge_trait=nudge_trait,
+                target_slug=target_slug,
+            )
+            rec["episode"] = f"paired_seed{seed}"
+            if output_jsonl:
+                _log_jsonl(rec, output_jsonl)
+            score = rec.get("mean_target_trait_opponent")
+            seed_scores[label].append(score)
+            print(f"  {label:<42}  {score:+.4f}" if score is not None else f"  {label:<42}  n/a")
+
+    # All pairwise Δ: (X, Y) means Δ = X - Y
+    cond_labels = [lbl for lbl, _ in conditions]
+
+    def _pairwise(lbl_x, lbl_y):
+        xs, ys = seed_scores[lbl_x], seed_scores[lbl_y]
+        deltas = [round(x - y, 4) for x, y in zip(xs, ys)
+                  if x is not None and y is not None]
+        if not deltas:
+            return None, None, None, None, []
+        mn = round(sum(deltas) / len(deltas), 4)
+        sd = round(math.sqrt(sum((d - mn)**2 for d in deltas) / max(len(deltas)-1, 1)), 4) \
+             if len(deltas) > 1 else None
+        return mn, sd, round(min(deltas), 4), round(max(deltas), 4), deltas
+
+    # Build pairs: every (X, Y) where X != Y, ordered so A+B first
+    pairs = []
+    n = len(cond_labels)
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                pairs.append((cond_labels[i], cond_labels[j]))
+
+    print(f"\n{'═' * W}")
+    print(f"PAIRED Δ TABLE   Δ = score(row) − score(col)   n={n_paired} seeds")
+    print(f"{'─' * W}")
+    print(f"  {'Δ = X − Y':<60}  {'mean_Δ':>8}  {'std_Δ':>7}  {'min':>7}  {'max':>7}")
+    print(f"{'─' * W}")
+
+    wb_rows = []
+    for lbl_x, lbl_y in pairs:
+        mn, sd, lo, hi, deltas = _pairwise(lbl_x, lbl_y)
+        x_short = lbl_x.split("[")[0].strip()[:28]
+        y_short = lbl_y.split("[")[0].strip()[:28]
+        label_str = f"{x_short}  −  {y_short}"
+        f = lambda v: f"{v:>+8.4f}" if v is not None else "     n/a"
+        print(f"  {label_str:<60}  {f(mn)}  {f(sd)}  {f(lo)}  {f(hi)}")
+        wb_rows.append([target_slug, x_short, y_short, mn, sd, lo, hi])
+
+    print(f"{'═' * W}")
+
+    if wandb_run and probe is not None:
+        import wandb as wb
+        tbl = wb.Table(
+            columns=["target_trait", "condition_x", "condition_y",
+                     "mean_delta", "std_delta", "min_delta", "max_delta"],
+            data=wb_rows,
+        )
+        wandb_run.log({"ablation/paired_pairwise_deltas": tbl})
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
@@ -807,6 +919,10 @@ def main() -> None:
     ap.add_argument("--n-episodes",  type=int, default=1,
                     help="Number of game episodes per condition (default 1). "
                          "Use ≥5 for reliable delta estimates.")
+    ap.add_argument("--n-paired-episodes", type=int, default=0,
+                    help="Number of PAIRED episodes: same game seed run under all "
+                         "conditions, enabling per-seed Δ with lower variance. "
+                         "Appended after the independent run. 0 = disabled.")
 
     # Logging
     ap.add_argument("--output", default=None, metavar="FILE.jsonl",
@@ -955,6 +1071,7 @@ def main() -> None:
             trainee_system=trainee_system,
             nudge_trait=args.nudge_trait,
             n_episodes=args.n_episodes,
+            n_paired_episodes=args.n_paired_episodes,
         )
     else:
         user = args.user_prompt or DEFAULT_USER
