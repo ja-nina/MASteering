@@ -171,14 +171,14 @@ echo "[$(date)] GPUs    : $(nvidia-smi --query-gpu=index,name --format=csv,nohea
 "$PYTHON" -u "${REPO}/scripts/train_lora.py" \
     --config          "${CONFIG}"                                               \
     --traits          "${TRAITS}"                                               \
-    --run-name        "ipdNKL_${RUN_NAME}"                                      \
-    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd_nudge_kl" \
+    --run-name        "ipdNKLV2_${RUN_NAME}"                                    \
+    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd_nudge_kl_v2" \
     --vllm                                                                      \
     --vllm-device     cuda:0                                                    \
     --train-device    cuda:1                                                    \
     --nudge                                                                     \
     --kl-coef         0.02                                                      \
-    --wandb-project   nothink-kl-pen                                            \
+    --wandb-project   nothink-kl-pen-v2                                         \
     --vllm-gpu-mem    0.85
 
 echo "[$(date)] Done — ${RUN_NAME}"

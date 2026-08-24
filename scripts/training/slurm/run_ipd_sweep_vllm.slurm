@@ -170,8 +170,9 @@ echo "[$(date)] GPUs    : $(nvidia-smi --query-gpu=index,name --format=csv,nohea
 "$PYTHON" -u "${REPO}/scripts/train_lora.py" \
     --config          "${CONFIG}"                              \
     --traits          "${TRAITS}"                              \
-    --run-name        "ipd_${RUN_NAME}"                        \
-    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd" \
+    --run-name        "ipdV2_${RUN_NAME}"                       \
+    --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd_v2" \
+    --wandb-project   ma-steering-lora-nothink-v2              \
     --vllm                                                     \
     --vllm-device     cuda:0                                   \
     --train-device    cuda:1                                   \
