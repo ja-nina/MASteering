@@ -168,17 +168,19 @@ echo "[$(date)] Output    : ${OUT_FILE}"
 echo "[$(date)] GPU       : $(nvidia-smi --query-gpu=index,name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
 "$PYTHON" -u "${REPO}/scripts/redteam_eval.py" \
-    --model        Qwen/Qwen3-4B               \
-    --target-trait "${TRAIT}"                  \
-    --direction    "${DIRECTION}"              \
-    --probe-basis  "${SVD_BASIS}"              \
-    --probe-layer  18                          \
-    --n-episodes   10                          \
-    --game         IteratedPrisonersDilemma-v0 \
-    --max-turns    50                          \
-    --max-new-tokens 300                       \
-    --device       cuda                        \
-    --red-team-model grok-4                    \
-    --output       "${OUT_FILE}"
+    --model          Qwen/Qwen3-4B               \
+    --target-trait   "${TRAIT}"                  \
+    --direction      "${DIRECTION}"              \
+    --probe-basis    "${SVD_BASIS}"              \
+    --probe-layer    18                          \
+    --n-episodes     10                          \
+    --game           IteratedPrisonersDilemma-v0 \
+    --max-turns      50                          \
+    --max-new-tokens 300                         \
+    --device         cuda                        \
+    --red-team-model grok-4                      \
+    --wandb-project  redteam-baseline            \
+    --wandb-run-name "rt_${TRAIT}_${DIRECTION}"  \
+    --output         "${OUT_FILE}"
 
 echo "[$(date)] Done — ${TRAIT} (${DIRECTION})"
