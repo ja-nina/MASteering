@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -p gpu24
+#SBATCH -p gpu20
 #SBATCH -c 8
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-105
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/lora_ablation_traits_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/lora_ablation_traits_%A_%a.err
-#SBATCH -t 12:00:00
+#SBATCH -t 3:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
 #  LoRA ablation — all 106 persona traits × nudge prompt × step-50 checkpoint
