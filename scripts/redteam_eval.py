@@ -100,7 +100,10 @@ def _generate(model, tokenizer, system: str, user: str,
 def _probe_text(model, tokenizer, text: str, probe, device: str) -> Dict:
     hooks_spec, get_result = probe.make_hook()
     handles = []
-    hook_root = model.base_model.model if hasattr(model, "base_model") else model
+    # PeftModel:     model → base_model (LoraModel) → model (Qwen3ForCausalLM)
+    # Plain HF model: model (Qwen3ForCausalLM) — base_model exists but has no .model
+    bm = getattr(model, "base_model", None)
+    hook_root = bm.model if (bm is not None and hasattr(bm, "model")) else model
     for path, hook_fn in hooks_spec:
         module = hook_root
         for part in path.split("."):
