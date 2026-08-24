@@ -588,9 +588,12 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
     condition_summary: Dict[str, Dict] = {}
 
     for label, adapter_names in conditions:
-        ep_target_opp:  List[Optional[float]] = []
+        ep_target_opp:   List[Optional[float]] = []
         ep_target_train: List[Optional[float]] = []
-        ep_top_opp:     List[Optional[float]] = []
+        ep_top_opp:      List[Optional[float]] = []
+        ep_top_train:    List[Optional[float]] = []
+        ep_reward_train: List[Optional[float]] = []
+        ep_reward_opp:   List[Optional[float]] = []
 
         for ep_i in range(n_episodes):
             ep_label = f"{label}  [ep {ep_i+1}/{n_episodes}]"
@@ -603,62 +606,159 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             _print_episode(records, ta_rewards, probe, probe_layer, ep_label,
                            target_slug=target_slug)
 
-            if probe is not None and (output_jsonl or wandb_run):
-                rec = _build_condition_record(
-                    label, adapter_names, checkpoint, game_id,
-                    records, ta_rewards, probe, probe_layer,
-                    nudge_trait=nudge_trait,
-                    target_slug=target_slug,
-                )
-                rec["episode"] = ep_i
-                if output_jsonl:
-                    _log_jsonl(rec, output_jsonl)
-                if wandb_run:
-                    _log_wandb(rec, wandb_run)
+            rec = _build_condition_record(
+                label, adapter_names, checkpoint, game_id,
+                records, ta_rewards, probe, probe_layer,
+                nudge_trait=nudge_trait,
+                target_slug=target_slug,
+            )
+            rec["episode"] = ep_i
+            if output_jsonl:
+                _log_jsonl(rec, output_jsonl)
+            if wandb_run:
+                _log_wandb(rec, wandb_run)
 
-                ep_target_opp.append(rec.get("mean_target_trait_opponent"))
-                ep_target_train.append(rec.get("mean_target_trait_trainee"))
-                ep_top_opp.append(rec.get("mean_top_trait_opponent"))
+            ep_target_opp.append(rec.get("mean_target_trait_opponent"))
+            ep_target_train.append(rec.get("mean_target_trait_trainee"))
+            ep_top_opp.append(rec.get("mean_top_trait_opponent"))
+            ep_top_train.append(rec.get("mean_top_trait_trainee"))
+            gr = rec.get("game_rewards", {})
+            ep_reward_train.append(gr.get(str(TRAINEE_ID)))
+            ep_reward_opp.append(gr.get(str(OPPONENT_ID)))
 
         condition_summary[label] = {
-            "mean_target_opp":  _safe_mean(ep_target_opp),
-            "std_target_opp":   _safe_std(ep_target_opp),
+            "mean_target_opp":   _safe_mean(ep_target_opp),
+            "std_target_opp":    _safe_std(ep_target_opp),
             "mean_target_train": _safe_mean(ep_target_train),
-            "mean_top_opp":     _safe_mean(ep_top_opp),
-            "n":                len([v for v in ep_target_opp if v is not None]),
+            "std_target_train":  _safe_std(ep_target_train),
+            "mean_top_opp":      _safe_mean(ep_top_opp),
+            "mean_top_train":    _safe_mean(ep_top_train),
+            "mean_reward_train": _safe_mean(ep_reward_train),
+            "mean_reward_opp":   _safe_mean(ep_reward_opp),
+            "n":                 len([v for v in ep_target_opp if v is not None]),
         }
 
     # ── Attribution Δ table ───────────────────────────────────────────────────
-    print(f"\n{'═' * W}")
-    print(f"ATTRIBUTION TABLE  (target: {target_slug or 'n/a'})  n_episodes={n_episodes}")
-    print(f"{'─' * W}")
-    print(f"  {'condition':<42} {'mean_tgt_opp':>12} {'std':>7} {'Δ vs base':>10}")
-    print(f"{'─' * W}")
-    base_score = None
+    base_s = condition_summary.get(conditions[0][0], {})
+    base_tgt_opp   = base_s.get("mean_target_opp")
+    base_tgt_train = base_s.get("mean_target_train")
+    base_reward_t  = base_s.get("mean_reward_train")
+
+    W2 = max(W, 110)
+    print(f"\n{'═' * W2}")
+    print(f"ATTRIBUTION TABLE   target={target_slug or 'n/a'}   n_episodes={n_episodes}")
+    print(f"{'─' * W2}")
+    hdr = (f"  {'condition':<38}  {'n':>2}  "
+           f"{'tgt_opp':>8} {'±':>6}  {'Δtgt_opp':>9}  "
+           f"{'tgt_train':>9} {'Δtgt_trn':>9}  "
+           f"{'top_opp':>8}  "
+           f"{'reward_T':>8} {'Δreward':>8}")
+    print(hdr)
+    print(f"{'─' * W2}")
+
     rows_delta = []
     for label, _ in conditions:
         s = condition_summary.get(label, {})
-        m = s.get("mean_target_opp")
-        sd = s.get("std_target_opp")
-        if "base" in label.lower() and base_score is None:
-            base_score = m
-        delta = round(m - base_score, 4) if (m is not None and base_score is not None) else None
-        delta_str = f"{delta:+.4f}" if delta is not None else "  —"
-        m_str  = f"{m:+.4f}"  if m  is not None else "  n/a"
-        sd_str = f"{sd:.4f}"  if sd is not None else "  n/a"
-        print(f"  {label:<42} {m_str:>12} {sd_str:>7} {delta_str:>10}")
-        rows_delta.append((label, m, sd, delta))
-    print(f"{'═' * W}")
+        n  = s.get("n", 0)
+        mo = s.get("mean_target_opp");   so = s.get("std_target_opp")
+        mt = s.get("mean_target_train"); to = s.get("mean_top_opp")
+        rt = s.get("mean_reward_train")
 
-    if wandb_run and probe is not None:
+        def _d(val, base): return round(val - base, 4) if (val is not None and base is not None) else None
+        def _f(v, fmt="+.4f"): return format(v, fmt) if v is not None else "  n/a"
+
+        delta_opp   = _d(mo, base_tgt_opp)
+        delta_train = _d(mt, base_tgt_train)
+        delta_rew   = _d(rt, base_reward_t)
+
+        print(f"  {label:<38}  {n:>2}  "
+              f"{_f(mo):>8} {_f(so, '.4f'):>6}  {_f(delta_opp):>9}  "
+              f"{_f(mt):>9} {_f(delta_train):>9}  "
+              f"{_f(to):>8}  "
+              f"{_f(rt):>8} {_f(delta_rew):>8}")
+        rows_delta.append((label, s, delta_opp, delta_train, delta_rew))
+
+    # Interaction effect: Δ(both) vs Δ(a) + Δ(b)
+    if len(rows_delta) == 4:
+        _, _, da, _, _ = rows_delta[1]
+        _, _, db, _, _ = rows_delta[2]
+        _, _, dab, _, _ = rows_delta[3]
+        if all(v is not None for v in [da, db, dab]):
+            interaction = round(dab - da - db, 4)
+            print(f"{'─' * W2}")
+            print(f"  interaction effect  Δ(both) − Δ(a) − Δ(b) = {interaction:+.4f}"
+                  f"  ({'super-additive' if interaction > 0 else 'sub-additive'})")
+    print(f"{'═' * W2}")
+
+    # Dominant adapter summary
+    if len(rows_delta) >= 3:
+        _, _, da, _, _ = rows_delta[1]
+        _, _, db, _, _ = rows_delta[2]
+        if da is not None and db is not None:
+            dominant = "adapter_a (persona LoRA)" if abs(da) >= abs(db) else "adapter_b (task LoRA)"
+            print(f"  dominant adapter    : {dominant}  "
+                  f"(Δa={da:+.4f}, Δb={db:+.4f})")
+    print(f"{'═' * W2}")
+
+    if wandb_run:
         import wandb as wb
-        for label, m, sd, delta in rows_delta:
-            cond_key = label.split("[")[0].strip().replace(" ", "_")
+
+        # Per-condition delta scalars
+        for label, s, delta_opp, delta_train, delta_rew in rows_delta:
+            cond_key = label.split("[")[0].strip().replace(" ", "_").rstrip("_")
             wandb_run.log({
-                f"delta/{cond_key}/mean_target_opp":  m,
-                f"delta/{cond_key}/std_target_opp":   sd,
-                f"delta/{cond_key}/delta_vs_base":    delta,
+                f"delta/{cond_key}/mean_target_opp":    s.get("mean_target_opp"),
+                f"delta/{cond_key}/std_target_opp":     s.get("std_target_opp"),
+                f"delta/{cond_key}/delta_tgt_opp":      delta_opp,
+                f"delta/{cond_key}/mean_target_train":  s.get("mean_target_train"),
+                f"delta/{cond_key}/delta_tgt_train":    delta_train,
+                f"delta/{cond_key}/mean_reward_train":  s.get("mean_reward_train"),
+                f"delta/{cond_key}/delta_reward_train": delta_rew,
             })
+
+        # Side-by-side comparison table across all four conditions
+        compare_rows = []
+        for label, s, delta_opp, delta_train, delta_rew in rows_delta:
+            cond_key = label.split("[")[0].strip()
+            compare_rows.append([
+                target_slug,
+                cond_key,
+                s.get("n"),
+                s.get("mean_target_opp"),
+                s.get("std_target_opp"),
+                delta_opp,
+                s.get("mean_target_train"),
+                delta_train,
+                s.get("mean_top_opp"),
+                s.get("mean_reward_train"),
+                s.get("mean_reward_opp"),
+                delta_rew,
+            ])
+
+        # Interaction effect row
+        if len(rows_delta) == 4:
+            _, _, da, _, _ = rows_delta[1]
+            _, _, db, _, _ = rows_delta[2]
+            _, _, dab, _, _ = rows_delta[3]
+            if all(v is not None for v in [da, db, dab]):
+                interaction = round(dab - da - db, 4)
+                compare_rows.append([
+                    target_slug, "INTERACTION", None,
+                    None, None, interaction,
+                    None, None, None, None, None, None,
+                ])
+
+        cmp_tbl = wb.Table(
+            columns=[
+                "target_trait", "condition", "n_episodes",
+                "mean_target_opp", "std_target_opp", "delta_tgt_opp",
+                "mean_target_train", "delta_tgt_train",
+                "mean_top_opp",
+                "mean_reward_train", "mean_reward_opp", "delta_reward_train",
+            ],
+            data=compare_rows,
+        )
+        wandb_run.log({"ablation/condition_comparison": cmp_tbl})
 
     print("[ablate] done.")
 
