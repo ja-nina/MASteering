@@ -657,7 +657,7 @@ def main():
         train_device_str = args.train_device if use_vllm else str(next(model.parameters()).device)
         print(f"  recomputing log_probs + grpo ({n_turns * grpo_k} fwd passes)...", flush=True)
         optimizers = [optimizer_a, optimizer_b] if use_persona_lora else [optimizer_b]
-        combined_loss = grpo_step(
+        combined_loss, kl_loss = grpo_step(
             episode, optimizers,
             max_grad_norm=max_grad_norm,
             model=model,
@@ -684,6 +684,7 @@ def main():
         entry = {
             "step": step,
             "loss": combined_loss,
+            "kl_penalty": kl_loss,
             "reward": stats,
             "num_turns": n_turns,
             "game_reward_trainee": trainee_game_r,
@@ -720,6 +721,7 @@ def main():
             step=step,
             episode=episode,
             loss=combined_loss,
+            kl_penalty=kl_loss,
             model=model,
             probe=probe,
             probe_layer=probe_layer,

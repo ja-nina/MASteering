@@ -175,7 +175,8 @@ def grpo_step(
         for opt in optimizers:
             opt.zero_grad()
 
-    total_loss = 0.0
+    total_loss    = 0.0
+    total_kl_loss = 0.0
 
     for tg in episode.turn_groups:
         K = len(tg.rewards)
@@ -190,7 +191,8 @@ def grpo_step(
 
         # Recompute log_probs for this turn group only — keeps K graphs live,
         # not K×N_turns.  Falls back to pre-filled record.log_prob if no model.
-        tg_loss = torch.tensor(0.0)
+        tg_loss    = torch.tensor(0.0)
+        tg_kl_loss = torch.tensor(0.0)
         for record, adv in zip(tg.records, advantages):
             full_ids    = None
             gen_len     = 0
@@ -231,11 +233,13 @@ def grpo_step(
                     except Exception:
                         pass   # disable_adapter unavailable (non-PEFT model)
 
-                tg_loss = tg_loss + pg_loss + kl_loss
+                tg_loss    = tg_loss    + pg_loss + kl_loss
+                tg_kl_loss = tg_kl_loss + kl_loss
 
         if tg_loss.requires_grad:
             tg_loss.backward()   # frees this turn group's K graphs immediately
-            total_loss += tg_loss.item()
+            total_loss    += tg_loss.item()
+            total_kl_loss += tg_kl_loss.item()
 
     if do_step:
         all_params = [p for opt in optimizers for pg in opt.param_groups for p in pg["params"]]
@@ -244,7 +248,7 @@ def grpo_step(
             for opt in optimizers:
                 opt.step()
 
-    return total_loss
+    return total_loss, total_kl_loss
 
 
 def episode_stats(episode: Episode) -> dict:
@@ -271,6 +275,7 @@ def wandb_log_step(
     game_outcome: Optional[dict] = None,
     step_time: Optional[float] = None,
     target_trait_slugs: Optional[List[str]] = None,
+    kl_penalty: float = 0.0,
 ) -> None:
     """Log rich training diagnostics to wandb."""
     if wandb_run is None:
@@ -286,6 +291,7 @@ def wandb_log_step(
     n_turns = len(episode.turn_groups)
     log = {
         "loss":               loss,
+        "kl_penalty":         kl_penalty,
         "reward/mean":        stats["mean"],
         "reward/std":         stats["std"],
         "reward/min":         stats["min"],
