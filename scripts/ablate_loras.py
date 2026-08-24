@@ -305,7 +305,7 @@ def _log_wandb(record: Dict, wandb_run) -> None:
         rows.append([
             label, cond,
             t["turn"], "trainee" if t["is_trainee"] else "opponent",
-            t["action_text"][:120],
+            t["action_text"],
             t["top_trait_score"],
             top_str,
         ])
@@ -436,8 +436,7 @@ def _print_episode(records, ta_rewards, probe, probe_layer, label):
         role = "TRAINEE" if rec["is_trainee"] else "OPPONENT"
         role_marker = "▶" if rec["is_trainee"] else "◀"
         print(f"\n  {role_marker} Turn {rec['turn']} | {role} (Player {rec['player_id']})")
-        at = rec["action_text"]
-        print(f"    action : {at[:120]}{'…' if len(at) > 120 else ''}")
+        print(f"    action : {rec['action_text']}")
 
         if rec["probe_scores"] and probe is not None:
             print(_fmt_probe(rec["probe_scores"], probe, probe_layer, indent=4))
@@ -477,9 +476,9 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   nudge_trait: Optional[str] = None):
     print(f"\n{'═' * W}")
     print(f"ABLATION — GAME MODE   ({game_id})")
-    print(f"  system (opp)    : {system[:80]}{'…' if len(system) > 80 else ''}")
+    print(f"  system (opp)    : {system}")
     if trainee_system and trainee_system != system:
-        print(f"  system (trainee): {trainee_system[:80]}{'…' if len(trainee_system) > 80 else ''}")
+        print(f"  system (trainee): {trainee_system}")
     print(f"  trainee_id={TRAINEE_ID}  opponent_id={OPPONENT_ID}"
           f"  max_turns={max_turns}")
     if output_jsonl:
