@@ -23,14 +23,9 @@ class PersonaReward:
         import os
         basis = torch.load(os.path.expandvars(basis_path),
                            map_location="cpu", weights_only=False)
-        C_all: Dict[int, torch.Tensor] = basis["C"]   # {layer: [N_dedup, k]}
         slugs: List[str] = basis["slugs"]
         slug_to_idx = {s: i for i, s in enumerate(slugs)}
         merge_map = basis.get("merge_map", {})
-
-        # Build per-layer target direction: z_target_l = C_l.T @ w
-        self.z_targets: Dict[int, torch.Tensor] = {}
-        self.z_target_norms: Dict[int, torch.Tensor] = {}
         self.layer_start = layer_start
         self.sign = sign
 
@@ -52,17 +47,33 @@ class PersonaReward:
         else:
             print("[PersonaReward] ERROR: no target traits found — reward will be 0 everywhere!")
 
-        for layer, C in C_all.items():
-            if layer < layer_start:
-                continue
-            C = C.float()
-            z_t = C.T @ w                          # [k]
-            self.z_targets[layer] = z_t
-            self.z_target_norms[layer] = z_t.norm().clamp(min=1e-8)
-
-        n_layers = len(self.z_targets)
-        print(f"[PersonaReward] Averaging over {n_layers} layers "
-              f"(>= layer {layer_start}): {sorted(self.z_targets)[:5]}{'...' if n_layers>5 else ''}")
+        # Direct cosine-sim mode (basis has M_dedup: raw CAA directions in d-space).
+        # Probe z is [N_traits] cosine sims → reward = weighted sum, normalised by ||w||.
+        # Falls back to SVD z-space mode for old basis files without M_dedup.
+        if "M_dedup" in basis:
+            self._use_direct = True
+            w_norm = w.norm().clamp(min=1e-8)
+            self._w_normalized = w / w_norm   # [N_traits] — dot with cos_sim vector
+            # Which layers to expect (same as probe)
+            self._valid_layers = set(
+                l for l in basis["M_dedup"].keys() if l >= layer_start
+            )
+            print(f"[PersonaReward] mode=direct cosine-sim  layers>={layer_start}: "
+                  f"{len(self._valid_layers)} layers")
+        else:
+            self._use_direct = False
+            C_all: Dict[int, torch.Tensor] = basis["C"]   # {layer: [N_dedup, k]}
+            self.z_targets: Dict[int, torch.Tensor] = {}
+            self.z_target_norms: Dict[int, torch.Tensor] = {}
+            for layer, C in C_all.items():
+                if layer < layer_start:
+                    continue
+                C = C.float()
+                z_t = C.T @ w
+                self.z_targets[layer] = z_t
+                self.z_target_norms[layer] = z_t.norm().clamp(min=1e-8)
+            n_layers = len(self.z_targets)
+            print(f"[PersonaReward] mode=SVD z-space  layers>={layer_start}: {n_layers} layers")
 
     def __call__(self, probe_scores: Dict[str, dict]) -> float:
         """Score a probe_scores dict (layer_str → {z: [...]}) against the target."""
@@ -70,15 +81,22 @@ class PersonaReward:
         count = 0
         for layer_key, ld in probe_scores.items():
             layer = int(layer_key)
-            if layer not in self.z_targets:
+            if layer < self.layer_start:
                 continue
             z_list = ld.get("z") if isinstance(ld, dict) else None
             if not z_list:
                 continue
             z = torch.tensor(z_list, dtype=torch.float32)
-            z_norm = z.norm().clamp(min=1e-8)
-            cos_sim = (z @ self.z_targets[layer]) / (z_norm * self.z_target_norms[layer])
-            total += cos_sim.item()
+            if self._use_direct:
+                # z is [N_traits] cosine sims; reward = weighted sum
+                cos_sim = (z @ self._w_normalized.to(z.device)).item()
+            else:
+                if layer not in self.z_targets:
+                    continue
+                z_norm = z.norm().clamp(min=1e-8)
+                cos_sim = (z @ self.z_targets[layer]) / (z_norm * self.z_target_norms[layer])
+                cos_sim = cos_sim.item()
+            total += cos_sim
             count += 1
         if count == 0:
             return 0.0

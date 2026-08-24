@@ -631,6 +631,7 @@ def main():
             model=model,
             device=train_device_str,
             kl_coef=args.kl_coef,
+            tokenizer=tokenizer,
         )
 
         # Keep adapter_b orthogonal to persona subspace — project out after every step.

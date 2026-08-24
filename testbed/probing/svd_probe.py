@@ -82,6 +82,22 @@ class SVDPersonaProbe:
         self._Vk: Dict[int, "torch.Tensor"] = basis["Vk"]    # {layer: [k, d]}
         self._C: Dict[int, "torch.Tensor"] = basis["C"]       # {layer: [N_dedup, k]}
 
+        # Direct cosine-sim mode: uses CAA directions in original d-space.
+        # Avoids SVD-projection artefacts (norm distortion, subspace truncation).
+        # Available when basis was built with a version that saves M_dedup.
+        if "M_dedup" in basis:
+            self._M: Dict[int, "torch.Tensor"] = {
+                l: t.float() for l, t in basis["M_dedup"].items()
+            }
+            self._M_norms: Dict[int, "torch.Tensor"] = {
+                l: m.norm(dim=1).clamp(min=1e-8) for l, m in self._M.items()
+            }
+            self._use_direct = True
+        else:
+            self._M = {}
+            self._M_norms = {}
+            self._use_direct = False
+
     def _layer_path(self, layer_int: int) -> str:
         base = self.layer_path_template.format(layer_int)
         return base + SUBMODULE_SUFFIXES[self.hook]
@@ -105,11 +121,21 @@ class SVDPersonaProbe:
         def _make_layer_hook(layer_int: int):
             st = states[layer_int]
             Vk = self._Vk[layer_int]  # [k, d]
+            # Direct mode: preload M and norms for this layer
+            _M     = self._M.get(layer_int)      # [N_traits, d] or None
+            _Mnorm = self._M_norms.get(layer_int) # [N_traits] or None
 
             def _hook(module, inputs, output):
                 h = output[0] if isinstance(output, tuple) else output
                 last = h[:, -1, :].detach().float().mean(dim=0)  # [d]
-                z = Vk.to(last.device) @ last                    # [k]
+                if self._use_direct and _M is not None:
+                    # cos(h, M[i]) for each trait — direct, no SVD projection
+                    h_norm = last.norm().clamp(min=1e-8)
+                    z = (_M.to(last.device) @ last) / (
+                        _Mnorm.to(last.device) * h_norm
+                    )  # [N_traits]
+                else:
+                    z = Vk.to(last.device) @ last  # [k] SVD projection
 
                 n = st["n"] + 1
                 st["n"] = n
@@ -168,22 +194,35 @@ class SVDPersonaProbe:
         return self._nearest_traits(z, layer)
 
     def score_trait(self, z_list: List[float], slug: str, layer: int) -> Optional[float]:
-        """Cosine similarity for a specific slug at a given layer, bypassing top-k limit."""
+        """Cosine similarity for a specific slug, bypassing top-k limit.
+
+        In direct mode z_list is already [N_traits] cosine sims — just index.
+        In SVD mode compute cosine sim against C row.
+        """
         import torch
         if slug not in self._slugs:
             return None
         idx = self._slugs.index(slug)
-        C = self._C[layer]   # [N_dedup, k]
-        c = C[idx].float()   # [k]
+        if self._use_direct:
+            return float(z_list[idx])
+        C = self._C[layer]
+        c = C[idx].float()
         z = torch.tensor(z_list, dtype=torch.float32)
         return (z @ c).item() / (z.norm().clamp(min=1e-8) * c.norm().clamp(min=1e-8)).item()
 
     def _nearest_traits(self, z: "torch.Tensor", layer: int) -> List[List]:
-        """Return top-k [[slug, cosine_sim], ...] for z against C[layer]."""
-        C = self._C[layer].to(z.device)  # [N_dedup, k]
-        z_norm = z.norm().clamp(min=1e-8)
-        C_norms = C.norm(dim=1).clamp(min=1e-8)   # [N_dedup]
-        sims = (C @ z) / (C_norms * z_norm)       # [N_dedup]
+        """Return top-k [[slug, cosine_sim], ...].
+
+        In direct mode z is already [N_traits] cosine sims — use directly.
+        In SVD mode z is [k] projection — compute cosine sims against C.
+        """
+        if self._use_direct:
+            sims = z  # already [N_traits] cosine sims
+        else:
+            C = self._C[layer].to(z.device)  # [N_dedup, k]
+            z_norm = z.norm().clamp(min=1e-8)
+            C_norms = C.norm(dim=1).clamp(min=1e-8)
+            sims = (C @ z) / (C_norms * z_norm)
         k = min(self.top_k, len(self._slugs))
         topk_vals, topk_idx = sims.topk(k)
         return [[self._slugs[i.item()], v.item()] for v, i in zip(topk_vals, topk_idx)]

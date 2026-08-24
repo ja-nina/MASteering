@@ -91,16 +91,36 @@ def lora_inject_breakdown(
     return {s: v / count for s, v in slug_cos_sums.items()}
 
 
-def _compute_log_prob(model, full_ids: torch.Tensor, input_len: int) -> torch.Tensor:
-    """Teacher-forcing log prob for the generated tokens (requires_grad=True)."""
+def _log_probs_per_token(model, full_ids: torch.Tensor, input_len: int) -> torch.Tensor:
+    """Per-token log probs for the generated sequence. Returns [gen_len] tensor."""
     import torch.nn.functional as F
-
     gen_len = full_ids.shape[1] - input_len
     logits = model(full_ids).logits                           # [1, T, vocab]
     gen_logits = logits[0, input_len - 1: input_len - 1 + gen_len, :]
     log_probs_matrix = F.log_softmax(gen_logits, dim=-1)
     gen_ids = full_ids[0, input_len:]
-    return log_probs_matrix[torch.arange(gen_len, device=full_ids.device), gen_ids].sum()
+    return log_probs_matrix[torch.arange(gen_len, device=full_ids.device), gen_ids]  # [gen_len]
+
+
+def _compute_log_prob(model, full_ids: torch.Tensor, input_len: int) -> torch.Tensor:
+    """Scalar sum of per-token log probs (requires_grad=True)."""
+    return _log_probs_per_token(model, full_ids, input_len).sum()
+
+
+def _action_token_offset(tokenizer, full_ids: torch.Tensor, input_len: int) -> int:
+    """Token index (relative to input_len) where <action> begins.
+
+    Decode the generated tokens, find the '<action>' char offset, then
+    re-encode the strategy prefix to count its tokens.  Returns 0 when
+    '<action>' is absent so the full generation is penalised.
+    """
+    gen_ids = full_ids[0, input_len:].tolist()
+    gen_text = tokenizer.decode(gen_ids, skip_special_tokens=False)
+    pos = gen_text.find("<action>")
+    if pos == -1:
+        return 0
+    prefix_ids = tokenizer.encode(gen_text[:pos], add_special_tokens=False)
+    return min(len(prefix_ids), len(gen_ids))
 
 
 def grpo_step(
@@ -113,6 +133,7 @@ def grpo_step(
     model=None,
     device: str = "cuda",
     kl_coef: float = 0.0,
+    tokenizer=None,
 ) -> float:
     """Accumulate GRPO gradients for one episode; optionally step the optimizers.
 
@@ -132,7 +153,12 @@ def grpo_step(
     do_step:   call clip_grad_norm + opt.step() after all backwards.
 
     kl_coef: per-token KL penalty weight (Shao et al. 2024 GRPO formulation).
-        Adds β * (log π - log π_ref) / gen_len to the loss for each record.
+        Adds β * (log π - log π_ref) / T_action to the loss for each record,
+        where T_action is the number of action tokens (after <action> tag).
+        When tokenizer is provided the penalty applies ONLY to action tokens —
+        the strategy section (<strategy>…</strategy>) is unconstrained, letting
+        the model freely develop reasoning while keeping game decisions on-policy.
+        When tokenizer is None the full generation is penalised (legacy behaviour).
         Reference log-probs are computed by temporarily disabling all LoRA
         adapters on `model` (requires a PEFT model; noop when kl_coef=0).
         β=0.02–0.04 works well for persona rewards in [-1, 1].
@@ -166,34 +192,42 @@ def grpo_step(
         # not K×N_turns.  Falls back to pre-filled record.log_prob if no model.
         tg_loss = torch.tensor(0.0)
         for record, adv in zip(tg.records, advantages):
-            full_ids = None
-            gen_len  = 0
+            full_ids    = None
+            gen_len     = 0
+            lp_per_tok  = None   # [gen_len] tensor with grad — reused by KL block
             if model is not None and record.full_ids is not None:
                 full_ids = record.full_ids.to(device)
                 gen_len  = full_ids.shape[1] - record.input_len
                 if gen_len > 0:
-                    log_prob = _compute_log_prob(model, full_ids, record.input_len)
-                    record.log_prob = log_prob
+                    lp_per_tok      = _log_probs_per_token(model, full_ids, record.input_len)
+                    record.log_prob = lp_per_tok.sum()
                 else:
                     record.log_prob = None
             if record.log_prob is not None:
                 pg_loss = -record.log_prob * float(adv)
 
                 # Token-level KL penalty (GRPO formulation, Shao et al. 2024):
-                #   β * (log π_θ − log π_ref) / T
+                #   β * (log π_θ − log π_ref) / T_action
+                # When tokenizer is provided the penalty is restricted to action
+                # tokens only (<action>…</action>), leaving the strategy section
+                # free to diverge.  Without tokenizer the full generation is penalised.
                 # Reference = base model with all LoRA adapters disabled.
-                # Prevents reward hacking and format collapse without a second
-                # model in memory.  noop when kl_coef == 0.
                 kl_loss = torch.tensor(0.0)
-                if kl_coef > 0.0 and full_ids is not None and gen_len > 0:
+                if kl_coef > 0.0 and lp_per_tok is not None and gen_len > 0:
                     try:
                         with torch.no_grad(), model.disable_adapter():
-                            log_prob_ref = _compute_log_prob(
+                            lp_ref = _log_probs_per_token(
                                 model, full_ids, record.input_len
                             )
-                        kl_loss = kl_coef * (
-                            record.log_prob - log_prob_ref.detach()
-                        ) / gen_len
+                        offset = (
+                            _action_token_offset(tokenizer, full_ids, record.input_len)
+                            if tokenizer is not None else 0
+                        )
+                        n_act = gen_len - offset
+                        if n_act > 0:
+                            kl_loss = kl_coef * (
+                                lp_per_tok[offset:] - lp_ref.detach()[offset:]
+                            ).sum() / n_act
                     except Exception:
                         pass   # disable_adapter unavailable (non-PEFT model)
 

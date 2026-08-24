@@ -263,6 +263,11 @@ def run_build(
         "C":              C,
         "sigma":          sigma,
         "effective_rank": eff_rank,
+        # Raw CAA directions in original hidden-state space [N_dedup, d].
+        # Used by SVDPersonaProbe and PersonaReward for direct cosine similarity
+        # (cos(h, M_dedup[i])) instead of z-space projection, which avoids
+        # SVD-compression artefacts and is more interpretable.
+        "M_dedup":        M_dedup,
     }, str(out_path))
     n_merged = len(present_slugs) - len(dedup_slugs)
     print(f"[done] {len(present_slugs)} traits -> {len(dedup_slugs)} after dedup "

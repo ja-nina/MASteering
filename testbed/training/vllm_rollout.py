@@ -297,6 +297,16 @@ def collect_episode_vllm(
                 reward      = (reward_fn(opp_scores)
                                if (opp_scores and _has_action_tag(action)) else -1.0)
 
+                # Opponent game-decision (cooperate/defect) — only meaningful in
+                # the decision round.  Gate on the trainee also having decided;
+                # communication-round responses mention these words incidentally.
+                opp_decision = None
+                trainee_act_lower = _extract_action(action).lower()
+                if opp_resp is not None and (
+                    "cooperat" in trainee_act_lower or "defect" in trainee_act_lower
+                ):
+                    opp_decision = _extract_action(opp_resp).lower()
+
                 records.append(TurnRecord(
                     obs=obs_str,
                     action=action,
@@ -306,6 +316,7 @@ def collect_episode_vllm(
                     probe_z=None,           # not available from vLLM
                     probe_z_opponent=opp_z,
                     probe_z_all=None,       # not available from vLLM
+                    opp_decision=opp_decision,
                 ))
                 rewards.append(reward)
 
