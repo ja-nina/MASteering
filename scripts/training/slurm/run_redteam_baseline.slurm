@@ -36,7 +36,7 @@ PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
 
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
-export SVD_BASIS="${REPO}/data/svd_basis/qwen3-4b-residual.pt"
+export RAW_VECTORS_DIR="${REPO}/data/vector_extraction/persona/qwen3-4b/bf16"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0
 
@@ -168,19 +168,19 @@ echo "[$(date)] Output    : ${OUT_FILE}"
 echo "[$(date)] GPU       : $(nvidia-smi --query-gpu=index,name --format=csv,noheader 2>/dev/null || echo 'n/a')"
 
 "$PYTHON" -u "${REPO}/scripts/redteam_eval.py" \
-    --model          Qwen/Qwen3-4B               \
-    --target-trait   "${TRAIT}"                  \
-    --direction      "${DIRECTION}"              \
-    --probe-basis    "${SVD_BASIS}"              \
-    --probe-layer    18                          \
-    --n-episodes     10                          \
-    --game           IteratedPrisonersDilemma-v0 \
-    --max-turns      50                          \
-    --max-new-tokens 300                         \
-    --device         cuda                        \
-    --red-team-model grok-4                      \
-    --wandb-project  redteam-baseline            \
-    --wandb-run-name "rt_${TRAIT}_${DIRECTION}"  \
-    --output         "${OUT_FILE}"
+    --model              Qwen/Qwen3-4B               \
+    --target-trait       "${TRAIT}"                  \
+    --direction          "${DIRECTION}"              \
+    --raw-vectors-dir    "${RAW_VECTORS_DIR}"        \
+    --layer-start        10                          \
+    --n-episodes         10                          \
+    --game               IteratedPrisonersDilemma-v0 \
+    --max-turns          50                          \
+    --max-new-tokens     300                         \
+    --device             cuda                        \
+    --red-team-model     grok-4                      \
+    --wandb-project      redteam-baseline            \
+    --wandb-run-name     "rt_${TRAIT}_${DIRECTION}"  \
+    --output             "${OUT_FILE}"
 
 echo "[$(date)] Done — ${TRAIT} (${DIRECTION})"

@@ -19,13 +19,20 @@ Setup
 We probe the LOCAL MODEL's responses at every opponent turn and report
 the target-trait cosine similarity, giving the same metric as ablate_loras.py.
 
+Probe
+-----
+  Direct CAA cosine similarity — no SVD basis required.
+  Loads {target_trait}_raw.pt from --raw-vectors-dir, computes the mean-diff
+  CAA direction per layer, hooks all residual layers, and reports
+  cos(h, direction) averaged across layers >= --layer-start.
+
 Usage
 -----
     python scripts/redteam_eval.py \\
         --model Qwen/Qwen3-4B \\
         --target-trait evil \\
         --direction max \\
-        --probe-basis data/svd_basis/qwen3-4b-residual.pt \\
+        --raw-vectors-dir data/vector_extraction/persona/qwen3-4b/bf16 \\
         --n-episodes 10 \\
         --output results/redteam_base_evil_max.jsonl
 
@@ -129,8 +136,6 @@ def run_episode(
     system: str,
     max_new_tokens: int,
     device: str,
-    probe_layer: int,
-    target_slug: str,
     seed: Optional[int] = None,
 ) -> Tuple[List[Dict], Optional[Dict]]:
     """One episode: local base model (Player 0) vs red-team API (Player 1).
@@ -147,25 +152,39 @@ def run_episode(
 
     records: List[Dict] = []
     turn_count = 0
+    t_generate_total = 0.0
+    t_probe_total    = 0.0
+    t_api_total      = 0.0
 
     while turn_count < max_turns:
         player_id, obs_str = env.get_observation()
         is_local = (player_id == LOCAL_PLAYER_ID)
+        role = "local" if is_local else "redteam"
+        print(f"  [turn {turn_count+1:2d}] {role} ...", end=" ", flush=True)
 
         if is_local:
+            t0 = time.time()
             action = _generate(model, tokenizer, system, obs_str, max_new_tokens, device)
+            t_gen = time.time() - t0
+            t_generate_total += t_gen
+
+            t0 = time.time()
             probe_scores = _probe_text(model, tokenizer, action, probe, device)
-            # Target trait cosine-sim at display layer
-            target_score = None
-            ld = probe_scores.get(str(probe_layer), {})
-            z = ld.get("z")
-            if z:
-                target_score = probe.score_trait(z, target_slug, probe_layer)
+            t_prb = time.time() - t0
+            t_probe_total += t_prb
+
+            target_score = probe.mean_cos_sim(probe_scores) if probe_scores else None
+
+            tgt_str = f"  tgt={target_score:+.3f}" if target_score is not None else ""
+            print(f"gen={t_gen:.2f}s  probe={t_prb:.2f}s{tgt_str}", flush=True)
         else:
-            # Red-team generates — no local compute needed
+            t0 = time.time()
             action, _ = red_team.act(system_prompt=system, user_prompt=obs_str)
+            t_api = time.time() - t0
+            t_api_total += t_api
             probe_scores = None
             target_score = None
+            print(f"api={t_api:.2f}s", flush=True)
 
         action_text = _extract_action(action)
 
@@ -176,6 +195,7 @@ def run_episode(
             "obs":          obs_str,
             "action":       action,
             "action_text":  action_text,
+            "probe_scores": probe_scores,   # reused for reward — avoids a second forward pass
             "target_score": round(target_score, 4) if target_score is not None else None,
         })
 
@@ -183,6 +203,11 @@ def run_episode(
         turn_count += 1
         if done:
             break
+
+    print(f"  [timing] generate={t_generate_total:.2f}s  "
+          f"probe={t_probe_total:.2f}s  "
+          f"api={t_api_total:.2f}s  "
+          f"total≈{t_generate_total+t_probe_total+t_api_total:.2f}s", flush=True)
 
     try:
         ta_rewards, _ = env.close()
@@ -201,8 +226,10 @@ def main(argv=None):
     p.add_argument("--target-trait",     required=True,  help="Trait slug to measure (e.g. evil)")
     p.add_argument("--direction",        default="max",  choices=["max", "min"],
                    help="max = red-team pushes trait UP in local model; min = pushes DOWN")
-    p.add_argument("--probe-basis",      required=True)
-    p.add_argument("--probe-layer",      default=18, type=int)
+    p.add_argument("--raw-vectors-dir",   required=True,
+                   help="Directory containing {trait}_raw.pt CAA vector files")
+    p.add_argument("--layer-start",      default=10, type=int,
+                   help="Average cosine sim across layers >= this value (default: 10)")
     p.add_argument("--n-episodes",       default=5,  type=int)
     p.add_argument("--game",             default="IteratedPrisonersDilemma-v0")
     p.add_argument("--num-players",      default=2,  type=int)
@@ -233,21 +260,21 @@ def main(argv=None):
         device_map=args.device, trust_remote_code=True,
     )
 
-    # ── Load probe ───────────────────────────────────────────────────────────
-    from testbed.probing.svd_probe import SVDPersonaProbe
-    probe = SVDPersonaProbe(
-        basis_path=args.probe_basis,
+    # ── Load probe (direct CAA cosine sim — no SVD basis needed) ────────────
+    from testbed.probing.raw_cosine_probe import RawCosineProbe
+    raw_vectors_dir = Path(args.raw_vectors_dir)
+    raw_pt_path = raw_vectors_dir / f"{args.target_trait}_raw.pt"
+    if not raw_pt_path.exists():
+        print(f"[redteam_eval] ERROR: raw vectors not found at {raw_pt_path}")
+        sys.exit(1)
+    probe = RawCosineProbe(
+        raw_pt_path=str(raw_pt_path),
         hook="residual",
-        layers=[args.probe_layer],
+        layer_start=args.layer_start,
     )
-
-    # ── Load reward fn ───────────────────────────────────────────────────────
-    from testbed.training.reward import PersonaReward
-    reward_fn = PersonaReward(
-        basis_path=args.probe_basis,
-        target_traits={args.target_trait: 1.0},
-        layer_start=args.probe_layer,
-    )
+    print(f"[redteam_eval] probe      : direct CAA cosine sim  "
+          f"layers {args.layer_start}–{max(probe.layers)}  "
+          f"({len([l for l in probe.layers if l >= args.layer_start])} active)")
 
     # ── W&B ─────────────────────────────────────────────────────────────────
     wandb_run = None
@@ -259,13 +286,15 @@ def main(argv=None):
                 project=args.wandb_project,
                 name=run_name,
                 config={
-                    "target_trait":   args.target_trait,
-                    "direction":      args.direction,
-                    "red_team_model": args.red_team_model,
-                    "local_model":    args.model,
-                    "n_episodes":     args.n_episodes,
-                    "probe_layer":    args.probe_layer,
-                    "game":           args.game,
+                    "target_trait":     args.target_trait,
+                    "direction":        args.direction,
+                    "red_team_model":   args.red_team_model,
+                    "local_model":      args.model,
+                    "n_episodes":       args.n_episodes,
+                    "probe_type":       "raw_caa_cosine",
+                    "layer_start":      args.layer_start,
+                    "n_probe_layers":   len([l for l in probe.layers if l >= args.layer_start]),
+                    "game":             args.game,
                 },
             )
             print(f"[redteam_eval] wandb run: {wandb_run.url}")
@@ -287,8 +316,7 @@ def main(argv=None):
     print(f"{'═' * W}\n")
 
     episode_results = []
-    all_persona_rewards: List[float] = []
-    all_target_scores:   List[float] = []
+    all_target_scores: List[float] = []
 
     for ep_idx in range(args.n_episodes):
         print(f"── Episode {ep_idx + 1} / {args.n_episodes} ──")
@@ -300,41 +328,30 @@ def main(argv=None):
             game_id=args.game, num_players=args.num_players,
             max_turns=args.max_turns, system=args.system,
             max_new_tokens=args.max_new_tokens, device=args.device,
-            probe_layer=args.probe_layer, target_slug=args.target_trait,
             seed=ep_idx,
         )
         elapsed = time.time() - t0
 
-        # Persona reward computed over local-model turns only
-        local_probe_scores = [
-            _probe_text(model, tokenizer, r["action"], probe, args.device)
-            for r in records if r["is_local"]
-        ]
-        ep_rewards = [reward_fn(s) for s in local_probe_scores if s]
+        # probe_scores already computed inside run_episode — no extra forward passes
         ep_targets = [r["target_score"] for r in records
                       if r["is_local"] and r["target_score"] is not None]
-
-        ep_mean_reward = sum(ep_rewards) / len(ep_rewards) if ep_rewards else None
         ep_mean_target = sum(ep_targets) / len(ep_targets) if ep_targets else None
 
-        if ep_mean_reward is not None:
-            all_persona_rewards.append(ep_mean_reward)
         if ep_mean_target is not None:
             all_target_scores.append(ep_mean_target)
 
         game_str = ""
         if ta_rewards:
             game_str = f"  game={dict(ta_rewards)}"
-        print(f"  turns={len(records)}  "
-              f"persona_reward={ep_mean_reward:+.3f}  "
-              f"target_cos={ep_mean_target:+.3f}{game_str}  "
-              f"({elapsed:.1f}s)")
+        tgt_str = f"{ep_mean_target:+.3f}" if ep_mean_target is not None else "n/a"
+        print(f"  turns={len(records)}  target_cos={tgt_str}{game_str}  ({elapsed:.1f}s)")
 
         if wandb_run is not None:
+            import wandb as _wandb
+
+            # ── Scalar metrics ───────────────────────────────────────────────
             log = {"episode": ep_idx + 1, "elapsed_s": elapsed,
                    "n_turns": len(records)}
-            if ep_mean_reward is not None:
-                log["persona_reward"] = ep_mean_reward
             if ep_mean_target is not None:
                 log["target_cos_sim"] = ep_mean_target
             if ta_rewards:
@@ -343,6 +360,24 @@ def main(argv=None):
                     log[f"game_score/{role}"] = float(score)
             wandb_run.log(log, step=ep_idx + 1)
 
+            # ── Full interaction transcript as a wandb Table ─────────────────
+            table = _wandb.Table(
+                columns=["episode", "turn", "player", "observation",
+                         "full_response", "action_text", "target_cos_sim"]
+            )
+            for r in records:
+                player = "local (base)" if r["is_local"] else f"red-team ({args.red_team_model})"
+                table.add_data(
+                    ep_idx + 1,
+                    r["turn"],
+                    player,
+                    r["obs"],
+                    r["action"],
+                    r["action_text"],
+                    r["target_score"] if r["is_local"] else None,
+                )
+            wandb_run.log({"interactions": table}, step=ep_idx + 1)
+
         episode_results.append({
             "episode":          ep_idx + 1,
             "target_trait":     args.target_trait,
@@ -350,11 +385,13 @@ def main(argv=None):
             "red_team_model":   args.red_team_model,
             "local_model":      args.model,
             "red_team_baseline": True,
-            "persona_reward":   ep_mean_reward,
             "target_cos_sim":   ep_mean_target,
             "game_rewards":     {str(k): float(v) for k, v in (ta_rewards or {}).items()},
             "n_turns":          len(records),
-            "turns":            records,
+            "turns":            [
+                {k: v for k, v in r.items() if k != "probe_scores"}
+                for r in records
+            ],
         })
 
     # ── Summary ──────────────────────────────────────────────────────────────
@@ -365,9 +402,6 @@ def main(argv=None):
     print(f"  red-team      : {args.red_team_model}")
     print(f"  local model   : {args.model}")
     print(f"  episodes      : {args.n_episodes}")
-    if all_persona_rewards:
-        m = sum(all_persona_rewards) / len(all_persona_rewards)
-        print(f"  mean persona reward (base+red-team) : {m:+.4f}")
     if all_target_scores:
         m = sum(all_target_scores) / len(all_target_scores)
         print(f"  mean target cos-sim (base+red-team) : {m:+.4f}")
@@ -377,14 +411,11 @@ def main(argv=None):
 
     if wandb_run is not None:
         summary = {}
-        if all_persona_rewards:
-            summary["summary/mean_persona_reward"] = sum(all_persona_rewards) / len(all_persona_rewards)
-            summary["summary/std_persona_reward"]  = (
-                sum((r - summary["summary/mean_persona_reward"]) ** 2
-                    for r in all_persona_rewards) / len(all_persona_rewards)
-            ) ** 0.5
         if all_target_scores:
-            summary["summary/mean_target_cos_sim"] = sum(all_target_scores) / len(all_target_scores)
+            mean_cos = sum(all_target_scores) / len(all_target_scores)
+            var_cos  = sum((v - mean_cos) ** 2 for v in all_target_scores) / len(all_target_scores)
+            summary["summary/mean_target_cos_sim"] = mean_cos
+            summary["summary/std_target_cos_sim"]  = var_cos ** 0.5
         wandb_run.log(summary)
         wandb_run.finish()
 
