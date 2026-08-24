@@ -178,7 +178,7 @@ echo "[$(date)] output   : ${OUTPUT_JSONL}"
     --max-turns     20                                   \
     --n-episodes    10                                   \
     --n-paired-episodes 5                                \
-    --max-new-tokens 512                                 \
+    --max-new-tokens 2048                                \
     --output        "${OUTPUT_JSONL}"                    \
     --wandb                                              \
     --wandb-project ma-steering-lora-ablations           \
