@@ -191,7 +191,8 @@ def _probe_text(model, tokenizer, text: str, probe, device: str,
     return get_result()
 
 
-def _fmt_probe(scores: Dict, probe, layer: int, indent: int = 4) -> str:
+def _fmt_probe(scores: Dict, probe, layer: int, indent: int = 4,
+               target_slug: Optional[str] = None) -> str:
     pad = " " * indent
     ld = scores.get(str(layer), {})
     z = ld.get("z")
@@ -199,10 +200,19 @@ def _fmt_probe(scores: Dict, probe, layer: int, indent: int = 4) -> str:
         return f"{pad}[probe] no z vectors at layer {layer}"
     top = probe.rank_traits(z, layer)
     lines = [f"{pad}probe layer {layer}:"]
-    for slug, sim in top[:5]:
+    shown_slugs = {s for s, _ in top[:5]}
+    rows = list(top[:5])
+    # Always show the target trait even if outside top-5
+    if target_slug and target_slug not in shown_slugs:
+        for slug, sim in top:
+            if slug == target_slug:
+                rows.append((slug, sim))
+                break
+    for rank, (slug, sim) in enumerate(rows, start=1):
         bar = "█" * max(1, int(abs(sim) * 24))
         sign = "+" if sim >= 0 else "-"
-        lines.append(f"{pad}  {slug:22s} {sign}{abs(sim):.3f}  {bar}")
+        marker = " ◀ TARGET" if slug == target_slug else ""
+        lines.append(f"{pad}  {rank:2d}. {slug:22s} {sign}{abs(sim):.3f}  {bar}{marker}")
     return "\n".join(lines)
 
 
@@ -218,7 +228,22 @@ def _mean_trait_score(scores: Dict, probe, layer: int) -> Optional[float]:
 
 # ─── logging ─────────────────────────────────────────────────────────────────
 
-def _build_turn_record(rec: Dict, probe, probe_layer: int) -> Dict:
+def _target_trait_score_and_rank(
+    ranked: List[List], target_slug: Optional[str]
+) -> Tuple[Optional[float], Optional[int]]:
+    """Return (score, rank) of target_slug in a ranked trait list, or (None, None)."""
+    if not target_slug or not ranked:
+        return None, None
+    for rank, (slug, score) in enumerate(ranked, start=1):
+        if slug == target_slug:
+            return round(score, 4), rank
+    return None, None
+
+
+def _build_turn_record(
+    rec: Dict, probe, probe_layer: int,
+    target_slug: Optional[str] = None,
+) -> Dict:
     """Serialisable summary of one turn for JSONL / wandb."""
     out: Dict[str, Any] = {
         "turn":          rec["turn"],
@@ -227,19 +252,25 @@ def _build_turn_record(rec: Dict, probe, probe_layer: int) -> Dict:
         "full_response": rec.get("full_response", rec["action_text"]),
         "action_text":   rec["action_text"],
         "top_traits":    [],
-        "top_trait_score": None,
+        "top_trait_score":    None,
+        "target_trait":       target_slug,
+        "target_trait_score": None,
+        "target_trait_rank":  None,
     }
     ps = rec.get("probe_scores")
     if ps and probe is not None:
-        # Primary display layer (used for top_traits / top_trait_score summary)
+        # Primary display layer
         ld = ps.get(str(probe_layer), {})
         z  = ld.get("z")
         if z:
             top = probe.rank_traits(z, probe_layer)
             out["top_traits"]      = [[s, round(v, 4)] for s, v in top[:5]]
             out["top_trait_score"] = round(top[0][1], 4) if top else None
+            tscore, trank = _target_trait_score_and_rank(top, target_slug)
+            out["target_trait_score"] = tscore
+            out["target_trait_rank"]  = trank
 
-        # All layers — store full z-vector + top traits per layer
+        # All layers — z-vector + top traits + target trait score/rank per layer
         out["layers"] = {}
         for layer_str, ld_all in ps.items():
             z_all = ld_all.get("z")
@@ -248,9 +279,12 @@ def _build_turn_record(rec: Dict, probe, probe_layer: int) -> Dict:
             try:
                 layer_int = int(layer_str)
                 top_all = probe.rank_traits(z_all, layer_int)
+                tscore_l, trank_l = _target_trait_score_and_rank(top_all, target_slug)
                 out["layers"][layer_str] = {
-                    "z":         [round(v, 4) for v in z_all],
-                    "top_traits": [[s, round(v, 4)] for s, v in top_all[:5]],
+                    "z":                  [round(v, 4) for v in z_all],
+                    "top_traits":         [[s, round(v, 4)] for s, v in top_all[:5]],
+                    "target_trait_score": tscore_l,
+                    "target_trait_rank":  trank_l,
                 }
             except Exception:
                 pass
@@ -266,13 +300,18 @@ def _build_condition_record(
     ta_rewards: Optional[Dict],
     probe, probe_layer: int,
     nudge_trait: Optional[str] = None,
+    target_slug: Optional[str] = None,
 ) -> Dict:
-    turns = [_build_turn_record(r, probe, probe_layer) for r in turn_records]
+    turns = [_build_turn_record(r, probe, probe_layer, target_slug) for r in turn_records]
 
-    trainee_scores = [t["top_trait_score"] for t in turns if t["is_trainee"]
-                      and t["top_trait_score"] is not None]
-    opp_scores     = [t["top_trait_score"] for t in turns if not t["is_trainee"]
-                      and t["top_trait_score"] is not None]
+    def _mean(vals):
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    trainee_top   = [t["top_trait_score"]    for t in turns if t["is_trainee"]]
+    opp_top       = [t["top_trait_score"]    for t in turns if not t["is_trainee"]]
+    trainee_tgt   = [t["target_trait_score"] for t in turns if t["is_trainee"]]
+    opp_tgt       = [t["target_trait_score"] for t in turns if not t["is_trainee"]]
 
     return {
         "timestamp":   time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -281,11 +320,12 @@ def _build_condition_record(
         "condition":   condition_label,
         "adapter_names": adapter_names,
         "nudge_trait": nudge_trait,
+        "target_slug": target_slug,
         "turns":       turns,
-        "mean_top_trait_trainee":  round(sum(trainee_scores)/len(trainee_scores), 4)
-                                   if trainee_scores else None,
-        "mean_top_trait_opponent": round(sum(opp_scores)/len(opp_scores), 4)
-                                   if opp_scores else None,
+        "mean_top_trait_trainee":      _mean(trainee_top),
+        "mean_top_trait_opponent":     _mean(opp_top),
+        "mean_target_trait_trainee":   _mean(trainee_tgt),
+        "mean_target_trait_opponent":  _mean(opp_tgt),
         "game_rewards": {str(k): v for k, v in (ta_rewards or {}).items()},
         "n_turns":     len(turns),
     }
@@ -306,8 +346,10 @@ def _log_wandb(record: Dict, wandb_run) -> None:
 
     # Summary scalars
     summary: Dict[str, Any] = {
-        f"{cond}/mean_top_trait_trainee":  record["mean_top_trait_trainee"],
-        f"{cond}/mean_top_trait_opponent": record["mean_top_trait_opponent"],
+        f"{cond}/mean_top_trait_trainee":     record["mean_top_trait_trainee"],
+        f"{cond}/mean_top_trait_opponent":    record["mean_top_trait_opponent"],
+        f"{cond}/mean_target_trait_trainee":  record.get("mean_target_trait_trainee"),
+        f"{cond}/mean_target_trait_opponent": record.get("mean_target_trait_opponent"),
     }
     game_rewards = record.get("game_rewards", {})
     for pid, score in game_rewards.items():
@@ -316,6 +358,7 @@ def _log_wandb(record: Dict, wandb_run) -> None:
     wandb_run.log(summary)
 
     # Per-turn table
+    target_slug = record.get("target_slug")
     rows = []
     for t in record["turns"]:
         top_str = ", ".join(f"{s}:{v:+.3f}" for s, v in t["top_traits"][:3])
@@ -324,12 +367,16 @@ def _log_wandb(record: Dict, wandb_run) -> None:
             t["turn"], "trainee" if t["is_trainee"] else "opponent",
             t.get("full_response", t["action_text"]),
             t["action_text"],
+            target_slug,
+            t.get("target_trait_score"),
+            t.get("target_trait_rank"),
             t["top_trait_score"],
             top_str,
         ])
     tbl = wb.Table(
         columns=["run", "condition", "turn", "player", "full_response",
-                 "action", "top_trait_score", "top_traits"],
+                 "action", "target_trait", "target_trait_score", "target_trait_rank",
+                 "top_trait_score", "top_traits"],
         data=rows,
     )
     wandb_run.log({f"ablation/turns/{cond.replace(' ', '_')}": tbl})
@@ -445,9 +492,12 @@ def _run_episode(
     return records, ta_rewards
 
 
-def _print_episode(records, ta_rewards, probe, probe_layer, label):
+def _print_episode(records, ta_rewards, probe, probe_layer, label,
+                   target_slug: Optional[str] = None):
     print(f"\n{'╔' + '═' * (W - 2) + '╗'}")
     print(f"║  {label:<{W - 4}}║")
+    if target_slug:
+        print(f"║  target trait: {target_slug:<{W - 18}}║")
     print(f"{'╚' + '═' * (W - 2) + '╝'}")
 
     for rec in records:
@@ -458,7 +508,8 @@ def _print_episode(records, ta_rewards, probe, probe_layer, label):
 
         if rec["probe_scores"] and probe is not None:
             for layer_key in sorted(rec["probe_scores"].keys(), key=lambda x: int(x)):
-                print(_fmt_probe(rec["probe_scores"], probe, int(layer_key), indent=4))
+                print(_fmt_probe(rec["probe_scores"], probe, int(layer_key),
+                                 indent=4, target_slug=target_slug))
 
     # Summary table: mean top-trait score per player
     if probe is not None:
@@ -493,8 +544,20 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
                   wandb_run=None,
                   trainee_system: Optional[str] = None,
                   nudge_trait: Optional[str] = None):
+    # Derive the primary target slug from "slug:weight" spec (first positive slug)
+    target_slug: Optional[str] = None
+    if nudge_trait:
+        for part in nudge_trait.split(","):
+            slug, _, w = part.strip().partition(":")
+            weight = float(w) if w else 1.0
+            if weight > 0:
+                target_slug = slug.strip()
+                break
+
     print(f"\n{'═' * W}")
     print(f"ABLATION — GAME MODE   ({game_id})")
+    if target_slug:
+        print(f"  target trait    : {target_slug}  (from nudge_trait={nudge_trait})")
     print(f"  system (opp)    : {system}")
     if trainee_system and trainee_system != system:
         print(f"  system (trainee): {trainee_system}")
@@ -513,13 +576,15 @@ def run_game_eval(model, tokenizer, probe, peft_model, conditions,
             system, max_new_tokens, device, probe_layer,
             trainee_system=trainee_system,
         )
-        _print_episode(records, ta_rewards, probe, probe_layer, label)
+        _print_episode(records, ta_rewards, probe, probe_layer, label,
+                       target_slug=target_slug)
 
         if probe is not None and (output_jsonl or wandb_run):
             rec = _build_condition_record(
                 label, adapter_names, checkpoint, game_id,
                 records, ta_rewards, probe, probe_layer,
                 nudge_trait=nudge_trait,
+                target_slug=target_slug,
             )
             if output_jsonl:
                 _log_jsonl(rec, output_jsonl)
