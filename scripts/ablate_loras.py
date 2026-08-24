@@ -166,8 +166,12 @@ def _probe_text(model, tokenizer, text: str, probe, device: str,
     """
     hooks_spec, get_result = probe.make_hook()
     handles = []
+    # PeftModel wraps the base model: PeftModel.base_model.model = Qwen3ForCausalLM.
+    # The layer_path_template ("model.layers.N") is relative to Qwen3ForCausalLM,
+    # so start traversal there instead of from the PeftModel root.
+    hook_root = model.base_model.model if hasattr(model, "base_model") else model
     for path, hook_fn in hooks_spec:
-        module = model
+        module = hook_root
         for part in path.split("."):
             module = getattr(module, part)
         handles.append(module.register_forward_hook(hook_fn))
