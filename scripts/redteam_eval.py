@@ -318,6 +318,20 @@ def main(argv=None):
     episode_results = []
     all_target_scores: List[float] = []
 
+    # Single wandb Table accumulated across all episodes — logged once at the end
+    if wandb_run is not None:
+        import wandb as _wandb
+        interactions_table = _wandb.Table(
+            columns=["episode", "turn", "player", "observation",
+                     "full_response", "action_text", "target_cos_sim"]
+        )
+
+    out_fh = None
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_fh = open(out_path, "w")
+
     for ep_idx in range(args.n_episodes):
         print(f"── Episode {ep_idx + 1} / {args.n_episodes} ──")
         t0 = time.time()
@@ -347,9 +361,7 @@ def main(argv=None):
         print(f"  turns={len(records)}  target_cos={tgt_str}{game_str}  ({elapsed:.1f}s)")
 
         if wandb_run is not None:
-            import wandb as _wandb
-
-            # ── Scalar metrics ───────────────────────────────────────────────
+            # ── Scalar metrics per episode ───────────────────────────────────
             log = {"episode": ep_idx + 1, "elapsed_s": elapsed,
                    "n_turns": len(records)}
             if ep_mean_target is not None:
@@ -360,14 +372,10 @@ def main(argv=None):
                     log[f"game_score/{role}"] = float(score)
             wandb_run.log(log, step=ep_idx + 1)
 
-            # ── Full interaction transcript as a wandb Table ─────────────────
-            table = _wandb.Table(
-                columns=["episode", "turn", "player", "observation",
-                         "full_response", "action_text", "target_cos_sim"]
-            )
+            # ── Accumulate rows into the shared Table ────────────────────────
             for r in records:
                 player = "local (base)" if r["is_local"] else f"red-team ({args.red_team_model})"
-                table.add_data(
+                interactions_table.add_data(
                     ep_idx + 1,
                     r["turn"],
                     player,
@@ -376,9 +384,8 @@ def main(argv=None):
                     r["action_text"],
                     r["target_score"] if r["is_local"] else None,
                 )
-            wandb_run.log({"interactions": table}, step=ep_idx + 1)
 
-        episode_results.append({
+        ep_record = {
             "episode":          ep_idx + 1,
             "target_trait":     args.target_trait,
             "direction":        args.direction,
@@ -392,7 +399,11 @@ def main(argv=None):
                 {k: v for k, v in r.items() if k != "probe_scores"}
                 for r in records
             ],
-        })
+        }
+        episode_results.append(ep_record)
+        if out_fh is not None:
+            out_fh.write(json.dumps(ep_record) + "\n")
+            out_fh.flush()
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\n{'═' * W}")
@@ -416,15 +427,13 @@ def main(argv=None):
             var_cos  = sum((v - mean_cos) ** 2 for v in all_target_scores) / len(all_target_scores)
             summary["summary/mean_target_cos_sim"] = mean_cos
             summary["summary/std_target_cos_sim"]  = var_cos ** 0.5
+        # Log the full conversation table once — visible as a single Table panel in the run
+        summary["interactions"] = interactions_table
         wandb_run.log(summary)
         wandb_run.finish()
 
-    if args.output:
-        out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w") as f:
-            for rec in episode_results:
-                f.write(json.dumps(rec) + "\n")
+    if out_fh is not None:
+        out_fh.close()
         print(f"[redteam_eval] saved → {out_path}")
 
 
