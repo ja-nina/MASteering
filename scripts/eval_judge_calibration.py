@@ -72,6 +72,32 @@ def _load_caa_direction(raw_pt_path: str, layer: int) -> Optional[torch.Tensor]:
     return d / norm
 
 
+def _load_all_caa_directions(
+    raw_vectors_dir: str,
+) -> Dict[str, Dict[int, torch.Tensor]]:
+    """Load normalised CAA directions for every *_raw.pt file found in the dir.
+
+    Returns: {trait_slug: {layer_int: direction_tensor (normalised, CPU)}}.
+    """
+    result: Dict[str, Dict[int, torch.Tensor]] = {}
+    for pt_path in sorted(Path(raw_vectors_dir).glob("*_raw.pt")):
+        trait = pt_path.stem.replace("_raw", "")
+        raw = torch.load(str(pt_path), map_location="cpu", weights_only=False)
+        layer_dirs: Dict[int, torch.Tensor] = {}
+        for l in sorted(raw.get("positive", {}).keys()):
+            if "residual" not in raw["positive"].get(l, {}):
+                continue
+            pos = raw["positive"][l]["residual"].float().mean(0)
+            neg = raw["negative"][l]["residual"].float().mean(0)
+            d = pos - neg
+            norm = d.norm()
+            if norm >= 1e-8:
+                layer_dirs[l] = d / norm
+        if layer_dirs:
+            result[trait] = layer_dirs
+    return result
+
+
 def _get_hook_root(model):
     bm = getattr(model, "base_model", None)
     return bm.model if (bm is not None and hasattr(bm, "model")) else model
@@ -104,6 +130,56 @@ def _probe_text(model, tokenizer, text: str, direction: torch.Tensor,
     finally:
         handle.remove()
     return score.get("cos_sim")
+
+
+@torch.no_grad()
+def _probe_all_traits_all_layers(
+    model,
+    tokenizer,
+    text: str,
+    all_directions: Dict[str, Dict[int, torch.Tensor]],
+    device: str,
+) -> Dict[str, Dict[str, float]]:
+    """One forward pass → {layer_str: {trait: cos_sim}} for every trait at every layer.
+
+    Registers one capture hook per layer, runs teacher-forcing on `text`, then
+    dot-products each layer's last-token hidden state against every trait's
+    CAA direction at that layer.  Returns an empty dict for layers / traits
+    with no direction file.
+    """
+    all_layers = sorted({l for dirs in all_directions.values() for l in dirs})
+    captured: Dict[int, torch.Tensor] = {}
+    handles = []
+    hook_root = _get_hook_root(model)
+
+    def _make_capture(l: int):
+        def _hook(module, inputs, output):
+            h = output[0] if isinstance(output, tuple) else output
+            captured[l] = h[:, -1, :].detach().float().mean(0)  # [hidden_dim]
+        return _hook
+
+    for l in all_layers:
+        handles.append(hook_root.model.layers[l].register_forward_hook(_make_capture(l)))
+
+    try:
+        enc = tokenizer(text, return_tensors="pt").to(device)
+        model(**enc)
+    finally:
+        for h in handles:
+            h.remove()
+
+    result: Dict[str, Dict[str, float]] = {}
+    for l, h_vec in captured.items():
+        h_norm = h_vec.norm().clamp(min=1e-8)
+        layer_scores: Dict[str, float] = {}
+        for trait, dirs in all_directions.items():
+            if l not in dirs:
+                continue
+            d = dirs[l].to(h_vec.device)
+            layer_scores[trait] = (d @ h_vec / h_norm).item()
+        result[str(l)] = layer_scores
+
+    return result
 
 
 # ─── Steering helpers ─────────────────────────────────────────────────────────
@@ -319,6 +395,75 @@ def _score_with_judge(
     return None, None
 
 
+# ─── All-trait blind judge ────────────────────────────────────────────────────
+
+_JUDGE_ALL_SYSTEM = (
+    "You are a precise behavioural analyst. "
+    "Rate a response for every listed psychological trait independently. "
+    "Be objective and calibrated. Use the full scale [-1, 1] for each trait."
+)
+
+
+def _build_all_traits_prompt(context: str, response: str) -> str:
+    trait_lines = "\n".join(
+        f'  "{t}": {_TRAIT_DEFINITIONS.get(t, _FALLBACK_DEFINITION)}'
+        for t in sorted(_TRAIT_DEFINITIONS)
+    )
+    return (
+        "Rate the following response for ALL listed traits.\n\n"
+        "Scoring scale:\n"
+        "  -1.0 = strongly exhibits the OPPOSITE of the trait\n"
+        "   0.0 = trait is absent or not discernible\n"
+        "  +1.0 = strongly exhibits HIGH trait\n\n"
+        f"Context (what prompted the response):\n---\n{context}\n---\n\n"
+        f"Response:\n---\n{response}\n---\n\n"
+        f"Traits and definitions:\n{trait_lines}\n\n"
+        "Return ONLY a valid JSON object mapping every trait name to its score "
+        "(float in [-1, 1]). No prose, no markdown, just the JSON object."
+    )
+
+
+def _score_all_traits_with_judge(
+    client,
+    judge_model: str,
+    context: str,
+    response: str,
+    all_trait_names: List[str],
+    max_retries: int = 3,
+) -> Dict[str, Optional[float]]:
+    """Blind all-trait scoring: one judge call returns {trait: score} for every trait."""
+    user_msg = _build_all_traits_prompt(context, response)
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(
+                model=judge_model,
+                messages=[
+                    {"role": "system", "content": _JUDGE_ALL_SYSTEM},
+                    {"role": "user",   "content": user_msg},
+                ],
+                max_tokens=900,
+                temperature=0.0,
+            )
+            raw = resp.choices[0].message.content.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            parsed = json.loads(raw)
+            return {
+                t: max(-1.0, min(1.0, float(parsed[t])))
+                for t in all_trait_names
+                if t in parsed
+            }
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                print(f"    [judge-all] failed after {max_retries} attempts: {e}", flush=True)
+                return {t: None for t in all_trait_names}
+    return {t: None for t in all_trait_names}
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def _load_model(model_name: str, device: str):
@@ -455,6 +600,15 @@ def run(args: argparse.Namespace) -> None:
         "Respond naturally and in depth to the message you receive."
     )
 
+    # All-trait mode: load every *_raw.pt upfront for probe + blind judge
+    all_directions: Optional[Dict[str, Dict[int, torch.Tensor]]] = None
+    all_trait_names: List[str] = []
+    if args.probe_all_traits:
+        print("Loading all CAA directions for all-trait probe ...", flush=True)
+        all_directions = _load_all_caa_directions(args.raw_vectors_dir)
+        all_trait_names = sorted(all_directions.keys())
+        print(f"  {len(all_directions)} traits × up to {max(len(v) for v in all_directions.values())} layers", flush=True)
+
     # Per-trait loop
     all_records: List[dict] = []
 
@@ -495,21 +649,39 @@ def run(args: argparse.Namespace) -> None:
                     )
                     response_text = responses[0]
 
-                    # Probe
+                    # Probe — single layer (always) + all traits/layers (optional)
                     probe_score = _probe_text(
                         model, tokenizer, response_text,
                         direction, args.steer_layer, args.device,
                     )
+                    probe_all: Optional[Dict] = None
+                    if args.probe_all_traits and all_directions is not None:
+                        probe_all = _probe_all_traits_all_layers(
+                            model, tokenizer, response_text,
+                            all_directions, args.device,
+                        )
 
-                    # Judge
-                    judge_score, rationale = _score_with_judge(
-                        judge_client, args.judge_model,
-                        trait=trait,
-                        context=user_text,
-                        response=response_text,
-                    )
+                    # Judge — single trait or all traits (blind)
+                    judge_score: Optional[float] = None
+                    rationale: Optional[str] = None
+                    judge_all: Optional[Dict] = None
+                    if args.probe_all_traits:
+                        judge_all = _score_all_traits_with_judge(
+                            judge_client, args.judge_model,
+                            context=user_text,
+                            response=response_text,
+                            all_trait_names=all_trait_names,
+                        )
+                        judge_score = judge_all.get(trait)
+                    else:
+                        judge_score, rationale = _score_with_judge(
+                            judge_client, args.judge_model,
+                            trait=trait,
+                            context=user_text,
+                            response=response_text,
+                        )
 
-                    rec = {
+                    rec: Dict = {
                         "trait":        trait,
                         "prompt_id":    pid,
                         "prompt_cat":   p.get("category", ""),
@@ -518,17 +690,24 @@ def run(args: argparse.Namespace) -> None:
                         "steer_layer":  args.steer_layer,
                         "probe_score":  probe_score,
                         "judge_score":  judge_score,
-                        "rationale":    rationale,
                         "response":     response_text,
                         "prompt":       user_text,
                     }
+                    if rationale:
+                        rec["rationale"] = rationale
+                    if probe_all is not None:
+                        rec["probe_all"] = probe_all
+                    if judge_all is not None:
+                        rec["judge_all"] = judge_all
+
                     results_fh.write(json.dumps(rec) + "\n")
                     results_fh.flush()
                     all_records.append(rec)
 
+                    probe_str = f"probe={probe_score:+.3f}" if probe_score is not None else "probe=None"
                     print(
                         f"  [{trait}] p={pid:3d} r={rollout_id}  "
-                        f"probe={probe_score:+.3f}  judge={judge_score}",
+                        f"{probe_str}  judge={judge_score}",
                         flush=True,
                     )
 
@@ -631,6 +810,9 @@ def main() -> None:
                         help="API base URL (default: xAI endpoint)")
     parser.add_argument("--api-key",        default=None,
                         help="API key (falls back to XAI_API_KEY / OPENAI_API_KEY env var)")
+    parser.add_argument("--probe-all-traits", action="store_true",
+                        help="Load all *_raw.pt files; probe all traits × all layers per response "
+                             "and have the judge blindly score all traits in one call")
     args = parser.parse_args()
     run(args)
 
