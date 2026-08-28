@@ -482,11 +482,8 @@ def _load_model(model_name: str, device: str):
 
 def _build_judge_client(base_url: str, api_key: Optional[str]):
     from openai import OpenAI
-    key = api_key or os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise EnvironmentError(
-            "No API key found. Set XAI_API_KEY / OPENAI_API_KEY or pass --api-key."
-        )
+    # vLLM doesn't require a real key; fall back to a dummy so OpenAI client is happy.
+    key = api_key or os.environ.get("OPENAI_API_KEY") or "EMPTY"
     return OpenAI(api_key=key, base_url=base_url)
 
 
@@ -665,21 +662,22 @@ def run(args: argparse.Namespace) -> None:
                     judge_score: Optional[float] = None
                     rationale: Optional[str] = None
                     judge_all: Optional[Dict] = None
-                    if args.probe_all_traits:
-                        judge_all = _score_all_traits_with_judge(
-                            judge_client, args.judge_model,
-                            context=user_text,
-                            response=response_text,
-                            all_trait_names=all_trait_names,
-                        )
-                        judge_score = judge_all.get(trait)
-                    else:
-                        judge_score, rationale = _score_with_judge(
-                            judge_client, args.judge_model,
-                            trait=trait,
-                            context=user_text,
-                            response=response_text,
-                        )
+                    if not args.skip_judge:
+                        if args.probe_all_traits:
+                            judge_all = _score_all_traits_with_judge(
+                                judge_client, args.judge_model,
+                                context=user_text,
+                                response=response_text,
+                                all_trait_names=all_trait_names,
+                            )
+                            judge_score = judge_all.get(trait)
+                        else:
+                            judge_score, rationale = _score_with_judge(
+                                judge_client, args.judge_model,
+                                trait=trait,
+                                context=user_text,
+                                response=response_text,
+                            )
 
                     rec: Dict = {
                         "trait":        trait,
@@ -710,6 +708,26 @@ def run(args: argparse.Namespace) -> None:
                         f"{probe_str}  judge={judge_score}",
                         flush=True,
                     )
+                    if args.verbose:
+                        snippet = response_text[:300].replace("\n", " ")
+                        print(f"    response: {snippet!r}", flush=True)
+                        if probe_all:
+                            steer_layer_key = str(args.steer_layer)
+                            if steer_layer_key in probe_all:
+                                scores = probe_all[steer_layer_key]
+                                top5 = sorted(scores.items(), key=lambda kv: -kv[1])[:5]
+                                bot5 = sorted(scores.items(), key=lambda kv: kv[1])[:5]
+                                print(f"    probe_all layer {steer_layer_key} — top5: "
+                                      + ", ".join(f"{t}={v:+.3f}" for t, v in top5),
+                                      flush=True)
+                                print(f"    probe_all layer {steer_layer_key} — bot5: "
+                                      + ", ".join(f"{t}={v:+.3f}" for t, v in bot5),
+                                      flush=True)
+                        if judge_all:
+                            top5j = sorted(judge_all.items(), key=lambda kv: -(kv[1] or -99))[:5]
+                            print(f"    judge_all top5: "
+                                  + ", ".join(f"{t}={v}" for t, v in top5j),
+                                  flush=True)
 
     # ── Compute correlations ──────────────────────────────────────────────────
     # Re-load full results (including resumed records)
@@ -804,15 +822,20 @@ def main() -> None:
     parser.add_argument("--output-dir",     default="results/judge_calibration",
                         help="Directory for output files (default: results/judge_calibration)")
     parser.add_argument("--device",         default="cuda:0")
-    parser.add_argument("--judge-model",    default="grok-4",
-                        help="API model for judging (default: grok-4)")
-    parser.add_argument("--judge-base-url", default="https://api.x.ai/v1",
-                        help="API base URL (default: xAI endpoint)")
+    parser.add_argument("--judge-model",    default="Qwen/Qwen3-14B",
+                        help="Model name served by the local vLLM judge server (default: Qwen/Qwen3-14B)")
+    parser.add_argument("--judge-base-url", default="http://localhost:8000/v1",
+                        help="vLLM OpenAI-compatible API base URL (default: http://localhost:8000/v1)")
     parser.add_argument("--api-key",        default=None,
-                        help="API key (falls back to XAI_API_KEY / OPENAI_API_KEY env var)")
+                        help="API key — not needed for local vLLM (uses 'EMPTY' fallback)")
     parser.add_argument("--probe-all-traits", action="store_true",
                         help="Load all *_raw.pt files; probe all traits × all layers per response "
                              "and have the judge blindly score all traits in one call")
+    parser.add_argument("--skip-judge", action="store_true",
+                        help="Skip all judge API calls — useful to validate generation + probing "
+                             "alone without starting a vLLM server")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print response snippets and probe_all/judge_all top-5 scores per record")
     args = parser.parse_args()
     run(args)
 
