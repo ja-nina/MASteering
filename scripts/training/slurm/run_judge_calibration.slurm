@@ -42,7 +42,7 @@ set -euo pipefail
 
 REPO="/BS/ForNet/work/MASteering"
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
-RAW_VECTORS_DIR="/BS/ForNet/work/MASteering/data/vector_extraction/persona/qwen3-4b/bf16"
+RAW_VECTORS_DIR="/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona/qwen3-4b-all/bf16"
 JUDGE_MODEL="Qwen/Qwen3-14B"
 JUDGE_PORT=8731
 JUDGE_URL="http://localhost:${JUDGE_PORT}/v1"

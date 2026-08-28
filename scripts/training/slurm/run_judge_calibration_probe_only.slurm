@@ -30,7 +30,7 @@ set -euo pipefail
 
 REPO="/BS/ForNet/work/MASteering"
 PYTHON="/BS/conformal-circuits/work/mamba/envs/ma-testbed/bin/python"
-RAW_VECTORS_DIR="/BS/ForNet/work/MASteering/data/vector_extraction/persona/qwen3-4b/bf16"
+RAW_VECTORS_DIR="/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona/qwen3-4b-all/bf16"
 OUT_DIR="/scratch/inf0/user/nzukowsk/MASteer/test_probe_only"
 
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
