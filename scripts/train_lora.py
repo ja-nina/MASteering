@@ -216,6 +216,13 @@ def main():
                         help="Override wandb run name and output save_dir suffix")
     parser.add_argument("--local-save-dir", default=None,
                         help="Extra save path (e.g. scratch dir) for checkpoints and final adapters")
+    parser.add_argument("--resume-from", default=None,
+                        help="Path to a checkpoint directory (e.g. .../checkpoint_step00250) "
+                             "to resume training from. Loads adapter_a and adapter_b weights "
+                             "and restores the step counter from the directory name.")
+    parser.add_argument("--wandb-run-id", default=None,
+                        help="Existing wandb run ID to resume (use with --resume-from). "
+                             "If omitted a new run is started.")
     parser.add_argument("--game", default=None,
                         help="Override training.game (e.g. SimpleNegotiation-v0)")
     parser.add_argument("--episodes", type=int, default=None,
@@ -229,6 +236,12 @@ def main():
                         help="GPU for HF training model when --vllm is set (default: cuda:1)")
     parser.add_argument("--vllm-gpu-mem", type=float, default=0.90,
                         help="vLLM gpu_memory_utilization (default: 0.90)")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Sampling temperature for vLLM rollouts (default: 0.7)")
+    parser.add_argument("--top-p", type=float, default=0.8,
+                        help="top-p (nucleus) sampling for vLLM rollouts (default: 0.8)")
+    parser.add_argument("--top-k", type=int, default=20,
+                        help="top-k sampling for vLLM rollouts (default: 20)")
     parser.add_argument("--bind", action="store_true",
                         help="Enforce <strategy>…</strategy><action>… format via vLLM guided "
                              "decoding (constrained sampling).  Off by default so old runs "
@@ -412,6 +425,9 @@ def main():
             gpu_memory_utilization=args.vllm_gpu_mem,
             max_tokens=cfg.get("training", {}).get("max_new_tokens", 300),
             use_guided_decoding=args.bind,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
         )
         vllm_syncer = LoRAWeightSyncer()
         # Load initial adapter (adapter_a if persona, else adapter_b).
