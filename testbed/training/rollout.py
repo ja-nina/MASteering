@@ -38,8 +38,9 @@ class TurnRecord:
     probe_z_opponent: Optional[List[float]] = None   # opponent reaction (reward)
     probe_z_all: Optional[Dict[str, List[float]]] = None
     opp_decision: Optional[str] = None    # extracted action from counterfactual opponent
-    opp_response: Optional[str] = None    # full counterfactual opponent response text
-    raw_cos_sim: Optional[float] = None   # mean cosine-sim across layers (pre-sign, pre-alpha)
+    opp_response: Optional[str] = None              # full counterfactual opponent response text
+    raw_cos_sim: Optional[float] = None             # mean cosine-sim across layers (pre-sign, pre-alpha)
+    cos_sims_per_layer: Optional[Dict[int, float]] = None  # {layer: cosine-sim} pre-sign
 
 
 @dataclass
@@ -174,9 +175,11 @@ def collect_episode(
                 if opp_scores and _has_action_tag(action):
                     reward = reward_fn(opp_scores)
                     raw_cos_sim = getattr(reward_fn, "last_mean_cos_sim", None)
+                    cos_sims_per_layer = dict(getattr(reward_fn, "last_cos_sims", {})) or None
                 else:
                     reward = -1.0
                     raw_cos_sim = None
+                    cos_sims_per_layer = None
 
                 # Extract opponent's game decision for behavioral tracking across K candidates
                 opp_decision = None
@@ -195,6 +198,7 @@ def collect_episode(
                     opp_decision=opp_decision,
                     opp_response=cf_opp_action,
                     raw_cos_sim=raw_cos_sim,
+                    cos_sims_per_layer=cos_sims_per_layer,
                 ))
                 rewards.append(reward)
 

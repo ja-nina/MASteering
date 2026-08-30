@@ -742,6 +742,10 @@ def main():
                         {
                             "k": k,
                             "action": rec.action,
+                            "opp_response": rec.opp_response,
+                            "opp_decision": rec.opp_decision,
+                            "raw_cos_sim_mean": rec.raw_cos_sim,
+                            "raw_cos_sim_per_layer": rec.cos_sims_per_layer,
                             "reward": tg.rewards[k],
                             "advantage": (tg.advantages[k]
                                           if tg.advantages else None),

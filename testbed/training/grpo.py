@@ -316,6 +316,16 @@ def wandb_log_step(
             (sum((x - log["reward/raw_cos_sim_mean"]) ** 2 for x in all_raw) / len(all_raw)) ** 0.5
         )
 
+    # Per-layer cosine-sim means across all candidates in this episode
+    layer_sims: Dict[int, List[float]] = {}
+    for tg in episode.turn_groups:
+        for r in tg.records:
+            if r.cos_sims_per_layer:
+                for layer, sim in r.cos_sims_per_layer.items():
+                    layer_sims.setdefault(layer, []).append(sim)
+    for layer, sims in sorted(layer_sims.items()):
+        log[f"reward/cos_sim_layer_{layer:02d}"] = sum(sims) / len(sims)
+
     # ── 1b. Per-turn reward breakdown + opponent decision rates ─────────────
     # With K=8 candidates, opp_coop_rate is continuous in {0, 1/8, ..., 1}.
     # This directly measures behavioral influence, not just persona cosine-sim.
