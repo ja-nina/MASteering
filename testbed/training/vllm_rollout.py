@@ -321,7 +321,8 @@ def collect_episode_vllm(
             # responses and probe each one.  This measures the opponent's actual
             # hidden state when RESPONDING to the trainee — not just when reading.
             # Build (system_prompt, opp_obs) pairs for each candidate.
-            # Use _trainee_sp so the format instruction is included.
+            # Use base system_prompt (NOT _trainee_sp) so the opponent never
+            # sees the trainee's secret nudge instructions.
             opp_prompt_pairs: List[Optional[Tuple[str, str]]] = []
             opp_obs_map: dict = {}   # k → opp_obs_cf (needed for probe context)
             for k_cf, (action, _, _) in enumerate(candidates):
@@ -332,7 +333,7 @@ def collect_episode_vllm(
                         opp_prompt_pairs.append(None)
                     else:
                         _, opp_obs_cf = env_cf.get_observation()
-                        opp_prompt_pairs.append((_trainee_sp, opp_obs_cf))
+                        opp_prompt_pairs.append((system_prompt, opp_obs_cf))
                         opp_obs_map[k_cf] = opp_obs_cf
                 except Exception as _cf_err:
                     print(f"    [cf] counterfactual env failed (k={k_cf}): {_cf_err}", flush=True)
@@ -357,7 +358,7 @@ def collect_episode_vllm(
                 # using base model (LoRA disabled). Direct cosine-sim with M_dedup.
                 if opp_resp is not None and opp_obs_cf is not None:
                     opp_scores = probe_policy.probe_response_in_context(
-                        _trainee_sp, opp_obs_cf, opp_resp
+                        system_prompt, opp_obs_cf, opp_resp
                     )
                 else:
                     opp_scores = {}
