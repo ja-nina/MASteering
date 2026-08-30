@@ -320,8 +320,11 @@ def collect_episode_vllm(
             # opponent's resulting observation, then batch-generate K opponent
             # responses and probe each one.  This measures the opponent's actual
             # hidden state when RESPONDING to the trainee — not just when reading.
+            # Build (system_prompt, opp_obs) pairs for each candidate.
+            # Use _trainee_sp so the format instruction is included.
             opp_prompt_pairs: List[Optional[Tuple[str, str]]] = []
-            for action, _, _ in candidates:
+            opp_obs_map: dict = {}   # k → opp_obs_cf (needed for probe context)
+            for k_cf, (action, _, _) in enumerate(candidates):
                 try:
                     env_cf = copy.deepcopy(env)
                     done_cf, _ = env_cf.step(_extract_action(action))
@@ -329,8 +332,10 @@ def collect_episode_vllm(
                         opp_prompt_pairs.append(None)
                     else:
                         _, opp_obs_cf = env_cf.get_observation()
-                        opp_prompt_pairs.append((system_prompt, opp_obs_cf))
-                except Exception:
+                        opp_prompt_pairs.append((_trainee_sp, opp_obs_cf))
+                        opp_obs_map[k_cf] = opp_obs_cf
+                except Exception as _cf_err:
+                    print(f"    [cf] counterfactual env failed (k={k_cf}): {_cf_err}", flush=True)
                     opp_prompt_pairs.append(None)
 
             valid_idxs = [i for i, p in enumerate(opp_prompt_pairs) if p is not None]
@@ -346,24 +351,39 @@ def collect_episode_vllm(
 
             for k, (action, full_ids, input_len) in enumerate(candidates):
                 opp_resp = opp_resp_map.get(k)
-                # Probe the opponent's generated response (strategy + action) if
-                # available; fall back to trainee's action if the game ended early.
-                probe_input = opp_resp if opp_resp is not None else _extract_action(action)
-                opp_scores  = probe_policy.probe_text(probe_input)
-                ld_opp      = opp_scores.get(str(probe_layer), {})
-                opp_z       = ld_opp.get("z") or None
-                reward      = (reward_fn(opp_scores)
-                               if (opp_scores and _has_action_tag(action)) else -1.0)
+                opp_obs_cf = opp_obs_map.get(k)
 
-                # Opponent game-decision (cooperate/defect) — only meaningful in
-                # the decision round.  Gate on the trainee also having decided;
-                # communication-round responses mention these words incidentally.
+                # Probe opponent's hidden state with full conversation context
+                # using base model (LoRA disabled). Direct cosine-sim with M_dedup.
+                if opp_resp is not None and opp_obs_cf is not None:
+                    opp_scores = probe_policy.probe_response_in_context(
+                        _trainee_sp, opp_obs_cf, opp_resp
+                    )
+                else:
+                    opp_scores = {}
+
+                ld_opp = opp_scores.get(str(probe_layer), {})
+                opp_z  = ld_opp.get("z") or None
+
+                if opp_scores and _has_action_tag(action):
+                    reward = reward_fn(opp_scores)
+                    raw_cos_sim = getattr(reward_fn, "last_mean_cos_sim", None)
+                    cos_sims_per_layer = dict(getattr(reward_fn, "last_cos_sims", {})) or None
+                else:
+                    reward = -1.0
+                    raw_cos_sim = None
+                    cos_sims_per_layer = None
+
+                # Extract opponent game decision cleanly
                 opp_decision = None
-                trainee_act_lower = _extract_action(action).lower()
-                if opp_resp is not None and (
-                    "cooperat" in trainee_act_lower or "defect" in trainee_act_lower
-                ):
-                    opp_decision = _extract_action(opp_resp).lower()
+                if opp_resp is not None:
+                    _raw = opp_resp.lower()
+                    if "cooperat" in _raw:
+                        opp_decision = "cooperate"
+                    elif "defect" in _raw:
+                        opp_decision = "defect"
+                    else:
+                        opp_decision = "invalid"
 
                 records.append(TurnRecord(
                     obs=obs_str,
@@ -371,10 +391,13 @@ def collect_episode_vllm(
                     full_ids=full_ids,
                     input_len=input_len,
                     log_prob=None,
-                    probe_z=None,           # not available from vLLM
+                    probe_z=None,
                     probe_z_opponent=opp_z,
-                    probe_z_all=None,       # not available from vLLM
+                    probe_z_all=None,
                     opp_decision=opp_decision,
+                    opp_response=opp_resp,
+                    raw_cos_sim=raw_cos_sim,
+                    cos_sims_per_layer=cos_sims_per_layer,
                 ))
                 rewards.append(reward)
 
