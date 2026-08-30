@@ -56,7 +56,7 @@ CUDA_VISIBLE_DEVICES=1,2 \
         --dtype          bfloat16                   \
         --tensor-parallel-size 2                   \
         --port           "${JUDGE_PORT}"            \
-        --disable-log-requests                     \
+        --no-enable-log-requests                   \
         --chat-template-text-format string         \
         --max-model-len  4096                      \
         --gpu-memory-utilization 0.90              \
