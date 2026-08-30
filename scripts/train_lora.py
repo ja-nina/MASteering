@@ -32,7 +32,7 @@ from testbed.training.rollout import collect_episode, TRAINEE_ID, OPPONENT_ID
 from testbed.training.grpo import grpo_step, episode_stats, wandb_log_step
 
 
-def _init_wandb(cfg: dict):
+def _init_wandb(cfg: dict, run_id: str | None = None):
     wcfg = cfg.get("wandb", {})
     if not wcfg.get("enabled", False):
         return None
@@ -41,13 +41,17 @@ def _init_wandb(cfg: dict):
     except ImportError:
         print("wandb not installed — skipping. pip install wandb to enable.")
         return None
-    return wandb.init(
+    kwargs = dict(
         project=wcfg.get("project", "ma-steering-lora"),
         name=wcfg.get("name", None),
         tags=wcfg.get("tags", []),
         config=cfg,
         dir="wandb_logs",
     )
+    if run_id:
+        kwargs["id"] = run_id
+        kwargs["resume"] = "must"
+    return wandb.init(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +385,24 @@ def main():
         _set_adapters(model, ["adapter_b"])
         _persona_proj_pairs = None
 
+    # ── Resume from checkpoint ───────────────────────────────────────────────
+    resume_step = 0
+    if args.resume_from:
+        ckpt_path = Path(args.resume_from)
+        print(f"[resume] Loading adapters from {ckpt_path}", flush=True)
+        if use_persona_lora and (ckpt_path / "adapter_a").exists():
+            model.load_adapter(str(ckpt_path / "adapter_a"), adapter_name="adapter_a")
+            print(f"[resume]   adapter_a loaded", flush=True)
+        if (ckpt_path / "adapter_b").exists():
+            model.load_adapter(str(ckpt_path / "adapter_b"), adapter_name="adapter_b")
+            print(f"[resume]   adapter_b loaded", flush=True)
+        # Parse step from dir name, e.g. "checkpoint_step00250" → 250
+        import re as _re
+        _m = _re.search(r"step(\d+)", ckpt_path.name)
+        if _m:
+            resume_step = int(_m.group(1))
+            print(f"[resume]   resuming from step {resume_step}", flush=True)
+
     # Gradient checkpointing: recompute activations during backward instead of
     # caching them.  Halves activation memory at ~20% extra compute cost.
     print("Enabling gradient checkpointing...", flush=True)
@@ -480,9 +502,9 @@ def main():
     grpo_k = train_cfg.get("grpo_k", 4)   # rollouts per GRPO update step
     save_interval = cfg["output"].get("save_interval", 50)
 
-    wandb_run = _init_wandb(cfg)
+    wandb_run = _init_wandb(cfg, run_id=args.wandb_run_id)
     episode_log = []
-    step = 0
+    step = resume_step
     rollout_log_path = save_dir / "rollouts.jsonl"
     _rollout_fh = open(rollout_log_path, "w", buffering=1)  # line-buffered
 
