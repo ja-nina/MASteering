@@ -3,7 +3,7 @@
 #SBATCH -c 10
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-105%20
+#SBATCH --array=0-105%30
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_redteam_kl_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_redteam_kl_%A_%a.err
 #SBATCH -t 12:00:00
@@ -173,12 +173,12 @@ echo "[$(date)] GPUs    : $(nvidia-smi --query-gpu=index,name --format=csv,nohea
     --traits          "${TRAITS}"                                                \
     --run-name        "ipdRTKL_${RUN_NAME}"                                      \
     --local-save-dir  "/scratch/inf0/user/nzukowsk/MASteer/loras_ipd_redteam_kl" \
-    --wandb-project   nothink-kl-pen-redteam                                     \
+    --wandb-project   nothink-0kl-pen-redteam                                     \
     --vllm                                                                       \
     --vllm-device     cuda:0                                                     \
     --train-device    cuda:1                                                     \
     --redteam                                                                    \
-    --kl-coef         0.002                                                       \
+    --kl-coef         0                                                       \
     --vllm-gpu-mem    0.85
 
 echo "[$(date)] Done — ${RUN_NAME}"
