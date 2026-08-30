@@ -598,7 +598,10 @@ def main():
     def _reward_fn(opp_z):
         if opp_z is None:
             return 0.0
-        return reward_alpha * persona_reward(opp_z)
+        result = reward_alpha * persona_reward(opp_z)
+        _reward_fn.last_mean_cos_sim = getattr(persona_reward, "last_mean_cos_sim", None)
+        _reward_fn.last_cos_sims = getattr(persona_reward, "last_cos_sims", {})
+        return result
 
     def _fmt_eta(elapsed: float, done: int, total: int) -> str:
         if done == 0:
