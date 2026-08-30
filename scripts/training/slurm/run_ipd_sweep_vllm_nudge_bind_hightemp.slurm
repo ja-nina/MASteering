@@ -38,7 +38,7 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export CUDA_HOME="/BS/conformal-circuits/work/mamba/pkgs/cuda-nvcc-tools-12.9.86-he02047a_2/bin/nvcc"
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
-export SVD_BASIS="${REPO}/data/svd_basis/qwen3-4b-residual.pt"
+export SVD_BASIS="${REPO}/data/svd_basis/qwen3-4b-residual-direct.pt"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0,1
 
