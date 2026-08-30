@@ -38,6 +38,8 @@ class TurnRecord:
     probe_z_opponent: Optional[List[float]] = None   # opponent reaction (reward)
     probe_z_all: Optional[Dict[str, List[float]]] = None
     opp_decision: Optional[str] = None    # extracted action from counterfactual opponent
+    opp_response: Optional[str] = None    # full counterfactual opponent response text
+    raw_cos_sim: Optional[float] = None   # mean cosine-sim across layers (pre-sign, pre-alpha)
 
 
 @dataclass
@@ -140,6 +142,7 @@ def collect_episode(
                 # This measures what the opponent actually SAYS in response, not
                 # just what they would passively read.
                 cf_opp_action = None
+                opp_obs_cf = None
                 try:
                     env_cf = copy.deepcopy(env)
                     done_cf, _ = env_cf.step(_extract_action(action))
@@ -151,16 +154,29 @@ def collect_episode(
                             agent_id=str(OPPONENT_ID),
                             steering=None,
                         )
-                        probe_input = cf_opp_action
-                    else:
-                        probe_input = _extract_action(action)
                 except Exception:
-                    probe_input = _extract_action(action)
-                opp_scores = trainee_policy.probe_text(probe_input)
+                    pass
+
+                # Probe the opponent's persona activations during its response.
+                # Uses the full conversation context (system + user obs + response)
+                # so the hidden states match what the opponent computed during generation.
+                # LoRA adapters are disabled — the opponent IS the base model.
+                # Direct cosine-sim with CAA mean-diff vectors (no SVD projection).
+                if cf_opp_action is not None and opp_obs_cf is not None:
+                    opp_scores = trainee_policy.probe_response_in_context(
+                        _sp_with_format, opp_obs_cf, cf_opp_action
+                    )
+                else:
+                    # Fallback: game ended or generation failed — no useful probe signal.
+                    opp_scores = {}
                 ld_opp = opp_scores.get(str(probe_layer), {})
                 opp_z = ld_opp.get("z") or None   # display-layer z for logging
-                reward = (reward_fn(opp_scores)
-                          if (opp_scores and _has_action_tag(action)) else -1.0)
+                if opp_scores and _has_action_tag(action):
+                    reward = reward_fn(opp_scores)
+                    raw_cos_sim = getattr(reward_fn, "last_mean_cos_sim", None)
+                else:
+                    reward = -1.0
+                    raw_cos_sim = None
 
                 # Extract opponent's game decision for behavioral tracking across K candidates
                 opp_decision = None
@@ -177,6 +193,8 @@ def collect_episode(
                     probe_z_opponent=opp_z,
                     probe_z_all=probe_z_all,
                     opp_decision=opp_decision,
+                    opp_response=cf_opp_action,
+                    raw_cos_sim=raw_cos_sim,
                 ))
                 rewards.append(reward)
 

@@ -79,6 +79,7 @@ class PersonaReward:
         """Score a probe_scores dict (layer_str → {z: [...]}) against the target."""
         total = 0.0
         count = 0
+        self.last_cos_sims: Dict[int, float] = {}   # layer → raw cosine sim (pre-sign)
         for layer_key, ld in probe_scores.items():
             layer = int(layer_key)
             if layer < self.layer_start:
@@ -96,8 +97,11 @@ class PersonaReward:
                 z_norm = z.norm().clamp(min=1e-8)
                 cos_sim = (z @ self.z_targets[layer]) / (z_norm * self.z_target_norms[layer])
                 cos_sim = cos_sim.item()
+            self.last_cos_sims[layer] = cos_sim
             total += cos_sim
             count += 1
         if count == 0:
+            self.last_mean_cos_sim = 0.0
             return 0.0
+        self.last_mean_cos_sim = total / count   # unscaled, pre-sign
         return self.sign * total / count

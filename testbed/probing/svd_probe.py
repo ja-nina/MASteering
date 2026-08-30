@@ -52,6 +52,7 @@ class SVDPersonaProbe:
         window_tokens: int = 10,
         top_k: int = 5,
         layer: int = 18,   # backward-compat fallback; use `layers` instead
+        require_direct: bool = True,  # raise if M_dedup not in basis (SVD fallback carries error)
     ) -> None:
         import torch
 
@@ -94,6 +95,13 @@ class SVDPersonaProbe:
             }
             self._use_direct = True
         else:
+            if require_direct:
+                raise ValueError(
+                    "SVDPersonaProbe: basis file has no 'M_dedup' key — direct cosine-sim "
+                    "mode unavailable. Rebuild the basis with build_svd_basis.py (it saves "
+                    "M_dedup automatically). Pass require_direct=False to fall back to SVD "
+                    "projection (less accurate)."
+                )
             self._M = {}
             self._M_norms = {}
             self._use_direct = False

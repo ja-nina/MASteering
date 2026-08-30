@@ -303,13 +303,29 @@ def wandb_log_step(
         ),
     }
 
+    # Raw cosine-sim (pre-sign, pre-alpha, mean across layers) — sanity check that
+    # the probe is measuring what we think it is. Should track reward closely when
+    # sign=+1 and alpha=1; diverges when format failures (-1.0) dominate.
+    all_raw = [r.raw_cos_sim for tg in episode.turn_groups
+               for r in tg.records if r.raw_cos_sim is not None]
+    if all_raw:
+        log["reward/raw_cos_sim_mean"] = sum(all_raw) / len(all_raw)
+        log["reward/raw_cos_sim_min"]  = min(all_raw)
+        log["reward/raw_cos_sim_max"]  = max(all_raw)
+        log["reward/raw_cos_sim_std"]  = (
+            (sum((x - log["reward/raw_cos_sim_mean"]) ** 2 for x in all_raw) / len(all_raw)) ** 0.5
+        )
+
     # ── 1b. Per-turn reward breakdown + opponent decision rates ─────────────
     # With K=8 candidates, opp_coop_rate is continuous in {0, 1/8, ..., 1}.
     # This directly measures behavioral influence, not just persona cosine-sim.
     turn_table = _wandb.Table(columns=["turn", "reward_mean", "reward_best", "reward_worst",
                                        "top_trait", "top_trait_score",
-                                       "opp_coop_rate", "opp_defect_rate", "opp_invalid_rate"])
+                                       "opp_coop_rate", "opp_defect_rate", "opp_invalid_rate",
+                                       "opp_response_best_k", "opp_response_len_best_k",
+                                       "opp_response_len_mean"])
     all_coop_rates: List[float] = []
+    all_opp_resp_lens: List[float] = []
     for t_idx, tg in enumerate(episode.turn_groups):
         if not tg.rewards:
             continue
@@ -338,14 +354,28 @@ def wandb_log_step(
                     top_trait, top_score = ranked[0][0], float(ranked[0][1])
             except Exception:
                 pass
+
+        # Opponent counterfactual response lengths
+        resp_lens = [len(r.opp_response) for r in tg.records if r.opp_response]
+        opp_resp_best = tg.records[best_k].opp_response or ""
+        opp_resp_len_best = len(opp_resp_best)
+        opp_resp_len_mean = sum(resp_lens) / len(resp_lens) if resp_lens else float("nan")
+        if resp_lens:
+            all_opp_resp_lens.extend(resp_lens)
+
         turn_table.add_data(t_idx, r_mean, r_best, r_worst, top_trait, top_score,
-                            opp_coop_rate, opp_defect_rate, opp_invalid_rate)
+                            opp_coop_rate, opp_defect_rate, opp_invalid_rate,
+                            opp_resp_best, opp_resp_len_best, opp_resp_len_mean)
     log["episode/turn_rewards"] = turn_table
 
     # Episode-level mean opponent coop rate across all turns (continuous, K=8)
     if all_coop_rates:
         log["opponent/coop_rate"]   = sum(all_coop_rates) / len(all_coop_rates)
         log["opponent/defect_rate"] = 1.0 - log["opponent/coop_rate"]
+    if all_opp_resp_lens:
+        log["opponent/cf_response_len_mean"] = sum(all_opp_resp_lens) / len(all_opp_resp_lens)
+        log["opponent/cf_response_len_min"]  = min(all_opp_resp_lens)
+        log["opponent/cf_response_len_max"]  = max(all_opp_resp_lens)
     if rolling_mean is not None:
         log["reward/rolling_mean_10"] = rolling_mean
     if step_time is not None:
@@ -563,6 +593,16 @@ def wandb_log_step(
                         except Exception:
                             pass
                     r_cls = "reward-pos" if reward > 0 else ""
+                    # Best-k counterfactual opponent response (the one that drove the reward)
+                    best_k_idx = tg.rewards.index(max(tg.rewards)) if tg else 0
+                    cf_opp_resp = (tg.records[best_k_idx].opp_response or "") if tg else ""
+                    cf_opp_len  = len(cf_opp_resp)
+                    cf_decision = (tg.records[best_k_idx].opp_decision or "?") if tg else "?"
+                    cf_block = (
+                        f"<div class='section-label' style='margin-top:8px;color:#88f'>"
+                        f"OPPONENT COUNTERFACTUAL RESPONSE (best-k, {cf_opp_len} chars, decision={cf_decision})</div>"
+                        f"<div class='action' style='color:#bbf;border-color:#446'>{_esc(cf_opp_resp)}</div>"
+                    ) if cf_opp_resp else ""
                     html_parts.append(
                         f"<div class='turn trainee'>"
                         f"<div class='turn-header'>TRAINEE</div>"
@@ -570,6 +610,7 @@ def wandb_log_step(
                         f"<div class='obs'>{obs_txt}</div>"
                         f"<div class='section-label'>RESPONSE (full, including strategy)</div>"
                         f"<div class='action'>{action_txt}</div>"
+                        f"{cf_block}"
                         f"<div class='meta'>"
                         f"<span class='{r_cls}'>r={reward:+.4f}</span> "
                         f"best={best_r:+.4f}  {adv_str}{top_trait_str}"
@@ -607,21 +648,31 @@ def wandb_log_step(
                                 top_trait, top_sim = top[0][0], float(top[0][1])
                         except Exception:
                             pass
+                    opp_resp = record.opp_response or ""
+                    raw_cs = record.raw_cos_sim
                     rows.append([
                         turn_idx, k,
                         _sp_trainee,
                         record.obs,
                         record.action,
+                        len(record.action),
                         round(reward, 4),
                         round(adv, 4) if adv == adv else float("nan"),
+                        round(raw_cs, 4) if raw_cs is not None else float("nan"),
                         top_trait,
                         round(top_sim, 4) if top_sim == top_sim else float("nan"),
+                        opp_resp,
+                        len(opp_resp),
+                        record.opp_decision or "",
                     ])
             if rows:
                 log["rollout/transcript_table"] = _wandb.Table(
                     columns=["turn", "candidate", "system_prompt",
-                             "observation", "action", "reward", "advantage",
-                             "top_trait", "top_sim"],
+                             "observation", "action", "action_len_chars",
+                             "reward", "advantage", "raw_cos_sim",
+                             "top_trait", "top_sim",
+                             "opp_cf_response", "opp_cf_response_len_chars",
+                             "opp_decision"],
                     data=rows,
                 )
         except Exception:

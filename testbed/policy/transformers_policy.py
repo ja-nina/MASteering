@@ -341,6 +341,40 @@ class TransformersPolicy:
                     self.model(**inputs)
         return get_scores() if get_scores is not None else {}
 
+    def probe_response_in_context(
+        self, system_prompt: str, user_prompt: str, response: str
+    ) -> "Dict[str, Any]":
+        """Probe base-model activations on `response` with full conversation context.
+
+        Builds the complete chat-formatted sequence [system, user, assistant(response)]
+        and runs a teacher-forcing forward pass through the base model (LoRA disabled).
+        The hook fires on every transformer layer call and records the last-token hidden
+        state — identical to what the model computes internally during autoregressive
+        generation, but in a single batched forward pass.
+
+        This is the correct way to measure the opponent's persona activations: the
+        response tokens attend to the full preceding conversation, so the hidden states
+        reflect what the opponent was actually computing when it generated its reply.
+        """
+        import torch
+        if self.probe is None:
+            return {}
+        messages = [
+            {"role": "system",    "content": system_prompt},
+            {"role": "user",      "content": user_prompt},
+            {"role": "assistant", "content": response},
+        ]
+        full_text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+        inputs = self.tokenizer(full_text, return_tensors="pt").to(self.device)
+        probe_hooks, get_scores = self.probe.make_hook()
+        with _HookSession(self.model, probe_hooks):
+            with self.model.disable_adapter():
+                with torch.no_grad():
+                    self.model(**inputs)
+        return get_scores() if get_scores is not None else {}
+
     def _build_inputs(self, system_prompt: str, user_prompt: str):
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}]
