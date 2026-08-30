@@ -38,6 +38,8 @@ JUDGE_PORT=8731
 JUDGE_URL="http://localhost:${JUDGE_PORT}/v1"
 OUT_DIR="/scratch/inf0/user/nzukowsk/MASteer/test_calib"
 
+export VLLM_USE_V1=0
+export VLLM_USE_FLASHINFER_SAMPLER=0
 export HF_HOME="/scratch/inf0/user/nzukowsk/.cache/huggingface"
 export HF_TOKEN="${HF_TOKEN:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
