@@ -69,7 +69,7 @@ class _FrozenOpponent:
         self._policy = trainee_policy
 
     def act(self, system_prompt, user_prompt, agent_id, steering,
-            return_logprob: bool = False):
+            return_logprob: bool = False, return_full_ids: bool = False):
         with self._peft_model.disable_adapter():
             return self._policy.act(
                 system_prompt=system_prompt,
@@ -77,6 +77,7 @@ class _FrozenOpponent:
                 agent_id=agent_id,
                 steering=steering,
                 return_logprob=return_logprob,
+                return_full_ids=return_full_ids,
             )
 
     @property

@@ -154,9 +154,10 @@ def collect_episode(
                             user_prompt=opp_obs_cf,
                             agent_id=str(OPPONENT_ID),
                             steering=None,
+                            return_full_ids=True,
                         )
-                except Exception:
-                    pass
+                except Exception as _cf_err:
+                    print(f"    [cf] counterfactual failed (k={k}): {_cf_err}", flush=True)
 
                 # Probe the opponent's persona activations during its response.
                 # Uses the full conversation context (system + user obs + response)
@@ -184,7 +185,13 @@ def collect_episode(
                 # Extract opponent's game decision for behavioral tracking across K candidates
                 opp_decision = None
                 if cf_opp_action is not None:
-                    opp_decision = _extract_action(cf_opp_action).lower()
+                    _raw = cf_opp_action.lower()
+                    if "cooperate" in _raw:
+                        opp_decision = "cooperate"
+                    elif "defect" in _raw:
+                        opp_decision = "defect"
+                    else:
+                        opp_decision = "invalid"
 
                 records.append(TurnRecord(
                     obs=obs_str,
