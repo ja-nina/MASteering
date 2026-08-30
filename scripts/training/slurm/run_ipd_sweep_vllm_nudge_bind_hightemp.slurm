@@ -4,8 +4,8 @@
 #SBATCH --gres=gpu:2
 #SBATCH --exclude=gpu17-l40-07,gpu17-l40-20
 #SBATCH --array=0-105
-#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_nudge_bind_ht_%A_%a.out
-#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/ipd_nudge_bind_ht_%A_%a.err
+#SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs2/ipd_nudge_bind_ht_%A_%a.out
+#SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs2/ipd_nudge_bind_ht_%A_%a.err
 #SBATCH -t 12:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
