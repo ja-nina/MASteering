@@ -127,15 +127,20 @@ class VLLMRolloutEngine:
             max_tokens=self.max_tokens,
         )
         if self.use_guided_decoding:
+            # Try the new GuidedDecodingParams API first.
             try:
                 from vllm.sampling_params import GuidedDecodingParams
                 kwargs["guided_decoding"] = GuidedDecodingParams(regex=FORMAT_REGEX)
-            except (ImportError, TypeError):
-                # Older vLLM versions use guided_regex directly on SamplingParams
+            except (ImportError, TypeError, AttributeError):
+                # GuidedDecodingParams unavailable — try the older guided_regex kwarg.
+                # Pass it directly at construction time so SamplingParams can reject it
+                # cleanly without leaving a bad key in kwargs.
                 try:
-                    kwargs["guided_regex"] = FORMAT_REGEX
+                    return SamplingParams(**kwargs, guided_regex=FORMAT_REGEX)
                 except TypeError:
-                    pass
+                    # Neither interface available in this vLLM build; fall through unguided.
+                    print("[vLLM] WARNING: guided decoding unavailable in this build; "
+                          "--bind has no effect", flush=True)
         return SamplingParams(**kwargs)
 
     def generate_candidates(
