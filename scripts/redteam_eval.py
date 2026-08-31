@@ -174,6 +174,12 @@ def run_episode(
             t_probe_total += t_prb
 
             target_score = probe.mean_cos_sim(probe_scores) if probe_scores else None
+            # per-layer dict: {layer_int: cos_sim_float}
+            cos_sim_per_layer = (
+                {int(l): v["cos_sim"] for l, v in probe_scores.items()
+                 if v.get("cos_sim") is not None}
+                if probe_scores else {}
+            )
 
             tgt_str = f"  tgt={target_score:+.3f}" if target_score is not None else ""
             print(f"gen={t_gen:.2f}s  probe={t_prb:.2f}s{tgt_str}", flush=True)
@@ -184,19 +190,21 @@ def run_episode(
             t_api_total += t_api
             probe_scores = None
             target_score = None
+            cos_sim_per_layer = {}
             print(f"api={t_api:.2f}s", flush=True)
 
         action_text = _extract_action(action)
 
         records.append({
-            "turn":         turn_count + 1,
-            "player_id":    player_id,
-            "is_local":     is_local,
-            "obs":          obs_str,
-            "action":       action,
-            "action_text":  action_text,
-            "probe_scores": probe_scores,   # reused for reward — avoids a second forward pass
-            "target_score": round(target_score, 4) if target_score is not None else None,
+            "turn":              turn_count + 1,
+            "player_id":         player_id,
+            "is_local":          is_local,
+            "obs":               obs_str,
+            "action":            action,
+            "action_text":       action_text,
+            "probe_scores":      probe_scores,        # kept for mean_cos_sim reuse
+            "target_score":      round(target_score, 4) if target_score is not None else None,
+            "cos_sim_per_layer": cos_sim_per_layer,   # {layer_int: float} for all layers
         })
 
         done, _ = env.step(action_text)
@@ -360,21 +368,33 @@ def main(argv=None):
         tgt_str = f"{ep_mean_target:+.3f}" if ep_mean_target is not None else "n/a"
         print(f"  turns={len(records)}  target_cos={tgt_str}{game_str}  ({elapsed:.1f}s)")
 
+        # ── Per-layer cos sims averaged across local turns ───────────────────
+        layer_buckets: Dict[int, List[float]] = {}
+        for r in records:
+            if r["is_local"]:
+                for layer, sim in r["cos_sim_per_layer"].items():
+                    layer_buckets.setdefault(layer, []).append(sim)
+        ep_layer_mean: Dict[int, float] = {
+            layer: sum(sims) / len(sims) for layer, sims in layer_buckets.items()
+        }
+
         if wandb_run is not None:
-            # ── Scalar metrics per episode ───────────────────────────────────
+            # ── Scalar metrics per episode (same keys as training runs) ──────
             log = {"episode": ep_idx + 1, "elapsed_s": elapsed,
                    "n_turns": len(records)}
             if ep_mean_target is not None:
-                log["target_cos_sim"] = ep_mean_target
+                log["reward/raw_cos_sim_mean"] = ep_mean_target  # matches training key
             if ta_rewards:
                 for pid, score in ta_rewards.items():
                     role = "local" if int(pid) == LOCAL_PLAYER_ID else "redteam"
-                    log[f"game_score/{role}"] = float(score)
+                    log["game_score/{}".format(role)] = float(score)
+            for layer, mean_sim in sorted(ep_layer_mean.items()):
+                log["reward/cos_sim_layer_{:02d}".format(layer)] = mean_sim  # matches training key
             wandb_run.log(log, step=ep_idx + 1)
 
             # ── Accumulate rows into the shared Table ────────────────────────
             for r in records:
-                player = "local (base)" if r["is_local"] else f"red-team ({args.red_team_model})"
+                player = "local (base)" if r["is_local"] else "red-team ({})".format(args.red_team_model)
                 interactions_table.add_data(
                     ep_idx + 1,
                     r["turn"],
@@ -386,17 +406,18 @@ def main(argv=None):
                 )
 
         ep_record = {
-            "episode":          ep_idx + 1,
-            "target_trait":     args.target_trait,
-            "direction":        args.direction,
-            "red_team_model":   args.red_team_model,
-            "local_model":      args.model,
-            "red_team_baseline": True,
-            "target_cos_sim":   ep_mean_target,
-            "game_rewards":     {str(k): float(v) for k, v in (ta_rewards or {}).items()},
-            "n_turns":          len(records),
-            "turns":            [
-                {k: v for k, v in r.items() if k != "probe_scores"}
+            "episode":              ep_idx + 1,
+            "target_trait":         args.target_trait,
+            "direction":            args.direction,
+            "red_team_model":       args.red_team_model,
+            "local_model":          args.model,
+            "red_team_baseline":    True,
+            "target_cos_sim":       ep_mean_target,
+            "cos_sim_per_layer":    ep_layer_mean,   # {layer: mean_cos_sim} for this episode
+            "game_rewards":         {str(k): float(v) for k, v in (ta_rewards or {}).items()},
+            "n_turns":              len(records),
+            "turns":                [
+                {k: v for k, v in r.items() if k != "probe_scores"}  # probe_scores large; cos_sim_per_layer kept
                 for r in records
             ],
         }
@@ -427,6 +448,15 @@ def main(argv=None):
             var_cos  = sum((v - mean_cos) ** 2 for v in all_target_scores) / len(all_target_scores)
             summary["summary/mean_target_cos_sim"] = mean_cos
             summary["summary/std_target_cos_sim"]  = var_cos ** 0.5
+        # Per-layer cos sim summary across all episodes
+        all_layer_buckets: Dict[int, List[float]] = {}
+        for ep in episode_results:
+            for turn in ep["turns"]:
+                if turn.get("is_local"):
+                    for layer, sim in (turn.get("cos_sim_per_layer") or {}).items():
+                        all_layer_buckets.setdefault(int(layer), []).append(sim)
+        for layer, sims in sorted(all_layer_buckets.items()):
+            summary["summary/cos_sim_layer_{:02d}".format(layer)] = sum(sims) / len(sims)
         # Log the full conversation table once — visible as a single Table panel in the run
         summary["interactions"] = interactions_table
         wandb_run.log(summary)

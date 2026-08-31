@@ -202,7 +202,7 @@ echo "[$(date)] GPU       : $(nvidia-smi --query-gpu=index,name --format=csv,noh
     --target-trait       "${TRAIT}"                  \
     --direction          "${DIRECTION}"              \
     --raw-vectors-dir    "${RAW_VECTORS_DIR}"        \
-    --layer-start        10                          \
+    --layer-start        20                          \
     --n-episodes         10                          \
     --game               IteratedPrisonersDilemma-v0 \
     --max-turns          50                          \

@@ -77,9 +77,10 @@ class RawCosineProbe:
 
             def _hook(module, inputs, output):
                 h = output[0] if isinstance(output, tuple) else output
-                last = h[:, -1, :].detach().float().mean(0)  # [hidden_dim]
-                h_norm = last.norm().clamp(min=1e-8)
-                scores[l] = (d.to(last.device) @ last / h_norm).item()
+                # average over all token positions, not just last
+                mean_h = h[0, :, :].detach().float().mean(0)  # [hidden_dim]
+                h_norm = mean_h.norm().clamp(min=1e-8)
+                scores[l] = (d.to(mean_h.device) @ mean_h / h_norm).item()
 
             return _hook
 
