@@ -104,25 +104,87 @@ def _generate(model, tokenizer, system: str, user: str,
 
 
 @torch.no_grad()
-def _probe_text(model, tokenizer, text: str, probe, device: str) -> Dict:
-    hooks_spec, get_result = probe.make_hook()
+def _probe_response_in_context(
+    model, tokenizer, system: str, user: str, response: str,
+    probe, device: str,
+) -> Dict:
+    """Probe hidden states averaged over response tokens only (not context).
+
+    Mirrors probe_response_in_context in transformers_policy.py:
+    - Forward pass on full [system, user, response] sequence
+    - Hidden states averaged over positions [context_len:] only
+    """
+    # Build context-only prompt to get the token boundary
+    context_msgs = [
+        {"role": "system", "content": system + STRUCTURED_FORMAT_INSTRUCTION},
+        {"role": "user",   "content": user},
+    ]
+    try:
+        ctx_text = tokenizer.apply_chat_template(
+            context_msgs, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        ctx_text = tokenizer.apply_chat_template(
+            context_msgs, tokenize=False, add_generation_prompt=True,
+        )
+    context_len = tokenizer(ctx_text, return_tensors="pt")["input_ids"].shape[1]
+
+    # Full sequence including response
+    full_msgs = [
+        {"role": "system",    "content": system + STRUCTURED_FORMAT_INSTRUCTION},
+        {"role": "user",      "content": user},
+        {"role": "assistant", "content": response},
+    ]
+    try:
+        full_text = tokenizer.apply_chat_template(
+            full_msgs, tokenize=False, add_generation_prompt=False,
+            enable_thinking=False,
+        )
+    except TypeError:
+        full_text = tokenizer.apply_chat_template(
+            full_msgs, tokenize=False, add_generation_prompt=False,
+        )
+    inputs = tokenizer(full_text, return_tensors="pt").to(device)
+
+    # Custom hooks that average over response token positions only
+    layer_results: Dict = {}
     handles = []
-    # PeftModel:     model → base_model (LoraModel) → model (Qwen3ForCausalLM)
-    # Plain HF model: model (Qwen3ForCausalLM) — base_model exists but has no .model
+
     bm = getattr(model, "base_model", None)
     hook_root = bm.model if (bm is not None and hasattr(bm, "model")) else model
-    for path, hook_fn in hooks_spec:
-        module = hook_root
+
+    def _make_hook(layer_int: int):
+        def _h(module, inp, output):
+            h = output[0] if isinstance(output, tuple) else output
+            resp_h = h[0, context_len:, :].detach().float()
+            if resp_h.shape[0] == 0:
+                return
+            mean_h = resp_h.mean(dim=0)
+            d = probe.directions.get(layer_int)
+            if d is None:
+                return
+            h_norm = mean_h.norm().clamp(min=1e-8)
+            layer_results[str(layer_int)] = {
+                "cos_sim": (d.to(mean_h.device) @ mean_h / h_norm).item()
+            }
+        return _h
+
+    suffix = {"residual": "", "attn": ".self_attn.o_proj", "mlp": ".mlp.down_proj"}[probe.hook]
+    for l in probe.layers:
+        path = probe.layer_path_template.format(l) + suffix
+        mod = hook_root
         for part in path.split("."):
-            module = getattr(module, part)
-        handles.append(module.register_forward_hook(hook_fn))
+            mod = getattr(mod, part)
+        handles.append(mod.register_forward_hook(_make_hook(l)))
+
     try:
-        ids = tokenizer(text, return_tensors="pt").to(device)
-        model(**ids)
+        model(**inputs)
     finally:
         for h in handles:
             h.remove()
-    return get_result()
+
+    return layer_results
 
 
 # ─── episode runner ──────────────────────────────────────────────────────────
@@ -169,7 +231,9 @@ def run_episode(
             t_generate_total += t_gen
 
             t0 = time.time()
-            probe_scores = _probe_text(model, tokenizer, action, probe, device)
+            probe_scores = _probe_response_in_context(
+                model, tokenizer, system, obs_str, action, probe, device
+            )
             t_prb = time.time() - t0
             t_probe_total += t_prb
 
