@@ -3,7 +3,7 @@
 #SBATCH -c 6
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
-#SBATCH --array=0-105%20
+#SBATCH --array=0-105%6
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/redteam_baseline_%A_%a.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/redteam_baseline_%A_%a.err
 #SBATCH -t 2:00:00
