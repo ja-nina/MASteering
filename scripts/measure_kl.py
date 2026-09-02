@@ -204,7 +204,8 @@ def measure_kl_for_checkpoint(
 
         # Base model perplexity of the generated tokens
         resp_token_log_probs = base_log_probs[torch.arange(resp_ids.shape[0]), resp_ids]
-        base_ppl = math.exp(-resp_token_log_probs.mean().item())
+        _neg_mean_lp = -resp_token_log_probs.mean().item()
+        base_ppl = math.exp(min(_neg_mean_lp, 100.0))  # cap to avoid OverflowError
 
         # Type-token ratio (lexical diversity)
         toks = resp_ids.tolist()
