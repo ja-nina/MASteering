@@ -272,7 +272,7 @@ def main():
 
     parser.add_argument("--model",          default="Qwen/Qwen3-4B")
     parser.add_argument("--n-samples",      type=int,   default=30,   help="Prompts per checkpoint")
-    parser.add_argument("--max-new-tokens", type=int,   default=200)
+    parser.add_argument("--max-new-tokens", type=int,   default=1024)
     parser.add_argument("--temperature",    type=float, default=0.7)
     parser.add_argument("--device",         default="cuda")
     parser.add_argument("--output",         type=Path,  default=None, help="Save JSON results here")

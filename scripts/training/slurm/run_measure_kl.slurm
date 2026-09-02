@@ -5,7 +5,7 @@
 #SBATCH --exclude=gpu22-a40-05,gpu22-a40-06,gpu17-l40-07,gpu17-l40-20
 #SBATCH -o /scratch/inf0/user/nzukowsk/MASteer/logs/measure_kl_%j.out
 #SBATCH -e /scratch/inf0/user/nzukowsk/MASteer/logs/measure_kl_%j.err
-#SBATCH -t 4:00:00
+#SBATCH -t 8:00:00
 #
 # ════════════════════════════════════════════════════════════════════════════
 #  KL calibration sweep — measure KL(LoRA || base) across all no-persona runs
@@ -45,7 +45,7 @@ echo "[$(date)] Out : ${OUT_FILE}"
     --model              Qwen/Qwen3-4B                        \
     --lora-glob          "${LORA_ROOT}/ipdNV3np_*"            \
     --n-samples          20                                    \
-    --max-new-tokens     200                                   \
+    --max-new-tokens     1024                                  \
     --temperature        0.7                                   \
     --device             cuda                                  \
     --dtype              bfloat16                              \
