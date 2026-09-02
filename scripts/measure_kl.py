@@ -354,8 +354,8 @@ def main():
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:
-            json.dump({"args": vars(args) | {"lora_dir": str(args.lora_dir) if args.lora_dir else None},
-                       "results": results}, f, indent=2)
+            args_dict = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
+            json.dump({"args": args_dict, "results": results}, f, indent=2)
         print(f"\nResults saved to: {args.output}")
     else:
         print("\nFull results (JSON):")
