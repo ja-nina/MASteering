@@ -166,15 +166,14 @@ def measure_kl_for_checkpoint(
 
         # For logged prompts, also generate from base for side-by-side comparison
         if prompt_idx in log_prompt_indices:
-            lora_model.disable_adapters()
-            base_out = lora_model.generate(
-                **enc,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=temperature,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-            lora_model.enable_adapters()
+            with lora_model.disable_adapter():
+                base_out = lora_model.generate(
+                    **enc,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
             base_decoded = tokenizer.decode(base_out[0, ctx_len:], skip_special_tokens=True)
             if prompt_idx >= n_ipd:
                 math_texts_base.append(base_decoded)
@@ -182,13 +181,11 @@ def measure_kl_for_checkpoint(
                 sample_texts_base.append(base_decoded)
 
         # LoRA logits (adapters on — default state)
-        lora_model.enable_adapters()
         lora_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
 
         # Base logits (adapters off)
-        lora_model.disable_adapters()
-        base_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
-        lora_model.enable_adapters()  # restore for next iteration
+        with lora_model.disable_adapter():
+            base_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
 
         # Response-token slice: logits[t] predicts token t+1
         sl = slice(ctx_len - 1, ctx_len - 1 + resp_ids.shape[0])
