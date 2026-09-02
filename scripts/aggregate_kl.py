@@ -22,9 +22,18 @@ def main():
     args = ap.parse_args()
 
     results = []
+    bad_files = []
     for f in sorted(args.results_dir.glob("kl_*.json")):
-        with open(f) as fh:
-            data = json.load(fh)
+        try:
+            with open(f) as fh:
+                raw = fh.read().strip()
+            if not raw:
+                bad_files.append((f.name, "empty file"))
+                continue
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            bad_files.append((f.name, f"JSONDecodeError: {e}"))
+            continue
         # each file contains {"args": ..., "results": [...]} from measure_kl
         if isinstance(data, dict) and "results" in data:
             results.extend(data["results"])
@@ -32,6 +41,11 @@ def main():
             results.extend(data)
         else:
             results.append(data)
+
+    if bad_files:
+        print(f"Skipped {len(bad_files)} malformed file(s):")
+        for name, reason in bad_files:
+            print(f"  {name}: {reason}")
 
     valid = [r for r in results if "mean_kl_nats" in r]
     errors = [r for r in results if "error" in r]
