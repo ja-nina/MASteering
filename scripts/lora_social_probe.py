@@ -68,14 +68,15 @@ AMORAL_TRAITS = {
 # ─── LoRA checkpoint discovery ────────────────────────────────────────────────
 
 def find_latest_checkpoint(lora_dir: Path) -> Path:
-    """Return path to the latest checkpoint_stepNNNNN/adapter_b/ inside lora_dir."""
+    """Return path to the latest checkpoint_stepNNNNN/adapter_b/adapter_b/ inside lora_dir."""
     checkpoints = sorted(lora_dir.glob("checkpoint_step*"), key=lambda p: p.name)
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoint_step* dirs found in {lora_dir}")
     latest = checkpoints[-1]
-    adapter_dir = latest / "adapter_b"
+    # actual layout: checkpoint_stepNNNNN/adapter_b/adapter_b/adapter_model.safetensors
+    adapter_dir = latest / "adapter_b" / "adapter_b"
     if not adapter_dir.exists():
-        raise FileNotFoundError(f"adapter_b/ not found under {latest}")
+        raise FileNotFoundError(f"adapter_b/adapter_b/ not found under {latest}")
     print(f"[social_probe] checkpoint : {latest.name}  →  {adapter_dir}")
     return adapter_dir
 

@@ -76,9 +76,10 @@ def find_latest_checkpoint(lora_dir: Path) -> Path:
     checkpoints = sorted(lora_dir.glob("checkpoint_step*"), key=lambda p: p.name)
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoint_step* in {lora_dir}")
-    adapter_dir = checkpoints[-1] / "adapter_b"
+    # actual layout: checkpoint_stepNNNNN/adapter_b/adapter_b/adapter_model.safetensors
+    adapter_dir = checkpoints[-1] / "adapter_b" / "adapter_b"
     if not adapter_dir.exists():
-        raise FileNotFoundError(f"adapter_b/ not found under {checkpoints[-1]}")
+        raise FileNotFoundError(f"adapter_b/adapter_b/ not found under {checkpoints[-1]}")
     return adapter_dir
 
 
