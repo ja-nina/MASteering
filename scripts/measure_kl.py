@@ -55,14 +55,29 @@ USER_TEMPLATES = [
 ]
 
 
+MATH_QUESTIONS = [
+    "What is 17 × 24? Show your working.",
+    "A train travels 360 km in 4 hours. What is its average speed in km/h?",
+]
+
+
 def make_prompts(n: int, tokenizer) -> List[str]:
     prompts = []
     for i in range(n):
         tmpl = USER_TEMPLATES[i % len(USER_TEMPLATES)]
         user = tmpl.format(r=i + 1, s1=i * 3, s2=i * 2 + 1)
         msgs = [
-            {"role": "system",    "content": SYSTEM + STRUCTURED_FORMAT_INSTRUCTION},
-            {"role": "user",      "content": user},
+            {"role": "system", "content": SYSTEM + STRUCTURED_FORMAT_INSTRUCTION},
+            {"role": "user",   "content": user},
+        ]
+        prompts.append(tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True
+        ))
+    # append 2 math sanity checks (plain system, no game format)
+    for q in MATH_QUESTIONS:
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user",   "content": q},
         ]
         prompts.append(tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True
@@ -94,8 +109,13 @@ def measure_kl_for_checkpoint(
     max_new_tokens: int,
     device: str,
     temperature: float,
-) -> Dict:
-    """Load a LoRA adapter, generate n_samples responses, compute KL vs base."""
+) -> tuple:
+    """Load a LoRA adapter, generate n_samples responses, compute KL vs base.
+
+    Returns (result_dict, restored_base_model).
+    The caller MUST replace its base_model reference with the returned model —
+    PeftModel.from_pretrained modifies the model in-place; unload() reverses it.
+    """
     from peft import PeftModel
 
     adapter_path = find_latest_checkpoint(lora_dir)
@@ -111,38 +131,69 @@ def measure_kl_for_checkpoint(
     per_response_ttrs: List[float] = []
     per_response_base_ppls: List[float] = []
 
-    for prompt in prompts:
+    sample_texts:      List[str] = []  # first 3 IPD responses (LoRA)
+    sample_texts_base: List[str] = []  # same prompts, base model
+    math_texts:        List[str] = []  # math sanity-check responses (LoRA)
+    math_texts_base:   List[str] = []  # math sanity-check responses (base)
+
+    n_ipd = len(prompts) - len(MATH_QUESTIONS)
+    log_prompt_indices = set(range(3)) | set(range(n_ipd, n_ipd + len(MATH_QUESTIONS)))
+
+    for prompt_idx, prompt in enumerate(prompts):
         enc = tokenizer(prompt, return_tensors="pt").to(device)
         input_ids = enc["input_ids"]
         ctx_len = input_ids.shape[1]
 
-        # Generate with LoRA
-        with lora_model.enable_adapter():
-            out = lora_model.generate(
-                **enc,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=temperature,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+        # Generate with LoRA (adapters enabled by default)
+        out = lora_model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            pad_token_id=tokenizer.eos_token_id,
+        )
 
         resp_ids = out[0, ctx_len:]  # [T]
         if resp_ids.shape[0] == 0:
             continue
         full_ids = out[0:1]          # [1, ctx+T]
 
-        # LoRA logits over full sequence
-        with lora_model.enable_adapter():
-            lora_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
+        decoded = tokenizer.decode(resp_ids, skip_special_tokens=True)
+        if prompt_idx >= n_ipd:
+            math_texts.append(decoded)
+        elif prompt_idx < 3:
+            sample_texts.append(decoded)
 
-        # Base logits over full sequence
-        with lora_model.disable_adapter():
-            base_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
+        # For logged prompts, also generate from base for side-by-side comparison
+        if prompt_idx in log_prompt_indices:
+            lora_model.disable_adapters()
+            base_out = lora_model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            lora_model.enable_adapters()
+            base_decoded = tokenizer.decode(base_out[0, ctx_len:], skip_special_tokens=True)
+            if prompt_idx >= n_ipd:
+                math_texts_base.append(base_decoded)
+            else:
+                sample_texts_base.append(base_decoded)
 
-        # Evaluate only on the generated response tokens
-        # logits[t] predicts token t+1, so response logits are at [ctx-1 : ctx+T-1]
-        resp_lora_logits = lora_logits[ctx_len - 1 : ctx_len - 1 + resp_ids.shape[0]]
-        resp_base_logits = base_logits[ctx_len - 1 : ctx_len - 1 + resp_ids.shape[0]]
+        # LoRA logits (adapters on — default state)
+        lora_model.enable_adapters()
+        lora_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
+
+        # Base logits (adapters off)
+        lora_model.disable_adapters()
+        base_logits = lora_model(full_ids).logits[0]  # [ctx+T, V]
+        lora_model.enable_adapters()  # restore for next iteration
+
+        # Response-token slice: logits[t] predicts token t+1
+        sl = slice(ctx_len - 1, ctx_len - 1 + resp_ids.shape[0])
+        resp_lora_logits = lora_logits[sl]
+        resp_base_logits = base_logits[sl]
 
         lora_log_probs = F.log_softmax(resp_lora_logits.float(), dim=-1)
         base_log_probs = F.log_softmax(resp_base_logits.float(), dim=-1)
@@ -153,9 +204,7 @@ def measure_kl_for_checkpoint(
         mean_kl = kl_per_token.mean().item()
 
         # Base model perplexity of the generated tokens
-        resp_token_log_probs = base_log_probs[
-            torch.arange(resp_ids.shape[0]), resp_ids
-        ]
+        resp_token_log_probs = base_log_probs[torch.arange(resp_ids.shape[0]), resp_ids]
         base_ppl = math.exp(-resp_token_log_probs.mean().item())
 
         # Type-token ratio (lexical diversity)
@@ -167,29 +216,44 @@ def measure_kl_for_checkpoint(
         per_response_ttrs.append(ttr)
         per_response_base_ppls.append(base_ppl)
 
-    # Clean up adapter weights to free VRAM before next checkpoint
-    del lora_model
+    # Unload adapter weights and return the clean base model for the next iteration.
+    # unload() reverses the in-place modification done by from_pretrained().
+    restored_base = lora_model.unload()
     torch.cuda.empty_cache()
 
     if not per_response_kls:
-        return {"lora_dir": str(lora_dir), "error": "no valid responses"}
+        return {"lora_dir": str(lora_dir), "error": "no valid responses"}, restored_base
 
     mean_kl   = sum(per_response_kls) / len(per_response_kls)
     mean_ppl  = sum(per_response_base_ppls) / len(per_response_base_ppls)
     mean_ttr  = sum(per_response_ttrs) / len(per_response_ttrs)
     mean_ntok = sum(per_response_ntokens) / len(per_response_ntokens)
 
-    return {
-        "lora_dir":    str(lora_dir),
-        "adapter":     str(adapter_path),
-        "n_samples":   len(per_response_kls),
+    # Print sample generations side-by-side (LoRA vs base)
+    for idx, (lora_t, base_t) in enumerate(zip(sample_texts, sample_texts_base)):
+        print(f"  [sample {idx} LoRA] {lora_t[:250].replace(chr(10), ' ')}")
+        print(f"  [sample {idx} base] {base_t[:250].replace(chr(10), ' ')}")
+    for idx, (q, lora_t, base_t) in enumerate(zip(MATH_QUESTIONS, math_texts, math_texts_base)):
+        print(f"  [math {idx}] Q: {q}")
+        print(f"  [math {idx} LoRA] {lora_t[:250].replace(chr(10), ' ')}")
+        print(f"  [math {idx} base] {base_t[:250].replace(chr(10), ' ')}")
+
+    result = {
+        "lora_dir":           str(lora_dir),
+        "adapter":            str(adapter_path),
+        "n_samples":          len(per_response_kls),
         "mean_kl_nats":       round(mean_kl, 4),
         "std_kl_nats":        round(_std(per_response_kls), 4),
         "mean_base_ppl":      round(mean_ppl, 2),
         "mean_ttr":           round(mean_ttr, 4),
         "mean_resp_tokens":   round(mean_ntok, 1),
         "per_response_kls":   [round(v, 4) for v in per_response_kls],
+        "sample_texts":       sample_texts,
+        "sample_texts_base":  sample_texts_base,
+        "math_texts":         math_texts,
+        "math_texts_base":    math_texts_base,
     }
+    return result, restored_base
 
 
 def _std(vals: List[float]) -> float:
@@ -248,7 +312,7 @@ def main():
     for i, lora_dir in enumerate(lora_dirs):
         print(f"\n[{i+1}/{len(lora_dirs)}] {lora_dir.name}")
         try:
-            r = measure_kl_for_checkpoint(
+            r, base_model = measure_kl_for_checkpoint(
                 base_model=base_model,
                 tokenizer=tokenizer,
                 lora_dir=lora_dir,
