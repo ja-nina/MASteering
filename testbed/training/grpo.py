@@ -276,6 +276,7 @@ def wandb_log_step(
     step_time: Optional[float] = None,
     target_trait_slugs: Optional[List[str]] = None,
     kl_penalty: float = 0.0,
+    kl_beta: float = 0.0,
 ) -> None:
     """Log rich training diagnostics to wandb."""
     if wandb_run is None:
@@ -292,6 +293,7 @@ def wandb_log_step(
     log = {
         "loss":               loss,
         "kl_penalty":         kl_penalty,
+        "kl_beta":            kl_beta,
         "reward/mean":        stats["mean"],
         "reward/std":         stats["std"],
         "reward/min":         stats["min"],

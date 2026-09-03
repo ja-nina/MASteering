@@ -260,12 +260,15 @@ def main():
                              "is to make the opponent express HIGH/LOW <trait>.' Mutually "
                              "exclusive with --nudge.")
     parser.add_argument("--kl-coef", type=float, default=0.0,
-                        help="Per-token KL penalty weight β added to the GRPO loss: "
-                             "β*(log π - log π_ref)/T where π_ref is the base model "
-                             "with LoRA adapters disabled. Prevents reward hacking and "
-                             "format collapse. Recommended range: 0.01–0.04 (GRPO paper "
-                             "used 0.04). Default 0 (disabled) to preserve backward "
-                             "compatibility.")
+                        help="Initial per-token KL penalty weight β. When --kl-target > 0 "
+                             "this is only the starting value; β is then adapted each step. "
+                             "Recommended initial value: 0.5 / kl_target (e.g. 1.667 for "
+                             "kl_target=0.3). Default 0 (disabled).")
+    parser.add_argument("--kl-target", type=float, default=0.0,
+                        help="Target KL divergence in nats for the adaptive controller. "
+                             "When > 0, β doubles if episode KL > 1.5×target and halves "
+                             "if KL < 0.5×target (InstructGPT adaptive KL). "
+                             "Use 0.3 from KL calibration. Default 0 (fixed β, no adaptation).")
     parser.add_argument("--wandb-project", default=None,
                         help="Override wandb.project from config (e.g. nothink-kl-pen)")
     args = parser.parse_args()
@@ -529,7 +532,10 @@ def main():
     print(f"  adapters : {adapters_str}", flush=True)
     print(f"  episodes : {total_episodes}  grpo_k={grpo_k}  save_every={save_interval}", flush=True)
     if args.kl_coef > 0:
-        print(f"  kl_coef  : {args.kl_coef}  (per-token KL vs base model)", flush=True)
+        if args.kl_target > 0:
+            print(f"  kl_coef  : {args.kl_coef} (initial β, adaptive — target {args.kl_target} nats)", flush=True)
+        else:
+            print(f"  kl_coef  : {args.kl_coef}  (fixed, per-token KL vs base model)", flush=True)
     print(f"  save_dir : {save_dir}", flush=True)
     if use_vllm:
         print(f"  vLLM     : gen={args.vllm_device}  train={args.train_device}"
@@ -593,6 +599,7 @@ def main():
         print(f"  redteam  : {goal}", flush=True)
 
     rolling_rewards: deque = deque(maxlen=10)
+    beta = args.kl_coef  # mutable β — updated each step when --kl-target > 0
     train_start = time.time()
 
     def _reward_fn(opp_z):
@@ -704,9 +711,19 @@ def main():
             max_grad_norm=max_grad_norm,
             model=model,
             device=train_device_str,
-            kl_coef=args.kl_coef,
+            kl_coef=beta,
             tokenizer=tokenizer,
         )
+
+        # Adaptive KL controller (InstructGPT style) — only active when --kl-target > 0.
+        # raw_kl = mean per-token KL this episode (β divided out, normalised by n_records).
+        if args.kl_target > 0.0 and beta > 0.0 and kl_loss != 0.0:
+            n_records = sum(len(tg.records) for tg in episode.turn_groups)
+            raw_kl = kl_loss / beta / max(n_records, 1)
+            if raw_kl > 1.5 * args.kl_target:
+                beta = min(beta * 2.0, 20.0)
+            elif raw_kl < 0.5 * args.kl_target:
+                beta = max(beta / 2.0, 1e-4)
 
         # Keep adapter_b orthogonal to persona subspace — project out after every step.
         if _persona_proj_pairs:
@@ -727,6 +744,7 @@ def main():
             "step": step,
             "loss": combined_loss,
             "kl_penalty": kl_loss,
+            "kl_beta": beta,
             "reward": stats,
             "num_turns": n_turns,
             "game_reward_trainee": trainee_game_r,
@@ -768,6 +786,7 @@ def main():
             episode=episode,
             loss=combined_loss,
             kl_penalty=kl_loss,
+            kl_beta=beta,
             model=model,
             probe=probe,
             probe_layer=probe_layer,
@@ -779,10 +798,11 @@ def main():
             target_trait_slugs=target_trait_slugs,
         )
 
+        beta_str = f"  β={beta:.4f}" if args.kl_target > 0.0 else ""
         print(
             f"  ✓ step {step:4d}  loss={combined_loss:.4f}  "
             f"r={stats['mean']:+.4f}±{stats['std']:.3f}  "
-            f"roll10={roll10:+.4f}  {step_time:.0f}s  ETA {eta}",
+            f"roll10={roll10:+.4f}{beta_str}  {step_time:.0f}s  ETA {eta}",
             flush=True,
         )
 
