@@ -75,7 +75,7 @@ The adapter stores `clue_knowledge[agent_id][slot]` as sets of confirmed
 
 - Can LLM agents develop implicit "hint conventions" (like the Hat-Guessing strategy)?
 - Does chain-of-thought / thinking mode improve Hanabi scores by enabling more careful inference?
-- How does team composition of personas affect score — e.g., does a `cautious` persona play fewer risky cards?
+- How does steering a fraction of the team affect the score?
 - Does a ToM instruction improve hint interpretation?
 
 ---
@@ -90,10 +90,11 @@ The adapter stores `clue_knowledge[agent_id][slot]` as sets of confirmed
 
 ---
 
-## Quick smoke test (after implementing submit)
+## Quick smoke test
 
 ```bash
-python scripts/run_episode.py \
-  --config config/games/hanabi/hanabi_noop_3p.yaml \
-  --episodes 1
+python scripts/make_configs.py config/sweeps/main.yaml   # writes config/runs/main/<game>_<n>p/
+python scripts/run_games.py --config config/runs/main/hanabi_3p/hanabi_3p__none.yaml --episodes 1
 ```
+
+Runs need the PersVecFast env and GPUs (see the README).

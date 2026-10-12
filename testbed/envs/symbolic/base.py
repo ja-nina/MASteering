@@ -24,6 +24,14 @@ class SymbolicAdapter:
     def legal_actions(self, agent_id: str) -> Optional[object]:
         return None
 
+    def roles(self) -> Dict[str, str]:
+        """{agent_id: role} for hidden-role games; empty when the game has no roles."""
+        return {}
+
+    def teams(self) -> Dict[str, str]:
+        """{agent_id: "good" | "evil"} for hidden-role games; empty otherwise."""
+        return {}
+
     def pending(self) -> List[Tuple[str, RawObs]]:
         return [(pid, self._observation(pid)) for pid in self._ids]
 

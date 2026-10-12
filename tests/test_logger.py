@@ -7,11 +7,11 @@ def test_logger_writes_jsonl_lines(tmp_path):
     logger.log_step(game="beauty_contest", turn=0, agent_id="player_0",
                     system_prompt="s", user_prompt="u", completion="CHOICE: 33",
                     parsed_action=33, parse_retries=0, reward=0.0,
-                    steering_spec_id="noop")
+                    steering=None)
     logger.log_step(game="beauty_contest", turn=0, agent_id="player_1",
                     system_prompt="s", user_prompt="u", completion="CHOICE: 50",
                     parsed_action=50, parse_retries=1, reward=1.0,
-                    steering_spec_id="noop")
+                    steering=None)
     logger.close(summary={"winner": "player_1"})
 
     path = tmp_path / "run1" / "episode_0.jsonl"

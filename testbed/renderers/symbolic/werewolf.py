@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from testbed.types import RawObs, RenderContext
+from testbed.visual import BLUE, GREEN, GREY, INK, LIGHT, RED, ring_of_players
 
 _PHASE_HEADERS = {
     "night_werewolf": "NIGHT — Werewolves awaken",
@@ -81,12 +82,58 @@ class WerewolfRenderer:
         ]
         return "\n".join(lines)
 
+    modes = ("text", "image", "both")
+
+    @staticmethod
+    def _header(obs) -> str:
+        phase = obs.get("phase", "")
+        return f"=== Werewolf — Day {obs.get('day_num', '?')} | {_PHASE_HEADERS.get(phase, phase)} ==="
+
+    def render_visual(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
+        """The village (who is alive, eliminations with revealed roles, what you know) is in the image."""
+        lines = [self._header(raw_obs),
+                 "The village is shown in the image: living and eliminated players (with revealed roles), "
+                 "and the roles you know. You are outlined in blue.", ""]
+        lines += self._discussion(context)
+        instr = _PHASE_INSTRUCTIONS.get(raw_obs.get("phase", ""))
+        return "\n".join(lines + ([instr] if instr else []))
+
+    def render_images(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> list:
+        obs = raw_obs
+        dead = {e["eliminated"]: e for e in obs.get("elimination_log", []) if e.get("eliminated")}
+        allies = set(obs.get("known_werewolves", []))
+        known = dict(obs.get("seer_knowledge", {}))
+        everyone = sorted(set(obs.get("living", [])) | set(dead))
+
+        def style(name):
+            outline = BLUE if name == agent_id else INK
+            if name in dead:
+                return GREY, outline, f"out day {dead[name].get('day', '?')}: {dead[name].get('role', '?')}"
+            if name == agent_id:
+                return LIGHT, outline, f"you: {obs.get('role')}"
+            if name in allies:
+                return RED, outline, "Werewolf (ally)"
+            if name in known:
+                return (RED if known[name] == "Werewolf" else GREEN), outline, f"seen: {known[name]}"
+            return LIGHT, outline, ""
+
+        return [ring_of_players(everyone, self._header(obs).strip("= "), style=style)]
+
+    @staticmethod
+    def _discussion(context: RenderContext) -> list:
+        lines, current_day = [], None
+        for stmt in (h for h in context.history if h.get("phase") == "discussion"):
+            if stmt.get("day") != current_day:
+                current_day = stmt.get("day")
+                lines.append(f"  --- Day {current_day} discussion ---")
+            lines.append(f"  {stmt.get('speaker', '?')}: {stmt.get('statement', '')}")
+        return lines + ([""] if lines else [])
+
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
         obs   = raw_obs
         phase = obs.get("phase", "")
         lines = [
-            f"=== Werewolf — Day {obs.get('day_num', '?')} | "
-            f"{_PHASE_HEADERS.get(phase, phase)} ===",
+            self._header(obs),
             "",
             f"Living players ({len(obs.get('living', []))}): {', '.join(obs.get('living', []))}",
             "",
@@ -102,17 +149,7 @@ class WerewolfRenderer:
         if obs.get("elimination_log"):
             lines.append("")
 
-        # All discussion statements, grouped by day
-        day_statements = [h for h in context.history if h.get("phase") == "discussion"]
-        if day_statements:
-            current_day = None
-            for stmt in day_statements:
-                d = stmt.get("day")
-                if d != current_day:
-                    current_day = d
-                    lines.append(f"  --- Day {d} discussion ---")
-                lines.append(f"  {stmt.get('speaker', '?')}: {stmt.get('statement', '')}")
-            lines.append("")
+        lines += self._discussion(context)  # all statements, grouped by day
 
         # Seer knowledge (only visible to seer)
         seer_k = obs.get("seer_knowledge", {})

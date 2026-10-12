@@ -38,12 +38,13 @@ game:
 ## Quick start
 
 ```bash
-python scripts/run_episode.py \
-  --config config/games/diplomacy/diplomacy_noop_5p.yaml \
-  --episodes 1
+python scripts/make_configs.py config/sweeps/main.yaml   # writes config/runs/main/<game>_<n>p/
+python scripts/run_games.py --config config/runs/main/diplomacy_7p/diplomacy_7p__none.yaml --episodes 1
 ```
 
-Logs land in `logs/diplomacy/<run_id>/`.
+Runs need the PersVecFast env and GPUs (see the README).
+
+Logs land in `logs/main/diplomacy_7p/<run_id>/`.
 
 ---
 
@@ -71,6 +72,5 @@ instead of using the TextArena wrapper.  Follow the pattern in
   consistency (not contradicting past messages)?
 - Do ToM-steered agents form more successful alliances, or does explicit other-
   modelling make deception harder?
-- Does a `machiavellian` persona (from `config/shared/behavioral_personas.yaml`)
-  outperform a `cooperative` persona in final supply-centre count?
+- Does steering one power towards `opportunistic` or `trustworthiness` change its final supply-centre count?
 - How does reasoning effort (thinking tokens) affect order quality?

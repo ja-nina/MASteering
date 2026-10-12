@@ -35,33 +35,19 @@ from the TextArena library:
 
 ## Config
 
+TextArena games are listed in `config/sweeps/main.yaml` like any other game:
+
 ```yaml
-run_id: textarena_diplomacy_2p
-game:
-  family: textarena
-  id: Diplomacy-v0    # any valid TextArena env_id
-  env_kwargs: {}
-episodes: 20
-model:
-  backend: transformers
-  model_id: Qwen/Qwen3-14B
-  enable_thinking: false
-  temperature: 0.7
-  top_p: 0.8
-  top_k: 20
-  min_p: 0.0
-agents:
-  count: 2
-  concurrency: sequential
-  max_parse_retries: 5
-steering:
-  default: noop
-  per_agent: {}
-logging:
-  dir: logs/textarena/
+games:
+  mafia:  {family: textarena, id: SecretMafia-v0, players: [8], roles: true}
+  debate: {family: textarena, id: Debate-v0, players: [2],
+           env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
 ```
 
-Place configs in `config/games/textarena/`.
+`jury_model` / `jury_size` replace TextArena's jury with one fixed OpenRouter model
+(needs `OPENROUTER_API_KEY` in `.env`). `roles: true` enables team steering: `roles()` reads
+TextArena's per-seat roles, and `teams()` marks the deceiving side (mafia, werewolves, spies, …)
+as `evil`.
 
 ---
 
@@ -69,7 +55,7 @@ Place configs in `config/games/textarena/`.
 
 `TextArenaAdapter` wraps the `textarena` gym API:
 
-- `reset()` → calls `ta_env.reset(num_players=N)`
+- `reset()` → calls `ta_env.reset(num_players=N, seed=episode_seed)`
 - `pending()` → calls `ta_env.get_observation()` to get the current agent's turn
 - `submit({agent_id: action})` → calls `ta_env.step(action)`
 
@@ -80,14 +66,8 @@ unchanged and the parser accepts any non-empty string.
 
 ## Adding a new TextArena game
 
-No code changes are required. Just add a config file:
-
-```bash
-cp config/games/textarena/example_noop.yaml \
-   config/games/textarena/my_game_noop.yaml
-# Edit: set id: MyGame-v0
-python scripts/run_episode.py --config config/games/textarena/my_game_noop.yaml --episodes 1
-```
+No code changes are required: add the env id to a sweep file under `games:` and regenerate
+the configs with `python scripts/make_configs.py <sweep>`.
 
 ---
 

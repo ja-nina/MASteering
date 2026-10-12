@@ -1,279 +1,167 @@
 # LLM Steering Multi-Game Testbed
 
-A research testbed for measuring how **activation steering** changes LLM agent behaviour across text-based multi-agent games.
+LLM agents play text-based multi-agent games while some of them are **steered with persona
+vectors**, and every turn is **monitored** by projecting the completion onto every persona
+vector. Generation runs on [vLLM-Hook](https://github.com/IBM/vLLM-Hook), reusing
+[PersVecFast](../PersVecFast)'s model specs, sampling settings and vectors, so a game turn
+costs about as much as a plain vLLM request.
 
-## Overview
-
-Agents powered by local LLMs play coordination and social-deduction games. Steering vectors derived from contrastive activation differences are injected per-agent at a chosen residual-stream layer. Every turn is logged for behavioural analysis.
-
-**Games supported**
-
-| Family | ID | Players | Status | Doc |
-|--------|----|---------|--------|-----|
-| `symbolic` | `avalon` | 5–10 | Skeleton — parser+renderer done, submit() pending | [avalon.md](docs/games/avalon.md) |
-| `symbolic` | `hanabi` | 2–5 | Skeleton — parser+renderer done, submit() pending | [hanabi.md](docs/games/hanabi.md) |
-| `symbolic` | `werewolf` | 4–10 | Skeleton — parser+renderer done, submit() pending | [werewolf.md](docs/games/werewolf.md) |
-| `symbolic` | `overcooked` | 2 | Skeleton — parser+renderer done, grid sim pending | [overcooked.md](docs/games/overcooked.md) |
-| `textarena` | any TextArena `env_id` | varies | Fully playable — no game code needed | [textarena.md](docs/games/textarena.md) |
-
-**Steering methods**
-
-| Method | Description |
-|--------|-------------|
-| `noop` | Baseline — no steering applied |
-| `activation` | Adaptive residual-stream vector injection at a chosen decoder layer |
-| `role_aware_activation` | Activation steering that re-targets agents by in-game role each episode |
-
-## Quickstart
-
-```bash
-pip install -r requirements.txt
-
-# Run one episode (Debate baseline)
-python scripts/run_episode.py \
-  --config config/games/debate/debate_noop_2p.yaml \
-  --episodes 1
-
-# Run one episode with persona vector steering on the Mafia player
-export PERSONA_VECTORS_ROOT=/path/to/PersVecGen/data/vector_extraction/persona/qwen3-14b
-python scripts/run_episode.py \
-  --config config/games/mafia/mafia_activation_wolf_opportunistic_8p.yaml \
-  --episodes 1
-```
-
-Episode logs land in `logs/<game>/<run_id>/episode_N.jsonl` with a `.summary.json` sidecar.
-
-## Repository layout
+## How it works
 
 ```
-testbed/                        # Core library — game-agnostic
-  orchestrator.py               # Episode loop (parallel agent calls via ThreadPoolExecutor)
-  registry.py                   # Maps game_id → (Adapter, Renderer, Parser)
-  envs/
-    symbolic/                   # Turn-based symbolic games (avalon, hanabi, werewolf, overcooked)
-    textarena/
-      ta_adapter.py             # Wraps the TextArena library
-  renderers/symbolic/           # State → prompt text, one file per game
-  parsers/symbolic/             # Text → action, one file per game
-  steering/
-    noop.py                     # Baseline (no steering)
-    activation.py               # Adaptive / additive residual-stream vector injection
-    role_aware.py               # Per-episode role-targeted activation steering
-  policy/
-    transformers_policy.py      # In-process HuggingFace inference
-    vllm_policy.py              # OpenAI-compatible vLLM client
-  logging_/episode_logger.py
+config/sweeps/main.yaml ──make_configs.py──▶ config/runs/main/<game>_<n>p/<run_id>.yaml
+                                                   │  (one SLURM array per game group)
+                                                   ▼
+scripts/run_games.py ── lockstep scheduler (testbed/runner.py) ──────────────────────────
+   every step: the pending turns of up to `concurrent_episodes` episodes, of all runs
+   in the group ──▶ ONE generate call on the steer engine
+                    (each request carries its own add_vector config; unsteered = coefficient 0)
+                ──▶ ONE readout on the capture engine (prompt + completion prefill,
+                    monitor layers) ──▶ projections onto every trait vector
+                ──▶ parse (re-ask with feedback on errors) ──▶ env.submit ──▶ JSONL logs
+```
 
-config/
-  shared/                       # Persona lists shared across games
-    personas.yaml               # 20 character personas (Riedl 2025)
-    behavioral_personas.yaml    # 34 behavioral archetypes
-    run_config.yaml             # Annotated config template
-  games/                        # One directory per game
-    debate/
-    mafia/
-    negotiation/
-    ...
+- **Steer engine** (vLLM-Hook worker `steer`): hidden state += `coefficient · v` at one decoder
+  block, with `v` the raw PersVecFast mean-difference vector. This is the same op and scale
+  PersVecFast evaluated (coefficients 1.25 / 2.5), and it stays inside vLLM's CUDA graphs.
+  Prefix caching is on, so the long shared game prompts are cheap.
+- **Capture engine** (worker `capture_hs`), live next to it, on a second GPU or sharing one.
+  vLLM-Hook cannot capture in a steering engine, so the monitor is a **readout by the
+  unsteered model** of what each agent wrote: mean post-block residual over the completion's
+  tokens, projected onto each unit persona vector, at PersVecFast's candidate layers. For a
+  steered agent this measures the trait in its text as the base model reads it, not the
+  vector that was injected.
+- **Paired conditions:** an episode's seed depends only on (game, players, episode), so every
+  steering condition plays the same deals, roles and seat draws (except Melting Pot).
+- **Text or image observations:** the models are vision-language models, so a run's
+  `observation: text | image | both` shows the game state as text, as a picture, or both
+  ([observations.md](docs/games/observations.md)). Melting Pot is pixel-only.
 
+## Steering conditions
+
+A run's `steering:` is one group or a list of groups (`testbed/steering.py`). A group injects a
+trait through one of two channels, or both (`via`):
+
+- `vector`: the extracted persona vector added to the residual stream (vLLM-Hook `add_vector`)
+- `prompt`: the trait's PersVecFast instruction (the exact prompt the vector was extracted with)
+  put before the agent's system prompt; negative coefficient = the negative instruction
+- `both`: both at once
+
+All three run on the same vLLM-Hook steer engine (prompt-only requests carry coefficient 0).
+
+```yaml
+steering:
+  - team: evil            # pool: everyone, narrowed by team (good|evil), roles, agents (ids or seats)
+    select: all           # all | one | count (+count) | fraction (+fraction); drawn per episode
+    trait: evil           # or traits: {evil: 1.0, sarcastic: 0.5}   (weighted mix)
+    coefficient: 2.5      # negative = suppress
+    layer: auto           # the trait's best PersVecFast layer, or an int (0-based block)
+  - team: good
+    select: one
+    trait: empathy
+    coefficient: 2.5
+    random_control: false # true: a random direction with the vector's norm
+    via: vector           # vector | prompt | both
+```
+
+The main sweep (`config/sweeps/main.yaml`) crosses games × traits × coefficients with the
+conditions `none`, `one`, `half`, `all`, `all_random` and, for hidden-role games, `evil_team`,
+`evil_one`, `good_one`, and the prompt-persona conditions `prompt_one`, `prompt_all`, `both_one`,
+`evil_team_prompt`.
+
+## Games
+
+| Family | ID | Players | Notes | Doc |
+|---|---|---|---|---|
+| symbolic | `gbs` | 2+ | Goldstone group sum; exact / directional / picking variants | [gbs.md](docs/games/gbs.md) |
+| symbolic | `beauty_contest` | 2+ | Keynesian 2/3-of-average | [beauty_contest.md](docs/games/beauty_contest.md) |
+| symbolic | `harvest` | 2+ | Commons harvest (GovSim fishery) with discussion | [harvest.md](docs/games/harvest.md) |
+| symbolic | `werewolf` | 4–15 | Hidden roles; teams for steering | [werewolf.md](docs/games/werewolf.md) |
+| symbolic | `avalon` | 5–10 | Hidden roles; teams for steering | [avalon.md](docs/games/avalon.md) |
+| symbolic | `hanabi` | 2–5 | Cooperative | [hanabi.md](docs/games/hanabi.md) |
+| symbolic | `overcooked` | 2 | Cooperative kitchen | [overcooked.md](docs/games/overcooked.md) |
+| symbolic | `tictactoe`, `connect_four`, `gomoku` | 2–4 | k-in-a-row board games | [board_games.md](docs/games/board_games.md) |
+| meltingpot | any substrate | varies | Pixel social dilemmas (commons harvest, clean up, …); image only | [meltingpot.md](docs/games/meltingpot.md) |
+| textarena | any `env_id` | varies | SecretMafia (teams), Debate, IPD, Negotiation, … | [textarena.md](docs/games/textarena.md) |
+
+Every symbolic game has text, image and both modes; TextArena games are text only.
+
+## Setup (cluster)
+
+Use the PersVecFast env (vLLM 0.29, vLLM-Hook, persvecfast), plus this repo's requirements:
+
+    micromamba activate pvf
+    pip install -e /scratch/inf0/user/nzukowsk/PersVecFast
+    pip install -r requirements.txt
+    cp .env.example .env            # OPENROUTER_API_KEY, for TextArena juries only
+    pip install dm-meltingpot       # optional, for Melting Pot (or MELTINGPOT_PYTHON, see meltingpot.md)
+
+Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
+`PVF_OUT=/scratch/inf0/user/nzukowsk/PersVecFast/out`); override per run with `vectors_dir:`.
+
+## Run
+
+    # 1. cluster smoke tests (two jobs, 2 GPUs each):
+    #    engine checks: vector / prompt persona steering moves the monitor, coefficient 0 ==
+    #      unsteered, image prompts work            -> results/smoke/engines/<model>/samples.json
+    #    every game x {none, prompt, vector, both, random, team} x {text, image}, 1 episode each
+    #                                               -> results/smoke/samples.html (+ samples.csv status)
+    bash scripts/slurm/submit_smoke.sh qwen3.5-9b
+
+    # 3. the main sweep: one array per game group, 8 shards each
+    python scripts/make_configs.py config/sweeps/main.yaml
+    bash scripts/slurm/submit_sweep.sh config/runs/main 8
+
+    # 4. results: one row per agent per episode (condition, team, reward, monitor means)
+    python scripts/summarize_runs.py logs/main --out results/main_agents.csv
+
+Resubmitting resumes (episodes with a summary file are skipped). One episode, locally on a GPU:
+`python scripts/run_games.py --config <run config> --episodes 1`. Samples page for any sweep:
+`python scripts/collect_samples.py logs/<sweep> --configs config/runs/<sweep> --out results/<sweep>/samples.html`
+(one self-contained HTML: run status, steering incl. persona prompt, sample turns with images).
+
+## Outputs
+
+`logs/<sweep>/<game>_<n>p/<run_id>/`
+- `run.json`: the run config, with each steering group's resolved layer, coefficient and vector file
+- `episode_N.jsonl`: one line per agent per turn, with everything the agent was given and said:
+  - `system_prompt`: the system prompt, with the persona prompt prepended for prompt-steered agents
+  - `user_prompt`: the user turn of the final attempt
+  - `completion`: the final output
+  - `attempts`: every attempt in order (its user prompt including the parser's feedback, its output,
+    its parse error)
+  - `model_input`: the exact chat-templated text the model received
+  - plus the parsed action, fallback flag, reward, `steering` (null if unsteered) and `monitor`
+    `{layer: {trait: projection}}`
+- `episode_N.trace.txt`: the same as a readable transcript, including rejected attempts
+- `episode_N_images/`: each turn's image observations (with `save_images: true`)
+- `episode_N.summary.json`: final rewards, roles, teams, eliminations, who was steered with what
+
+## Layout
+
+```
+testbed/
+  steering.py      VectorStore (PersVecFast output), SteerGroup, SteeringPlan
+  engine.py        TurnRequest / TurnResult, Monitor (projection onto unit trait vectors)
+  visual.py        observation modes (text | image | both) and PIL drawing helpers
+  mia_engine.py    vLLM-Hook steer + capture engines (only module importing vllm)
+  runner.py        lockstep scheduler over concurrent episodes
+  config.py        run config, episode seeds, sharding, job building
+  registry.py      game id -> (adapter, renderer, parser)
+  envs/ renderers/ parsers/   games (envs/meltingpot: substrate backend + plan adapter)
+  logging_/        JSONL + trace + summary writer
 scripts/
-  run_episode.py                # Game-agnostic episode runner (primary CLI)
-  textarena/                    # Per-game plot scripts
-    plot_debate_results.py
-    plot_mafia_results.py
-    ...
-  slurm/                        # SLURM array job scripts
-
-docs/games/                     # Per-game documentation
-  textarena.md
-  adding_a_new_game.md          # Step-by-step guide
-
-logs/                           # Runtime outputs (gitignored)
-plots/                          # Analysis figures
+  make_configs.py  sweep -> run configs      run_games.py   play
+  summarize_runs.py logs -> CSV             smoke_engines.py   GPU engine checks (+ samples)
+  collect_samples.py logs -> samples page (HTML + status CSV)
+  slurm/           env.sh (shared setup), run_games.sbatch, submit_sweep.sh,
+                   smoke.sbatch, smoke_games.sbatch, submit_smoke.sh
+config/sweeps/     main.yaml, smoke.yaml
 ```
 
-## Persona vector steering
+## Tests (no GPU)
 
-Precomputed persona steering vectors from [PersVecGen](../PersVecGen/) can be
-injected into any `TransformersPolicy` run. Vectors are derived from
-contrastive activation differences (mean positive − mean negative hidden
-states) and stored as PyTorch `.pt` files keyed by layer index.
+    python -m pytest -q
 
-### Vector location
-
-```bash
-export PERSONA_VECTORS_ROOT=/path/to/PersVecGen/data/vector_extraction/persona/qwen3-14b
-```
-
-| Environment | Path |
-|-------------|------|
-| Local (Windows) | `C:\Users\ismyn\UNI\MPI\Thesis\PersVecGen\data\vector_extraction\persona\qwen3-14b` |
-| Cluster | `/scratch/inf0/user/nzukowsk/PEVectors/PEVectors/data/vector_extraction/persona/qwen3-14b` |
-
-Each trait has two precision directories (`bf16/` and `4bit/`), each containing
-`<trait>.pt` (vectors for layers 10 / 20 / 29) and `<trait>.json` (extraction
-metadata with per-layer sweep scores). Use `bf16/` for standard inference.
-
-### Steering mode
-
-The default and only mode used in experiments is **adaptive**: per-token soft
-top-up toward `coefficient × ‖v‖`, never overshooting. This is the same formula
-as PersVecGen's `steering.py`. Additive mode (`mode: additive` in YAML) is
-available for ablations only.
-
-### Layer auto-selection
-
-When a config omits the `layer` key, the companion `.json` is read and the
-layer with the highest `max_score − baseline_score` is selected automatically.
-The layer index is mapped to a submodule path via `layer_path_template`
-(default `"model.layers.{}"`, correct for Qwen3-14B and most HF decoders).
-
-### Static steering (`activation`)
-
-Steer a fixed set of agents every episode. Example — steer the AGAINST side
-in Debate with the `assertive` vector:
-
-```yaml
-steering:
-  default: activation
-  per_agent:
-    player_1:
-      vector_path: ${PERSONA_VECTORS_ROOT}/bf16/assertive.pt
-      coefficient: 1.25
-      layer_path_template: "model.layers.{}"
-```
-
-Config: `config/games/debate/debate_activation_p1_assertive_2p.yaml`
-
-### Role-aware steering (`role_aware_activation`)
-
-Steer agents by in-game role, re-discovered after each `env.reset()`. The
-steered seat changes episode-to-episode as the game assigns roles randomly.
-
-Set `target_roles` to match the role strings that specific game engine reports:
-
-| Game | Role string(s) |
-|------|---------------|
-| `SecretMafia-v0` | `mafia` |
-| `Werewolf-v0` | `werewolf` |
-| `Avalon-v0` | `evil`, `morgana`, `mordred` |
-
-```yaml
-steering:
-  default: role_aware_activation
-  target_roles:
-    - mafia
-  default_config:
-    vector_path: ${PERSONA_VECTORS_ROOT}/bf16/opportunistic.pt
-    coefficient: 1.25
-    layer_path_template: "model.layers.{}"
-```
-
-Config: `config/games/mafia/mafia_activation_wolf_opportunistic_8p.yaml`
-
-At the start of each episode the console prints which seat was armed:
-```
-[RoleAwareSteering] Steering {'player_2'} (matched target roles {'mafia'})
-```
-
-## Persona probing
-
-Passively observe which persona traits each agent's completions align with —
-including agents that are NOT being steered — using the same trait vectors used
-for steering.
-
-### How it works
-
-During `model.generate()` a read-only hook collects the final-token hidden
-state at the probe layer (default: layer 20, same as the steering vectors).
-Two parallel accumulators run simultaneously:
-
-- **Welford mean** — exact running mean over every generated token for an
-  overall per-completion summary.
-- **Chunk accumulator** — sum that resets every `window_tokens` tokens,
-  snapshotting a chunk mean to a list; partial final chunks are also flushed.
-
-The result logged to every JSONL step record is:
-
-```json
-{
-  "mean":   {"opportunistic": 0.412, "charismatic": 0.301, ...},
-  "chunks": [
-    {"token": 10, "scores": {"opportunistic": 0.389, ...}},
-    {"token": 20, "scores": {"opportunistic": 0.431, ...}},
-    ...
-  ]
-}
-```
-
-`mean` is the episode-level summary; `chunks` is the intra-completion
-time-series showing how persona alignment evolves token-by-token.
-No extra inference is required — the hook adds only dot products.
-
-### Enabling probing
-
-Add a `probing:` block to any config YAML:
-
-```yaml
-probing:
-  enabled: true
-  vectors_dir: ${PERSONA_VECTORS_ROOT}/bf16
-  layer: 20
-  layer_path_template: "model.layers.{}"
-  window_tokens: 10   # EMA window (0 = cumulative mean over whole completion)
-  top_k: 5            # traits reported in trace + wandb
-```
-
-The `.trace.txt` sidecar shows the top-5 probe scores per turn:
-```
-[PROBE top-5] opportunistic=0.412, charismatic=0.301, assertive=0.289, ...
-```
-
-### Analysing results
-
-```bash
-# Steered run vs. control comparison
-python scripts/textarena/analyze_persona_probes.py \
-    --steered  logs/mafia/mafia_activation_wolf_opportunistic_8p \
-    --control  logs/mafia/mafia_noop_8p \
-    --top-k 5 \
-    --out reports/mafia_probe_analysis.txt
-```
-
-Example output:
-```
-── Effect on steered agent (player_2) ─────────────────────────────────────
-
-  Trait                               Steered   Control       Δ
-  ─────────────────────────────────── ────────  ────────  ───────  ─────
-  opportunistic                        +0.412    +0.183   +0.229   ★
-  charismatic                          +0.301    +0.289   +0.012
-  trustworthiness                      +0.121    +0.151   -0.030
-
-── Cross-agent spill-over (unsteered agents) ───────────────────────────────
-
-  No significant trait shifts (|Δ| ≥ 0.04) detected in unsteered agents.
-```
-
-★ marks effects where |Δ| ≥ 0.05. Scores are cosine projections: positive
-means the hidden state is aligned with that trait's learned direction.
-
-### Adding a new trait
-
-Drop `<trait>.pt` / `<trait>.json` into `$PERSONA_VECTORS_ROOT/bf16/` and
-create a YAML pointing at it. No code changes required.
-
-## Adding a new game
-
-See **[docs/games/adding_a_new_game.md](docs/games/adding_a_new_game.md)** for the full step-by-step checklist.
-
-1. Add `Adapter` + `Renderer` + `Parser` under `testbed/envs/symbolic/`
-2. Register in `testbed/registry.py`
-3. Add configs under `config/games/<game_id>/`
-4. Write scripts under `scripts/textarena/`
-5. Add `docs/games/<game_id>.md`
-
-## Tests
-
-```bash
-python -m pytest -q
-```
+`tests/fakes.py` stands in for both engines and a PersVecFast vector directory, so the runner,
+steering assignment, monitoring, sharding/resume and all games are tested on CPU.

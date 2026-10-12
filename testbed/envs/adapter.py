@@ -25,3 +25,6 @@ class EnvAdapter(Protocol):
     def close(self) -> Dict[str, float]:
         """Terminate and return final rewards / game info."""
         ...
+
+    # Hidden-role games also implement roles() -> {agent_id: role} and
+    # teams() -> {agent_id: "good" | "evil"}, which `team:` / `roles:` steering groups use.

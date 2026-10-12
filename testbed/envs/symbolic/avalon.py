@@ -290,5 +290,11 @@ class AvalonAdapter(SymbolicAdapter):
     def agent_ids(self) -> List[str]:
         return list(self._ids)
 
+    def roles(self) -> Dict[str, str]:
+        return dict(self._roles)
+
+    def teams(self) -> Dict[str, str]:
+        return {p: "evil" if r in self.EVIL_ROLES else "good" for p, r in self._roles.items()}
+
     def close(self) -> Dict[str, float]:
         return dict(self.context.last_rewards)

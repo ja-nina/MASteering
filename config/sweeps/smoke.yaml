@@ -1,0 +1,69 @@
+# Smoke test of EVERY game and every persona channel, on the cluster (one SLURM job):
+#   bash scripts/slurm/submit_smoke.sh            # engine checks + this sweep + the samples page
+# Short games, 1 episode each, images saved; tests/test_make_configs.py checks that every game of
+# main.yaml is here too.
+name: smoke
+model: qwen3.5-9b
+episodes: 1
+max_tokens: 512
+max_parse_retries: 2
+max_turns: 40                        # long games (hanabi, diplomacy, ...) stop early, marked truncated
+save_images: true
+image_size: 448
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 16384
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.85}
+
+traits: [sarcastic]
+coefficients: [2.5]
+
+conditions:
+  none: null                                         # unsteered baseline
+  prompt_one: {select: one, via: prompt}             # persona instruction in one agent's system prompt
+  vector_one: {select: one, via: vector}             # extracted persona vector on one agent
+  both_one: {select: one, via: both}                 # prompt + vector on one agent
+  vector_all: {select: all}
+  random_one: {select: one, random_control: true}    # norm-matched random direction
+  evil_team_vector: {team: evil}                     # role games only
+  evil_team_prompt: {team: evil, via: prompt}
+
+games:
+  gbs:            {family: symbolic, id: gbs, players: [3], env_kwargs: {num_rounds: 3}, observation: [text, image]}
+  gbs_picking:    {family: symbolic, id: gbs, players: [3], env_kwargs: {hide_group_size: true, feedback: directional, num_rounds: 3}, observation: [text, image]}
+  beauty_contest: {family: symbolic, id: beauty_contest, players: [3], env_kwargs: {num_rounds: 2}, observation: [text, image]}
+  harvest:        {family: symbolic, id: harvest, players: [3], env_kwargs: {num_rounds: 2}, observation: [text, image]}
+  werewolf:       {family: symbolic, id: werewolf, players: [6], roles: true, observation: [text, image]}
+  avalon:         {family: symbolic, id: avalon, players: [5], roles: true, observation: [text, image]}
+  hanabi:         {family: symbolic, id: hanabi, players: [3], observation: [text, image]}
+  overcooked:     {family: symbolic, id: overcooked, players: [2], env_kwargs: {max_steps: 8}, observation: [text, image]}
+  tictactoe:      {family: symbolic, id: tictactoe, players: [2], observation: [text, image]}
+  connect_four:   {family: symbolic, id: connect_four, players: [2], observation: [text, image]}
+  gomoku:         {family: symbolic, id: gomoku, players: [2], observation: [text, image]}
+  mp_commons_harvest:   {family: meltingpot, id: commons_harvest__open, players: [7], observation: image, env_kwargs: {max_steps: 24}}
+  mp_clean_up:          {family: meltingpot, id: clean_up, players: [7], observation: image, env_kwargs: {max_steps: 24}}
+  mp_prisoners_dilemma: {family: meltingpot, id: prisoners_dilemma_in_the_matrix__repeated, players: [2], observation: image, env_kwargs: {max_steps: 24}}
+  mp_stag_hunt:         {family: meltingpot, id: stag_hunt_in_the_matrix__repeated, players: [2], observation: image, env_kwargs: {max_steps: 24}}
+  mafia:               {family: textarena, id: SecretMafia-v0, players: [6], roles: true}
+  debate:              {family: textarena, id: Debate-v0, players: [2], env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
+  negotiation:         {family: textarena, id: SimpleNegotiation-v0, players: [2]}
+  truth_and_deception: {family: textarena, id: TruthAndDeception-v0, players: [2]}
+  iterated_ipd:        {family: textarena, id: IteratedPrisonersDilemma-v0, players: [2]}
+  iterated_ultimatum:  {family: textarena, id: IteratedUltimatumGame-v0, players: [2]}
+  three_player_ipd:    {family: textarena, id: ThreePlayerIPD-v0, players: [3]}
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4]}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4]}
+  liars_dice:          {family: textarena, id: LiarsDice-v0, players: [3]}
+  poker:               {family: textarena, id: Poker-v0, players: [4]}
+  codenames:           {family: textarena, id: Codenames-v0, players: [4]}
+  blind_auction:       {family: textarena, id: SimpleBlindAuction-v0, players: [4]}
+  high_society:        {family: textarena, id: HighSociety-v0, players: [4]}
+  character_conclave:  {family: textarena, id: CharacterConclave-v0, players: [4]}
+  scorable_games:      {family: textarena, id: ScorableGames-v0, players: [4]}
+  taboo:               {family: textarena, id: Taboo-v0, players: [2]}
+  three_player_gops:   {family: textarena, id: ThreePlayerGOPS-v0, players: [3]}
+  settlers_of_catan:   {family: textarena, id: SettlersOfCatan-v0, players: [4]}
+  diplomacy:           {family: textarena, id: Diplomacy-v0, players: [7]}

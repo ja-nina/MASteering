@@ -14,11 +14,10 @@ def test_beauty_parser_extracts_number():
     assert res.value == 33
 
 
-def test_beauty_parser_plain_number_fallback():
+def test_beauty_parser_needs_keyword():
     p = BeautyContestParser()
-    res = p.parse("42", _obs(), "player_0", RenderContext())
-    assert isinstance(res, ParsedAction)
-    assert res.value == 42
+    assert isinstance(p.parse("42", _obs(), "player_0", RenderContext()), ParseError)
+    assert p.parse("CHOICE: 42", _obs(), "player_0", RenderContext()) == ParsedAction(42)
 
 
 def test_beauty_parser_out_of_range_is_error():
@@ -36,6 +35,6 @@ def test_beauty_parser_no_number_is_error():
 
 def test_gbs_parser_extracts_guess():
     p = GBSParser()
-    res = p.parse("GUESS: 50", _obs(), "player_0", RenderContext())
+    res = p.parse("NUMBER: 50", _obs(), "player_0", RenderContext())
     assert isinstance(res, ParsedAction)
     assert res.value == 50

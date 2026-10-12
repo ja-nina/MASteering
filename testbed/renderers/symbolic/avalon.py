@@ -8,6 +8,7 @@ then a concise per-turn context.
 from __future__ import annotations
 
 from testbed.types import RawObs, RenderContext
+from testbed.visual import BLUE, GREEN, GREY, INK, LIGHT, RED, YELLOW, ring_of_players, text_center
 
 # ── game constants mirrored from the env ──────────────────────────────────────
 
@@ -131,6 +132,9 @@ def _role_block(role: str, side: str, agent_id: str, known_evil: list[str],
 # ── system prompt ─────────────────────────────────────────────────────────────
 
 class AvalonRenderer:
+    modes = ("text", "image", "both")
+    _HEADER_LINES = 7  # render(): title, quest progress, reject streak, blank, players, leader, blank
+
     def system_prompt(self, agent_id: str, raw_obs: RawObs | None = None) -> str:
         obs        = raw_obs or {}
         role       = obs.get("role", "Unknown")
@@ -325,3 +329,41 @@ class AvalonRenderer:
             ]
 
         return "\n".join(lines)
+
+    def render_visual(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
+        """render() without the board header: quests, reject streak, players and leader are in the image."""
+        body = self.render(raw_obs, agent_id, context).split("\n")[self._HEADER_LINES:]
+        return "\n".join(["The board is shown in the image: quest results, the reject streak, the players "
+                          "(leader marked, proposed team in yellow, players you know to be evil in red). "
+                          "You are outlined in blue.", ""] + body)
+
+    def render_images(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> list:
+        obs = raw_obs
+        team, evil, leader = set(obs.get("proposed_team", [])), set(obs.get("known_evil", [])), obs.get("leader")
+        merlins = set(obs.get("known_merlin_candidates", []))
+
+        def style(name):
+            fill = YELLOW if name in team else RED if name in evil else LIGHT
+            below = " ".join(x for x in ("LEADER" if name == leader else "",
+                                         "Merlin?" if name in merlins else "",
+                                         f"(you: {obs.get('role')})" if name == agent_id else "") if x)
+            return fill, BLUE if name == agent_id else INK, below
+
+        img = ring_of_players(list(obs.get("living", [])),
+                              f"Avalon - quest {obs.get('quest_num')}/5, team size {obs.get('team_size')}", style=style)
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(img)
+        cx, cy = img.width / 2, img.height / 2 + 10
+        results = {e.get("quest"): e for e in obs.get("quest_history", [])}
+        for q in range(1, 6):
+            x = cx + (q - 3) * 44
+            e = results.get(q)
+            fill = GREY if e is None else GREEN if e.get("succeeded") else RED
+            draw.ellipse([x - 18, cy - 48, x + 18, cy - 12], fill=fill, outline=INK, width=2)
+            text_center(draw, (x, cy - 30), str(q) if e is None else f"{e.get('fail_votes', 0)}F", 13)
+        streak = obs.get("reject_streak", 0)
+        text_center(draw, (cx, cy + 6), "rejected proposals", 12)
+        for i in range(5):
+            x = cx + (i - 2) * 26
+            draw.rectangle([x - 9, cy + 18, x + 9, cy + 36], fill=RED if i < streak else LIGHT, outline=INK)
+        return [img]

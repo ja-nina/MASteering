@@ -371,5 +371,11 @@ class WerewolfAdapter(SymbolicAdapter):
         extra["phase"] = "done"
         return StepResult(rewards=rewards, done=True, info={"winner": "unknown"})
 
+    def roles(self) -> Dict[str, str]:
+        return dict(self.context.extra.get("roles", {}))
+
+    def teams(self) -> Dict[str, str]:
+        return {p: "evil" if ROLE_SIDE[r] == "werewolf" else "good" for p, r in self.roles().items()}
+
     def close(self) -> Dict[str, float]:
         return dict(self.context.last_rewards)

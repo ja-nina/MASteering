@@ -11,7 +11,7 @@ class FakeTAEnv:
     def __init__(self):
         self._turn = 0
         self.stepped = []
-    def reset(self, num_players): self.num_players = num_players; self._turn = 0
+    def reset(self, num_players, seed=None): self.num_players = num_players; self._turn = 0
     def get_observation(self):
         pid = self._turn % self.num_players
         return pid, f"observation for player {pid}"

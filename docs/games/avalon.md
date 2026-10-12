@@ -76,7 +76,7 @@ Five consecutive rejected proposals → Evil wins automatically.
 
 - Does Merlin successfully hide from the Spy team across extended play?
 - How does ToM steering change bluffing strategy vs. truth-telling?
-- Do personas (e.g., `risk_averse`, `contrarian`) affect quest-vote behaviour in distinguishable ways?
+- Do steered traits (e.g. `assertive`, `trustworthiness`) affect quest-vote behaviour in distinguishable ways?
 - Can LLMs sustain consistent hidden-role deception across 5+ rounds of discussion?
 
 ---
@@ -90,10 +90,11 @@ Five consecutive rejected proposals → Evil wins automatically.
 
 ---
 
-## Quick smoke test (after implementing submit)
+## Quick smoke test
 
 ```bash
-python scripts/run_episode.py \
-  --config config/games/avalon/avalon_noop_5p.yaml \
-  --episodes 1
+python scripts/make_configs.py config/sweeps/main.yaml   # writes config/runs/main/<game>_<n>p/
+python scripts/run_games.py --config config/runs/main/avalon_6p/avalon_6p__none.yaml --episodes 1
 ```
+
+Runs need the PersVecFast env and GPUs (see the README).

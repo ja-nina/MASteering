@@ -98,15 +98,16 @@ Grid cell legend: `W`=wall, `O`=onion source, `T`=tomato source,
 
 - Does joint reasoning (ToM) improve coordination vs. independent planning?
 - Which layout requires the most explicit role differentiation (one player cooks, one delivers)?
-- Does a `contrarian` persona disrupt team coordination vs. a `cooperative` one?
+- Does steering one cook (e.g. `angry` vs. `agreeableness`) disrupt team coordination?
 - How does the text-based rendering fidelity affect action quality compared to grid-world RL baselines?
 
 ---
 
-## Quick smoke test (after implementing submit)
+## Quick smoke test
 
 ```bash
-python scripts/run_episode.py \
-  --config config/games/overcooked/overcooked_noop_2p.yaml \
-  --episodes 1
+python scripts/make_configs.py config/sweeps/main.yaml   # writes config/runs/main/<game>_<n>p/
+python scripts/run_games.py --config config/runs/main/overcooked_2p/overcooked_2p__none.yaml --episodes 1
 ```
+
+Runs need the PersVecFast env and GPUs (see the README).

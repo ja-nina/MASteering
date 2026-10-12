@@ -67,6 +67,10 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
     return FixedJury
 
 
+# role names (lower-cased substrings) of the deceiving side in TextArena's hidden-role games
+_EVIL_ROLE_WORDS = ("mafia", "werewolf", "spy", "impostor", "traitor", "evil", "morgana", "mordred", "assassin")
+
+
 class TextArenaAdapter:
     def __init__(self, env_id: str, num_players: int,
                  _env=None, **env_kwargs: Any) -> None:
@@ -134,8 +138,7 @@ class TextArenaAdapter:
             info = {**(info or {}), "close_info": close_info}
         return StepResult(rewards=rewards, done=done, info=info or {})
 
-    @property
-    def player_roles(self) -> Dict[str, str]:
+    def roles(self) -> Dict[str, str]:
         """Return {player_N: role_str} for the current episode.
 
         Reads `player_roles` from the wrapped TextArena env and normalises
@@ -172,6 +175,11 @@ class TextArenaAdapter:
                                 for k, v in val.items()
                             }
         return {}
+
+    def teams(self) -> Dict[str, str]:
+        """{player_N: "good" | "evil"}: evil = the hidden, deceiving side (mafia, werewolves, spies)."""
+        return {pid: "evil" if any(w in role.lower() for w in _EVIL_ROLE_WORDS) else "good"
+                for pid, role in self.roles().items()}
 
     def close(self) -> Dict[str, float]:
         if self.context.last_rewards:

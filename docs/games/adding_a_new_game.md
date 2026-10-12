@@ -1,6 +1,6 @@
 # Adding a New Game
 
-Follow these steps to wire a new game `<game_id>` into the testbed. The entire framework is game-agnostic; adding a game requires no changes to the orchestrator, policy, logging, or steering code.
+Follow these steps to wire a new game `<game_id>` into the testbed. The entire framework is game-agnostic; adding a game requires no changes to the runner, engines, logging, or steering code.
 
 ---
 
@@ -28,7 +28,15 @@ class MyGameAdapter(SymbolicAdapter):
     def agent_ids(self) -> list[str]: ...
     def legal_actions(self, agent_id: str) -> Any: ...
     def close(self) -> dict: ...   # return per-agent final rewards
+    # hidden-role games only (enables `team:` / `roles:` steering groups):
+    def roles(self) -> dict[str, str]: ...   # {agent_id: role}
+    def teams(self) -> dict[str, str]: ...   # {agent_id: "good" | "evil"}
 ```
+
+The constructor must accept `seed` (the runner passes a per-episode seed that depends only on
+game, player count and episode index, so every steering condition plays the same games).
+`pending()` may return one agent (turn-based) or several (simultaneous); the runner batches
+whatever is pending across all concurrent episodes.
 
 `StepResult(rewards, done, info)` — set `done=True` on terminal steps.  `info` is
 logged verbatim to JSONL and can carry anything diagnostic.
@@ -41,7 +49,7 @@ class MyGameRenderer:
     def render(self, raw_obs: Any, agent_id: str, context: RenderContext) -> str: ...
 ```
 
-`context.history` is a list of per-step dicts appended by the orchestrator;
+`context.history` is a list of per-step dicts appended by the adapter;
 use it to show round-history summaries.
 
 ### `ActionParser` contract (`testbed/parsers/base.py`)
@@ -53,6 +61,21 @@ class MyGameParser:
         # return ParsedAction(value) on success
         # return ParseError(feedback_string) on failure — triggers a re-prompt
 ```
+
+---
+
+### Optional: an image view
+
+To support `observation: image | both` (see [observations.md](observations.md)), the renderer adds:
+
+```python
+class MyGameRenderer:
+    modes = ("text", "image", "both")
+    def render_images(self, raw_obs, agent_id, context) -> list:   # PIL images of the state
+    def render_visual(self, raw_obs, agent_id, context) -> str:    # render() minus what the images show
+```
+
+`testbed/visual.py` has helpers for labelled grids, bar charts, rings of players and cards.
 
 ---
 
@@ -73,94 +96,29 @@ _SYMBOLIC = {
 
 ---
 
-## 3 — Add configs under `config/games/<game_id>/`
+## 3 — Add it to a sweep
 
-Create at minimum one YAML:
+Add the game to `config/sweeps/main.yaml` (or a new sweep file) under `games:`:
 
 ```yaml
-# config/games/my_game/exp_noop.yaml
-run_id: my_game_noop_2p
-game:
-  family: symbolic
-  id: my_game
-  env_kwargs:
-    num_rounds: 10
-episodes: 50
-model:
-  backend: transformers
-  model_id: Qwen/Qwen3-14B
-  enable_thinking: false
-  temperature: 0.7
-  top_p: 0.8
-  top_k: 20
-  min_p: 0.0
-agents:
-  count: 2
-  concurrency: sequential
-  max_parse_retries: 5
-steering:
-  default: noop
-  per_agent: {}
-logging:
-  dir: logs/my_game/
+games:
+  my_game: {family: symbolic, id: my_game, players: [4], env_kwargs: {num_rounds: 8}}
+  # roles: true  -> also generate the team/role steering conditions
 ```
 
-For sweep configs (many conditions), write a generator script in
-`scripts/my_game/gen_<sweep_name>_configs.py` that writes to
-`config/experiments/<sweep_name>/`.
+Then `python scripts/make_configs.py config/sweeps/main.yaml` writes one run config per
+condition × trait × coefficient to `config/runs/main/my_game_4p/`.
 
 ---
 
-## 4 — Create data directories
+## 4 — Test without a GPU
 
-```
-cases/my_game/           # extracted game states for counterfactual studies
-logs/my_game/            # auto-created at runtime by run_episode.py
-plots/my_game/           # analysis outputs
-```
+`tests/fakes.py` has a `FakeGenerator` (scripted replies) and a fake PersVecFast vector
+directory; `tests/test_runner.py` shows how to play full episodes with them. Add the game's
+keyword to `fakes.reply` and write rules tests under `tests/envs/symbolic/`.
 
 ---
 
-## 5 — Add game-specific scripts under `scripts/my_game/`
+## 5 — Document
 
-```
-scripts/my_game/
-  gen_<sweep>_configs.py    # config generator
-  plot_<sweep>.py           # result visualisation
-  slurm/                    # SLURM array jobs if running on a cluster
-```
-
-Keep `scripts/run_episode.py` and `scripts/analyze_results.py` unchanged — they are
-game-agnostic entry points.
-
----
-
-## 6 — Write tests
-
-```
-tests/envs/symbolic/test_my_game.py      # adapter unit tests
-tests/parsers/test_my_game_parser.py     # parser unit tests
-```
-
-Use `StubPolicy` (`testbed/policy/base.py`) to test multi-round episodes without
-loading a real model.
-
----
-
-## 7 — Document the game
-
-Add `docs/games/<game_id>.md` following the template of `gbs.md` or
-`beauty_contest.md`.  Include: rules, action format, reward signal, available
-config keys, and which experiments have been run.
-
----
-
-## Quick smoke test
-
-```bash
-python scripts/run_episode.py \
-  --config config/games/my_game/exp_noop.yaml \
-  --episodes 1
-```
-
-The episode log lands in `logs/my_game/<run_id>/episode_0.jsonl`.
+Add `docs/games/<game_id>.md`: rules, action format, `env_kwargs`, research angle.

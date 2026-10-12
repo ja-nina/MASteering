@@ -90,15 +90,16 @@ structured vote recording for analysis.
 
 - Do Werewolf agents successfully deceive in day discussions, or do they reveal behavioural tells?
 - Can a ToM instruction help a Seer reason about whether their investigation target is being saved vs. targeted?
-- Do certain personas (e.g., `contrarian`, `chaotic`) correlate with vote outcomes independent of role?
+- Does steering the werewolves (`team: evil`) towards a trait change how often they survive the vote?
 - How does group size affect the Werewolves' win rate with LLM agents?
 
 ---
 
-## Quick smoke test (after implementing submit)
+## Quick smoke test
 
 ```bash
-python scripts/run_episode.py \
-  --config config/games/werewolf/werewolf_noop_6p.yaml \
-  --episodes 1
+python scripts/make_configs.py config/sweeps/main.yaml   # writes config/runs/main/<game>_<n>p/
+python scripts/run_games.py --config config/runs/main/werewolf_8p/werewolf_8p__none.yaml --episodes 1
 ```
+
+Runs need the PersVecFast env and GPUs (see the README).

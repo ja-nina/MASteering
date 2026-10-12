@@ -31,4 +31,4 @@ def test_gbs_prompt_shows_last_direction():
     env.submit({"player_0": 10, "player_1": 20, "player_2": 30})
     obs = env.pending()[0][1]
     user = GBSRenderer().render(obs, "player_0", env.context)
-    assert "higher" in user.lower()
+    assert "too HIGH by 10" in user

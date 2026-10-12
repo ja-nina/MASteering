@@ -1,5 +1,5 @@
 from testbed.types import (
-    StepResult, ParsedAction, ParseError, SteeringSpec, RenderContext,
+    StepResult, ParsedAction, ParseError, RenderContext,
 )
 
 
@@ -15,15 +15,6 @@ def test_parse_result_variants():
     err = ParseError(feedback="bad output, try again")
     assert ok.value == 42
     assert err.feedback == "bad output, try again"
-
-
-def test_steering_spec_defaults():
-    spec = SteeringSpec(method="activation", layer="model.layers.14",
-                        vector_path="v.pt", coefficient=8.0)
-    assert spec.method == "activation"
-    assert spec.coefficient == 8.0
-    noop = SteeringSpec(method="noop")
-    assert noop.layer is None and noop.vector_path is None and noop.coefficient == 0.0
 
 
 def test_render_context_history():

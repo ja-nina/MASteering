@@ -1,0 +1,77 @@
+# Main steering sweep: python scripts/make_configs.py config/sweeps/main.yaml
+name: main
+model: qwen3.5-9b                    # PersVecFast model key; vectors from ${PVF_OUT}/persona/<model>/bf16
+episodes: 50
+max_tokens: 1024                     # per turn
+max_parse_retries: 3
+image_size: 448                      # longer side of image observations
+monitor: {layers: auto}              # PersVecFast's candidate layers, every trait
+engine:
+  concurrent_episodes: 48
+  max_model_len: 32768
+  max_images: 2                        # per prompt (Melting Pot with global_view sends two)
+  steer:   {gpus: "0", memory: 0.85}   # steering engine on the job's first GPU,
+  monitor: {gpus: "1", memory: 0.85}   # capture (monitor) engine on the second: --gres=gpu:2
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
+coefficients: [2.5]                  # PersVecFast's strongest sweep coefficient; negative = suppress
+
+conditions:                          # steering-group templates (testbed/steering.py); via: vector by default
+  none: null                         # unsteered baseline
+  one: {select: one}                 # one random agent per episode
+  half: {select: fraction, fraction: 0.5}
+  all: {select: all}
+  evil_team: {team: evil}            # every member of the deceiving side (role games)
+  evil_one: {team: evil, select: one}
+  good_one: {team: good, select: one}
+  all_random: {select: all, random_control: true}   # norm-matched random direction
+  # the same trait as a prompt persona: its PersVecFast instruction in the system prompt
+  prompt_one: {select: one, via: prompt}
+  prompt_all: {select: all, via: prompt}
+  both_one: {select: one, via: both}                # prompt + vector together
+  evil_team_prompt: {team: evil, via: prompt}
+
+games:
+  # symbolic (testbed/envs/symbolic); `observation` lists the modes to run (text | image | both)
+  gbs:            {family: symbolic, id: gbs, players: [3, 6], observation: [text, image]}
+  gbs_picking:    {family: symbolic, id: gbs, players: [5], env_kwargs: {hide_group_size: true, feedback: directional}}
+  beauty_contest: {family: symbolic, id: beauty_contest, players: [3], observation: [text, image]}
+  harvest:        {family: symbolic, id: harvest, players: [5], observation: [text, image]}
+  werewolf:       {family: symbolic, id: werewolf, players: [8], roles: true, observation: [text, image]}
+  avalon:         {family: symbolic, id: avalon, players: [6], roles: true, observation: [text, image]}
+  hanabi:         {family: symbolic, id: hanabi, players: [3], observation: [text, image]}
+  overcooked:     {family: symbolic, id: overcooked, players: [2], env_kwargs: {max_steps: 100}, observation: [text, image]}
+  # visual board games (also playable as text)
+  tictactoe:      {family: symbolic, id: tictactoe, players: [2], observation: [text, image]}
+  connect_four:   {family: symbolic, id: connect_four, players: [2], observation: [text, image]}
+  gomoku:         {family: symbolic, id: gomoku, players: [2], observation: [text, image]}
+  # Melting Pot (pixel-only; needs dm-meltingpot, see docs/games/meltingpot.md)
+  mp_commons_harvest: {family: meltingpot, id: commons_harvest__open, players: [7], observation: image,
+                       env_kwargs: {max_steps: 200, plan_length: 4}}
+  mp_clean_up:        {family: meltingpot, id: clean_up, players: [7], observation: image,
+                       env_kwargs: {max_steps: 200, plan_length: 4}}
+  mp_prisoners_dilemma: {family: meltingpot, id: prisoners_dilemma_in_the_matrix__repeated, players: [2],
+                         observation: image, env_kwargs: {max_steps: 200, plan_length: 4}}
+  mp_stag_hunt:       {family: meltingpot, id: stag_hunt_in_the_matrix__repeated, players: [2], observation: image,
+                       env_kwargs: {max_steps: 200, plan_length: 4}}
+  # TextArena
+  mafia:               {family: textarena, id: SecretMafia-v0, players: [8], roles: true}
+  debate:              {family: textarena, id: Debate-v0, players: [2], env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
+  negotiation:         {family: textarena, id: SimpleNegotiation-v0, players: [2]}
+  truth_and_deception: {family: textarena, id: TruthAndDeception-v0, players: [2]}
+  iterated_ipd:        {family: textarena, id: IteratedPrisonersDilemma-v0, players: [2]}
+  iterated_ultimatum:  {family: textarena, id: IteratedUltimatumGame-v0, players: [2]}
+  three_player_ipd:    {family: textarena, id: ThreePlayerIPD-v0, players: [3]}
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4]}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4]}
+  liars_dice:          {family: textarena, id: LiarsDice-v0, players: [3]}
+  poker:               {family: textarena, id: Poker-v0, players: [4]}
+  codenames:           {family: textarena, id: Codenames-v0, players: [4]}
+  blind_auction:       {family: textarena, id: SimpleBlindAuction-v0, players: [4]}
+  high_society:        {family: textarena, id: HighSociety-v0, players: [4]}
+  character_conclave:  {family: textarena, id: CharacterConclave-v0, players: [4]}
+  scorable_games:      {family: textarena, id: ScorableGames-v0, players: [4]}
+  taboo:               {family: textarena, id: Taboo-v0, players: [2]}
+  three_player_gops:   {family: textarena, id: ThreePlayerGOPS-v0, players: [3]}
+  settlers_of_catan:   {family: textarena, id: SettlersOfCatan-v0, players: [4]}
+  diplomacy:           {family: textarena, id: Diplomacy-v0, players: [7]}
