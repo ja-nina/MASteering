@@ -19,9 +19,10 @@ export TESTBED_MIA_DIR="${TESTBED_MIA_DIR:-/tmp/ma-mia-${SLURM_JOB_ID:-$$}-${SLU
 mkdir -p "$MIA_APERTURE_DIR"
 
 # /tmp watcher: every TMP_WATCH_SECONDS (default 10, 0 = off) log the node's /tmp use and its
-# largest entries (size, owner) to slurm-logs/tmp-<job>.log, to see who fills node-local disk
+# largest entries (size, owner) to slurm-logs/ (TMP_LOG), to see who fills node-local disk
 TMP_WATCH_SECONDS="${TMP_WATCH_SECONDS:-10}"
-TMP_LOG="slurm-logs/tmp-${SLURM_JOB_ID:-$$}_${SLURM_ARRAY_TASK_ID:-0}.log"
+# named like SLURM's own logs: tmp-<job>.log, or tmp-<array job>_<task>.log for an array task
+TMP_LOG="slurm-logs/tmp-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$$}}${SLURM_ARRAY_TASK_ID:+_$SLURM_ARRAY_TASK_ID}.log"
 watch_tmp() {
   while true; do
     {
