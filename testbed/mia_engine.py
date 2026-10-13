@@ -155,8 +155,12 @@ class CaptureEngine:
         clear_delivered(aperture)
         log(f"capture: {len(results)} turns, {sum(len(o.prompt_token_ids) for o in outputs)} tokens; "
             f"aperture dir {used:.1f} GB before / {_disk_use_gb(aperture):.1f} GB after clearing; "
-            f"{shutil.disk_usage(aperture).free / 2**30:.0f} GB free on its disk")
+            f"{_free_gb(aperture):.0f} GB free on its disk")
         return out
+
+
+def _free_gb(path) -> float:
+    return shutil.disk_usage(path).free / 2**30 if os.path.isdir(path) else float("nan")
 
 
 def _disk_use_gb(path) -> float:
