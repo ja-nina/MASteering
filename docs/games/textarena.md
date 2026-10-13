@@ -20,7 +20,6 @@ from the TextArena library:
 | env_id | Description |
 |---|---|
 | `BlindAuction-v0` | Sealed-bid auction |
-| `CharacterConclave-v0` | Role-deduction coordination |
 | `Codenames-v0` | Word-clue deduction |
 | `Negotiation-v0` | Bilateral deal-making |
 | `SecretMafia-v0` | Hidden-role elimination |

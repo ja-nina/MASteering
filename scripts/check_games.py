@@ -3,7 +3,8 @@
     python scripts/check_games.py config/sweeps/smoke.yaml
 
 One line per (game, players): OK, or FAIL with the error (unknown env id, wrong player count,
-missing package, ...). Exits 1 if any game fails.
+missing package, ...). TextArena games also play one move, since some envs only break inside
+step(). Exits 1 if any game fails.
 """
 from __future__ import annotations
 
@@ -26,6 +27,9 @@ def check(family: str, game_id: str, players: int, env_kwargs: dict) -> str:
         env, _, _ = build_game(family=family, game_id=game_id, num_players=players,
                                env_kwargs={"seed": 0, **env_kwargs})
         env.reset()
+        if family == "textarena":  # one move too: some TextArena envs only break inside step()
+            (agent, _), = env.pending()
+            env.submit({agent: "Hello."})
         close = getattr(env, "close", None)
         if close:
             close()
