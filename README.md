@@ -101,6 +101,9 @@ Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
 
 ## Run
 
+    # 0. on the login node, no GPU: every game of a sweep builds and resets
+    python scripts/check_games.py config/sweeps/smoke.yaml
+
     # 1. cluster smoke tests (two jobs, 2 GPUs each):
     #    engine checks: vector / prompt persona steering moves the monitor, coefficient 0 ==
     #      unsteered, image prompts work            -> results/smoke/engines/<model>/samples.json

@@ -22,7 +22,6 @@ from the TextArena library:
 | `BlindAuction-v0` | Sealed-bid auction |
 | `CharacterConclave-v0` | Role-deduction coordination |
 | `Codenames-v0` | Word-clue deduction |
-| `Diplomacy-v0` | Multi-player negotiation |
 | `Negotiation-v0` | Bilateral deal-making |
 | `SecretMafia-v0` | Hidden-role elimination |
 | `Taboo-v0` | Constrained word-guessing |
