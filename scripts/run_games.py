@@ -23,6 +23,10 @@ from testbed.runner import run_jobs  # noqa: E402
 from testbed.steering import VectorStore  # noqa: E402
 from testbed.util import log  # noqa: E402
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # OPENROUTER_API_KEY for TextArena juries
+
 
 def main(argv=None, open_engines=None) -> int:
     p = argparse.ArgumentParser()

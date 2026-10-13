@@ -184,5 +184,7 @@ class TextArenaAdapter:
     def close(self) -> Dict[str, float]:
         if self.context.last_rewards:
             return dict(self.context.last_rewards)
-        ta_rewards, _ = self._env.close()
-        return {self._pid_str(k): float(v) for k, v in ta_rewards.items()}
+        if self._env is None:
+            return {}
+        ta_rewards, _ = self._env.close()  # rewards are None for a game cut off before its end
+        return {self._pid_str(k): float(v) for k, v in (ta_rewards or {}).items()}

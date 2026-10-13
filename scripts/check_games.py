@@ -12,9 +12,12 @@ import sys
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from testbed.registry import build_game  # noqa: E402
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # OPENROUTER_API_KEY for TextArena juries
 
 
 def check(family: str, game_id: str, players: int, env_kwargs: dict) -> str:
