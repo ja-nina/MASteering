@@ -18,7 +18,8 @@ export MIA_APERTURE_DIR="${MIA_APERTURE_DIR:-/tmp/ma-aperture-${SLURM_JOB_ID:-$$
 export TESTBED_MIA_DIR="${TESTBED_MIA_DIR:-/tmp/ma-mia-${SLURM_JOB_ID:-$$}-${SLURM_ARRAY_TASK_ID:-0}}"
 mkdir -p "$MIA_APERTURE_DIR"
 # capture engine's GPU buffer for captured rows: 8 GiB = 32768 rows x 32 layers x 8 KB (default 4 GiB,
-# 16384 rows, filled up during a long prefill while the previous batch was still being written out)
+# 16384 rows, filled up during a long prefill while the previous batch was still being written out).
+# It lives outside vLLM's share, so the capture engine runs at memory 0.75 (0.85 leaves only 6.7 GiB)
 export MIA_APERTURE_GPU_BYTES="${MIA_APERTURE_GPU_BYTES:-8589934592}"
 
 # /tmp watcher: every TMP_WATCH_SECONDS (default 10, 0 = off) log the node's /tmp use and its

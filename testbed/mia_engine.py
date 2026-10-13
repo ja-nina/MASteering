@@ -259,7 +259,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
             # capture layers are 1-based: i = output of decoder block i-1
             cap_config = {"hidden_states": {"layers": [l + 1 for l in monitor_layers], "mode": "all_tokens"}}
             cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
-                                mon_cfg.get("memory", 0.35 if shared else 0.85), max_model_len, max_images)
+                                mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images)
             stack.callback(_shutdown, cap_llm)
             capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden)
         try:

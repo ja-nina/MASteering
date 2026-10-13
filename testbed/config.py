@@ -24,7 +24,7 @@
       concurrent_episodes: 32
       max_model_len: 32768
       steer:   {gpus: "0", memory: 0.85}
-      monitor: {gpus: "1", memory: 0.85}
+      monitor: {gpus: "1", memory: 0.75}
       sampling: {}                  # overrides of the model's vendor sampling settings
       max_images: 2                 # images per prompt the engines accept (0 when every run is text)
 
