@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import gc
 import os
+import shutil
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -149,8 +150,25 @@ class CaptureEngine:
                                           "tokens; prefix caching or chunked prefill on the capture engine?")
                 per_layer[layer] = hs[n_prompt:]
             out.append(per_layer)
-        clear_delivered(os.environ["MIA_APERTURE_DIR"])
+        aperture = os.environ["MIA_APERTURE_DIR"]
+        used = _disk_use_gb(aperture)
+        clear_delivered(aperture)
+        log(f"capture: {len(results)} turns, {sum(len(o.prompt_token_ids) for o in outputs)} tokens; "
+            f"aperture dir {used:.1f} GB before / {_disk_use_gb(aperture):.1f} GB after clearing; "
+            f"{shutil.disk_usage(aperture).free / 2**30:.0f} GB free on its disk")
         return out
+
+
+def _disk_use_gb(path) -> float:
+    """Blocks actually allocated below `path` (vLLM-Hook's raw files are sparse: hole-punched once read)."""
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.stat(os.path.join(root, f)).st_blocks * 512
+            except (OSError, AttributeError):  # file removed meanwhile; st_blocks is POSIX only
+                pass
+    return total / 2**30
 
 
 @contextmanager
