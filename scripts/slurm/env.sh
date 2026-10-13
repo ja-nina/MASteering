@@ -26,8 +26,9 @@ TMP_LOG="slurm-logs/tmp-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$$}}${SLURM_ARRAY_
 watch_tmp() {
   while true; do
     {
-      echo "== $(date +%T)  $(hostname)  $(df -h /tmp | awk 'NR==2 {print $3 " used, " $4 " free of " $2}')"
-      du -sm /tmp/* 2>/dev/null | sort -rn | head -8 | while read -r mb path; do
+      # df counts deleted-but-open files and unreadable dirs that du cannot see: the gap between them
+      echo "== $(date +%T)  $(hostname)  $(df -h /tmp | awk 'NR==2 {print $3 " used, " $4 " free of " $2}'),"           "$(du -sm /tmp 2>/dev/null | cut -f1) MB visible to du"
+      du -sm /tmp/* /tmp/.[!.]* 2>/dev/null | sort -rn | head -8 | while read -r mb path; do
         printf '%8s MB  %-10s %s\n' "$mb" "$(stat -c %U "$path" 2>/dev/null)" "$path"
       done
     } >> "$TMP_LOG"
