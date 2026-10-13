@@ -52,8 +52,18 @@ def _plain(obs) -> dict:
     return out
 
 
+def _hide_gpus_from_tensorflow() -> None:
+    """meltingpot imports tensorflow; keep it off the GPUs vLLM runs on (substrates need no TF ops)."""
+    try:
+        import tensorflow as tf
+        tf.config.set_visible_devices([], "GPU")
+    except Exception:  # no tensorflow, or devices already initialised
+        pass
+
+
 class LocalSubstrate:
     def __init__(self, name: str, num_players: int) -> None:
+        _hide_gpus_from_tensorflow()
         from meltingpot import substrate
 
         config = substrate.get_config(name)
