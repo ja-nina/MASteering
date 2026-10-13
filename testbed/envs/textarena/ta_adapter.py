@@ -67,6 +67,9 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
     return FixedJury
 
 
+# sent for an agent that gave no usable answer: TextArena envs expect text and treat it as an invalid move
+NO_ANSWER = "(no answer)"
+
 # role names (lower-cased substrings) of the deceiving side in TextArena's hidden-role games
 _EVIL_ROLE_WORDS = ("mafia", "werewolf", "spy", "impostor", "traitor", "evil", "morgana", "mordred", "assassin")
 
@@ -129,6 +132,8 @@ class TextArenaAdapter:
     def submit(self, actions: Dict[str, Action]) -> StepResult:
         agent_id = self._pid_str(self._current_pid)
         action = actions[agent_id]
+        if not isinstance(action, str):  # the runner's fallback (0) after unparseable answers
+            action = NO_ANSWER
         done, info = self._env.step(action)
         rewards: Dict[str, float] = {}
         if done:

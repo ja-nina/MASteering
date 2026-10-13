@@ -17,6 +17,9 @@ export PVF_OUT="${PVF_OUT:-/scratch/inf0/user/nzukowsk/PersVecFast/out}"
 export MIA_APERTURE_DIR="${MIA_APERTURE_DIR:-/tmp/ma-aperture-${SLURM_JOB_ID:-$$}-${SLURM_ARRAY_TASK_ID:-0}}"
 export TESTBED_MIA_DIR="${TESTBED_MIA_DIR:-/tmp/ma-mia-${SLURM_JOB_ID:-$$}-${SLURM_ARRAY_TASK_ID:-0}}"
 mkdir -p "$MIA_APERTURE_DIR"
+# capture engine's GPU buffer for captured rows: 8 GiB = 32768 rows x 32 layers x 8 KB (default 4 GiB,
+# 16384 rows, filled up during a long prefill while the previous batch was still being written out)
+export MIA_APERTURE_GPU_BYTES="${MIA_APERTURE_GPU_BYTES:-8589934592}"
 
 # /tmp watcher: every TMP_WATCH_SECONDS (default 10, 0 = off) log the node's /tmp use and its
 # largest entries (size, owner) to slurm-logs/ (TMP_LOG), to see who fills node-local disk
@@ -27,8 +30,8 @@ watch_tmp() {
   while true; do
     {
       # df counts deleted-but-open files and unreadable dirs that du cannot see: the gap between them
-      echo "== $(date +%T)  $(hostname)  $(df -h /tmp | awk 'NR==2 {print $3 " used, " $4 " free of " $2}'),"           "$(du -sm /tmp 2>/dev/null | cut -f1) MB visible to du"
-      du -sm /tmp/* /tmp/.[!.]* 2>/dev/null | sort -rn | head -8 | while read -r mb path; do
+      echo "== $(date +%T)  $(hostname)  $(df -h /tmp | awk 'NR==2 {print $3 " used, " $4 " free of " $2}'),"           "$(timeout 5 du -sm /tmp 2>/dev/null | cut -f1) MB visible to du"
+      timeout 5 du -sm /tmp/* /tmp/.[!.]* 2>/dev/null | sort -rn | head -8 | while read -r mb path; do
         printf '%8s MB  %-10s %s\n' "$mb" "$(stat -c %U "$path" 2>/dev/null)" "$path"
       done
     } >> "$TMP_LOG"

@@ -39,8 +39,11 @@ from testbed.util import log, save_pt, write_json
 
 CAPTURE_BATCH = 32  # turns read per capture call (bounds the captured rows held in RAM)
 # prompt + completion tokens per capture call: vLLM-Hook writes every captured row to node-local
-# /tmp (8 KB per token per captured layer, twice until read), and array tasks on a node share it
-CAPTURE_TOKENS = int(os.environ.get("TESTBED_CAPTURE_TOKENS", 16384))
+# /tmp (8 KB per token per captured layer, twice until read), and array tasks on a node share it.
+# Every row also passes through the GPU aperture (MIA_APERTURE_GPU_BYTES, env.sh: 32768 rows), which
+# a background thread drains to disk; a call of at most a quarter of it never waits on that drain
+# (a full aperture for 10 s kills the engine: ApertureBackpressureError)
+CAPTURE_TOKENS = int(os.environ.get("TESTBED_CAPTURE_TOKENS", 8192))
 
 
 class CaptureMismatch(RuntimeError):

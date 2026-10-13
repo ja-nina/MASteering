@@ -63,3 +63,26 @@ def test_player_roles_falls_back_to_game_state():
 def test_teams_marks_deceiving_side_evil():
     adapter = _make_adapter(_FakeMafiaEnv())
     assert adapter.teams() == {"player_0": "evil", "player_1": "good", "player_2": "good"}
+
+
+def test_non_text_fallback_action_is_sent_as_text():
+    """The runner's fallback (0) after unparseable answers reaches TextArena as text (envs call .replace on it)."""
+    from testbed.envs.textarena.ta_adapter import NO_ANSWER
+
+    class _Env:
+        sent = None
+
+        def get_observation(self):
+            return 0, "your move"
+
+        def step(self, action):
+            self.sent = action
+            return False, {}
+
+    env = _Env()
+    adapter = TextArenaAdapter(env_id="TestGame-v0", num_players=2, _env=env)
+    (agent, _), = adapter.pending()
+    adapter.submit({agent: 0})
+    assert env.sent == NO_ANSWER
+    adapter.submit({agent: "[2]"})
+    assert env.sent == "[2]"
