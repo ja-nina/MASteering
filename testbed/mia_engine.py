@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 
 import torch
 
-from persvecfast.mia import clear_delivered, layer_key  # also sets PersVecFast's MIA/vLLM env defaults
+from persvecfast.mia import check_free_space, clear_delivered, layer_key  # also sets PersVecFast's MIA/vLLM env defaults
 from persvecfast.models import MODELS, ModelSpec, model_shape, sampling_kwargs
 from persvecfast.prompts import chat_prompt
 
@@ -37,6 +37,9 @@ from testbed.engine import TurnRequest, TurnResult
 from testbed.util import log, save_pt, write_json
 
 CAPTURE_BATCH = 32  # turns read per capture call (bounds the captured rows held in RAM)
+# prompt + completion tokens per capture call: vLLM-Hook writes every captured row to node-local
+# /tmp (8 KB per token per captured layer, twice until read), and array tasks on a node share it
+CAPTURE_TOKENS = int(os.environ.get("TESTBED_CAPTURE_TOKENS", 16384))
 
 
 class CaptureMismatch(RuntimeError):
@@ -106,11 +109,16 @@ class CaptureEngine:
 
     def read(self, results: List[TurnResult]) -> List[Dict[int, torch.Tensor]]:
         rows: List[Optional[Dict[int, torch.Tensor]]] = [None] * len(results)
-        todo = [i for i, r in enumerate(results) if r.token_ids]
-        for start in range(0, len(todo), CAPTURE_BATCH):
-            batch = todo[start:start + CAPTURE_BATCH]
-            for i, r in zip(batch, self._read([results[i] for i in batch])):
-                rows[i] = r
+        batch, tokens = [], 0
+        for i in [i for i, r in enumerate(results) if r.token_ids] + [None]:
+            n = 0 if i is None else len(results[i].prompt_token_ids) + len(results[i].token_ids)
+            if batch and (i is None or len(batch) == CAPTURE_BATCH or tokens + n > CAPTURE_TOKENS):
+                for j, r in zip(batch, self._read([results[j] for j in batch])):
+                    rows[j] = r
+                batch, tokens = [], 0
+            if i is not None:
+                batch.append(i)
+                tokens += n
         empty = {l: torch.zeros(0, self.hidden) for l in self.layers}
         return [r if r is not None else empty for r in rows]
 
@@ -213,6 +221,8 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
     steer_config = {"steering": {"method": "add_vector", "coefficient": 0.0, "optimal_layer": 0,
                                  "vector_path": str(zero_vector)}}
 
+    if monitor_layers is not None:  # fail before loading anything when other jobs have already filled /tmp
+        check_free_space(os.environ["MIA_APERTURE_DIR"], float(os.environ.get("PVF_MIN_TMP_GB", 20)))
     with ExitStack() as stack:
         llm = _open_llm(spec, "steer", steer_config, work_dir, steer_cfg.get("gpus"),
                         steer_cfg.get("memory", 0.5 if shared else 0.85), max_model_len, max_images)
