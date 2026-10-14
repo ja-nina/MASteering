@@ -1,7 +1,7 @@
 """Analysis report over every game of a sweep: one self-contained HTML page.
 
     python scripts/summarize_runs.py <logs>/main --out results/main/agents.csv
-    python scripts/report.py results/main/agents.csv --sweep config/sweeps/main.yaml --out results/main/report.html
+    python scripts/report.py results/main/agents.csv --sweep config/sweeps/main.yaml \n        --logs <logging_dir>/main --out results/main/report.html
 
 Reads the agent-episode rows of summarize_runs.py and answers, per trait and per game:
    1 coverage        episodes per game, truncated episodes, unparseable answers
@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import json
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -45,7 +46,7 @@ def load(path) -> list:
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
-            num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None  # noqa: E731
+            num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None
             row = {
                 "run_id": r["run_id"], "group": r.get("group") or r["run_id"].split("__")[0],
                 "condition": r.get("condition") or (r["run_id"].split("__")[1] if "__" in r["run_id"] else "none"),
@@ -244,13 +245,14 @@ def welfare(rows, base_rows):
     return out
 
 
-def detectability(rows, t):
+def detectability(rows, t, via=STEERED_VIA):
     """{coefficient: (mean AUC, half CI, episodes)}: how well the steered agent's own-trait readout singles it
-    out among the co-players of its episode (single-agent conditions). 0.5 = invisible to the monitor;
-    for negative coefficients the steered agent is expected to read LOWER, and the AUC is oriented so."""
+    out among the co-players of its episode (single-agent conditions, steered `via` these channels).
+    0.5 = invisible to the monitor; for negative coefficients the steered agent is expected to read LOWER,
+    and the AUC is oriented so."""
     episodes = defaultdict(list)
     for r in rows:
-        if r["trait"] == t and r["select"] == "one" and r["via"] in STEERED_VIA and not r["random"] \
+        if r["trait"] == t and r["select"] == "one" and r["via"] in via and not r["random"] \
                 and r["team_cond"] is None and t in r["mon"]:
             episodes[r["cluster"]].append(r)
     by_coef = defaultdict(lambda: ([], []))
@@ -371,6 +373,135 @@ def effect_table(prs, traits, scale):
     return table
 
 
+def fingerprint(rs):
+    """Mean readout of every monitored trait (SD units vs unsteered agents of the same game) over the agents `rs`:
+    which traits an intervention moves, and how much."""
+    vals = defaultdict(list)
+    for r in rs:
+        for u, v in r["mon"].items():
+            vals[u].append(v)
+    return {u: float(np.mean(v)) for u, v in vals.items()}
+
+
+def cosine(a, b):
+    keys = sorted(set(a) & set(b))
+    x, y = np.array([a[k] for k in keys]), np.array([b[k] for k in keys])
+    n = float(np.linalg.norm(x) * np.linalg.norm(y)) if keys else 0.0
+    return float(x @ y / n) if n > 0 else float("nan")
+
+
+def pearson(x, y):
+    """(r, low, high, n): correlation with a 95% CI (Fisher z)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    keep = np.isfinite(x) & np.isfinite(y)
+    x, y = x[keep], y[keep]
+    if len(x) < 4 or x.std() == 0 or y.std() == 0:
+        return float("nan"), float("nan"), float("nan"), len(x)
+    r = float(np.corrcoef(x, y)[0, 1])
+    z, h = math.atanh(max(-0.9999, min(0.9999, r))), 1.96 / math.sqrt(len(x) - 3)
+    return r, math.tanh(z - h), math.tanh(z + h), len(x)
+
+
+def equivalent_coef(curve, target, sign):
+    """The vector coefficient on the `sign` side whose mean readout equals `target` (linear interpolation of the
+    dose-response curve {coef: mean}, 0 = unsteered). Returns (coef, note): note '>' when even the largest
+    coefficient stays below the target, '<' when the target is not past the unsteered level."""
+    pts = sorted(((x, m) for x, m in curve.items() if x * sign >= 0 and math.isfinite(m)), key=lambda p: abs(p[0]))
+    if len(pts) < 2 or not math.isfinite(target):
+        return float("nan"), ""
+    for (x0, m0), (x1, m1) in zip(pts, pts[1:]):
+        if (m0 - target) * (m1 - target) <= 0 and m1 != m0:
+            return x0 + (target - m0) / (m1 - m0) * (x1 - x0), ""
+    if sign * (target - pts[0][1]) <= 0:
+        return 0.0, "<"
+    return pts[-1][0], ">"
+
+
+def channels(rows, traits, base, scale):
+    """Persona prompt vs persona vector, per trait and sign (+ = the trait's instruction / c > 0): strength,
+    direction over all monitored traits, behaviour, visibility and cost. Vector numbers at the largest
+    coefficient of that sign unless said otherwise; only game cells that have both channels."""
+    wel = welfare([r for r in rows if r["condition"] in ("all", "prompt_all")], [r for r in rows if r["condition"] == "none"])
+    out, agree = {}, defaultdict(list)  # agree: [(prompt, vector, vector at the next-lower |c|, label)] per measure
+    for t in traits:
+        vec = [r for r in rows if r["steered"] and r["trait"] == t and r["via"] == "vector" and not r["random"]
+               and r["team_cond"] is None]
+        pro = [r for r in rows if r["steered"] and r["trait"] == t and r["via"] == "prompt" and r["team_cond"] is None]
+        cells = {r["cell"] for r in vec} & {r["cell"] for r in pro}
+        vec, pro = [r for r in vec if r["cell"] in cells], [r for r in pro if r["cell"] in cells]
+        rnd = [r for r in rows if r["steered"] and r["trait"] == t and r["random"] and r["cell"] in cells]
+        none = [r for r in rows if r["condition"] == "none" and r["cell"] in cells]
+        if not cells:
+            continue
+        curve = {0.0: _mean_mon(none, t)} | {c: _mean_mon([r for r in vec if r["coef"] == c], t)
+                                               for c in {r["coef"] for r in vec}}
+        coefs = sorted(c for c in curve if c)
+        res = {"cells": sorted(cells)}
+        for s in (1, -1):
+            side = [c for c in coefs if c * s > 0]
+            if not side:
+                continue
+            cmax, cnext = max(side, key=abs), sorted(side, key=abs)[-2] if len(side) > 1 else None
+            p_s = [r for r in pro if (r["coef"] or 0) * s > 0]
+            v_max = [r for r in vec if r["coef"] == cmax]
+            shift = mean_ci([r["mon"][t] for r in p_s if t in r["mon"]], [r["cluster"] for r in p_s if t in r["mon"]])
+            fp_p, fp_v, fp_r = fingerprint(p_s), fingerprint(v_max), fingerprint([r for r in rnd if r["coef"] == cmax])
+            rank = lambda fp: 1 + sorted(fp, key=lambda u: -s * fp[u]).index(t) if t in fp else None
+            rew = paired(rows, base, lambda r: r["steered"] and r["trait"] == t and r["cell"] in cells)
+            rew_mean = lambda cond, c, team=None: mean_ci(
+                *zip(*[(r["diff"] / scale.get(r["cell"], 1.0), r["cluster"]) for r in rew
+                       if r["condition"] == cond and r["coef"] == c and (team is None or r["team"] == team)]
+                     or [(float("nan"), None)]))
+            wel_mean = lambda cond, c: mean_ci(
+                *zip(*[(r["diff"], r["cluster"]) for r in wel
+                       if r["condition"] == cond and r["trait"] == t and r["coef"] == c and r["cell"] in cells]
+                     or [(float("nan"), None)]))
+            co = lambda cond, sel: [r for r in rows if r["condition"] == cond and not r["steered"] and r["trait"] == t
+                                    and sel(r["coef"]) and r["cell"] in cells and t in r["mon"]]
+            contagion = {k: mean_ci([r["mon"][t] for r in rs], [r["cluster"] for r in rs]) for k, rs in
+                         (("prompt", co("prompt_one", lambda c: (c or 0) * s > 0)), ("vector", co("one", lambda c: c == cmax)))}
+            det = {"prompt": detectability(rows, t, ("prompt",)).get(float(s)),
+                   "vector": detectability(rows, t, ("vector",)).get(cmax),
+                   "both": detectability(rows, t, ("both",)).get(cmax)}
+            cost = lambda rs: (mean_ci([r["chars"] for r in rs if r["chars"] is not None],
+                                       [r["cluster"] for r in rs if r["chars"] is not None])[0],
+                               100 * sum(r["fallbacks"] for r in rs) / max(1, sum(r["turns"] for r in rs)))
+            res[s] = {"shift": shift, "eq": equivalent_coef(curve, shift[0], s), "cmax": cmax, "vmax": curve[cmax],
+                      "cos_vec": cosine(fp_p, fp_v), "cos_rnd": cosine(fp_p, fp_r),
+                      "cos_vec_rnd": cosine(fp_v, fp_r), "top_p": _top(fp_p, s), "top_v": _top(fp_v, s),
+                      "rank_p": rank(fp_p), "rank_v": rank(fp_v),
+                      "reward": {"prompt": rew_mean("prompt_one", float(s)), "vector": rew_mean("one", cmax),
+                                 "vector_next": rew_mean("one", cnext)},
+                      "evil": {"prompt": rew_mean("evil_team_prompt", float(s), "evil"),
+                               "vector": rew_mean("evil_team", cmax, "evil")},
+                      "welfare": {"prompt": wel_mean("prompt_all", float(s)), "vector": wel_mean("all", cmax)},
+                      "contagion": contagion, "det": det,
+                      "cost": {"prompt": cost(p_s), "vector": cost(v_max), "none": cost(none)}}
+            for cell in sorted(cells):
+                in_cell = lambda rs: [r for r in rs if r["cell"] == cell]
+                label = f"{t} {'+' if s > 0 else '−'} {cell_name(cell)}"
+                agree["readout"].append((_mean_mon(in_cell(p_s), t), _mean_mon(in_cell(v_max), t),
+                                         _mean_mon(in_cell([r for r in vec if r["coef"] == cnext]), t), label))
+                cr = [r for r in rew if r["cell"] == cell]
+                m = lambda cond, c: float(np.mean([r["diff"] / scale.get(cell, 1.0) for r in cr
+                                                   if r["condition"] == cond and r["coef"] == c] or [float("nan")]))
+                agree["reward"].append((m("prompt_one", float(s)), m("one", cmax), m("one", cnext), label))
+        out[t] = res
+    corr = {k: {"prompt_vector": pearson([a for a, *_ in v], [b for _, b, *_ in v]),
+                "vector_vector": pearson([b for _, b, *_ in v], [c for *_, c, _ in v])} for k, v in agree.items()}
+    return out, agree, corr
+
+
+def _mean_mon(rs, t):
+    v = [r["mon"][t] for r in rs if t in r["mon"]]
+    return float(np.mean(v)) if v else float("nan")
+
+
+def _top(fp, sign, k=3):
+    """The k monitored traits an intervention moves most in the direction `sign`."""
+    return [(u, fp[u]) for u in sorted(fp, key=lambda u: -sign * fp[u])[:k]]
+
+
 # ---------------------------------------------------------------- HTML
 
 CSS = """
@@ -444,8 +575,8 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
     x0, x1 = min(xs), max(xs) if max(xs) > min(xs) else min(xs) + 1
     L, R, T, B = 44, 8, 8, 34
-    sx = lambda x: L + (x - x0) / (x1 - x0) * (width - L - R)  # noqa: E731
-    sy = lambda y: T + (hi - y) / (hi - lo) * (height - T - B)  # noqa: E731
+    sx = lambda x: L + (x - x0) / (x1 - x0) * (width - L - R)
+    sy = lambda y: T + (hi - y) / (hi - lo) * (height - T - B)
     parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="{html.escape(title)}">',
              f'<line x1="{L}" y1="{T}" x2="{L}" y2="{height - B}" stroke="currentColor" stroke-opacity=".3"/>',
              f'<line x1="{L}" y1="{sy(0):.1f}" x2="{width - R}" y2="{sy(0):.1f}" stroke="currentColor" '
@@ -477,6 +608,37 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     return "".join(parts)
 
 
+def scatter_chart(points, xlabel, ylabel, width=320, height=280):
+    """points: [(x, y, label)] -> SVG scatter with zero lines and the diagonal y = x (same effect both ways)."""
+    pts = [(x, y, lab) for x, y, lab in points if math.isfinite(x) and math.isfinite(y)]
+    if len(pts) < 2:
+        return "<p class=muted>no data yet</p>"
+    lo = min(min(x, y) for x, y, _ in pts + [(0, 0, "")])
+    hi = max(max(x, y) for x, y, _ in pts + [(0, 0, "")])
+    pad = 0.05 * (hi - lo or 1)
+    lo, hi = lo - pad, hi + pad
+    L, R, T, B = 44, 8, 8, 34
+    sx = lambda v: L + (v - lo) / (hi - lo) * (width - L - R)
+    sy = lambda v: T + (hi - v) / (hi - lo) * (height - T - B)
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="{html.escape(ylabel)}">',
+             f'<line x1="{sx(lo):.1f}" y1="{sy(lo):.1f}" x2="{sx(hi):.1f}" y2="{sy(hi):.1f}" stroke="currentColor" '
+             f'stroke-opacity=".35" stroke-dasharray="4 3"/>',
+             f'<line x1="{L}" y1="{sy(0):.1f}" x2="{width - R}" y2="{sy(0):.1f}" stroke="currentColor" stroke-opacity=".2"/>',
+             f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - B}" stroke="currentColor" stroke-opacity=".2"/>']
+    for v in (lo, 0, hi):
+        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.2g}</text>')
+        parts.append(f'<text x="{sx(v):.1f}" y="{height - B + 12}" text-anchor="middle">{v:.2g}</text>')
+    parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
+    parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
+                 f'{html.escape(ylabel)}</text>')
+    for x, y, lab in pts:
+        c = "var(--pos)" if "+" in lab else "var(--neg)"
+        parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3" fill="{c}" fill-opacity=".75">'
+                     f'<title>{html.escape(lab)}: x={x:.2f}, y={y:.2f}</title></circle>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 LEGEND = ('<div class=legend><span><i style="background:var(--pos)"></i>persona vector</span>'
           '<span><i style="background:var(--rnd)"></i>random direction, same norm (control)</span>'
           '<span><i style="background:var(--neg);height:7px;width:7px"></i>persona prompt (+ / − instruction)</span>'
@@ -496,6 +658,13 @@ def section(num, title, question, measured, read, findings, body, warn=None):
             f"<b>How to read it</b><span>{read}</span></div>"
             + (f"<div class=warn>{warn}</div>" if warn else "")
             + f"<div class=result><b>Result</b><ul>{items}</ul></div>{body}")
+
+
+def mean_cell(v):
+    """A (mean, half CI, n) as a table cell: 'm ± h', or 'm (n=1)' when one episode gives no CI."""
+    if not v or not math.isfinite(v[0]):
+        return "<td class=muted>–</td>"
+    return f"<td>{fmt(v[0], 2)} ± {fmt(v[1], 2)}</td>" if math.isfinite(v[1]) else         f"<td title='a single episode: no CI'>{fmt(v[0], 2)} <span class=muted>(n=1)</span></td>"
 
 
 def ranked(d, k=3, reverse=True):
@@ -605,7 +774,138 @@ def setup_section(rows, sweep, traits, cells):
     return "".join(out)
 
 
-def build(rows, sweep=None) -> str:
+def _turns(path):
+    try:
+        return [json.loads(line) for line in open(path, encoding="utf-8")]
+    except OSError:
+        return []
+
+
+def games_section(rows, traits, cells, man, eff, base, scale):
+    """Every game on its own: per trait, the language (vector slope, prompt shift) and the outcomes (steered
+    agent, prompted agent, the group, the deceiving side), in the game's own reward units."""
+    wel = welfare([r for r in rows if r["condition"] == "all" and not r["random"]],
+                  [r for r in rows if r["condition"] == "none"])
+    evil = paired(rows, base, lambda r: r["team_cond"] == "evil" and r["team"] == "evil" and r["steered"])
+    prompted = paired(rows, base, lambda r: r["condition"] == "prompt_one" and r["steered"])
+    out = ["<h2 id=games>Per game</h2><div class=box><b>What you see</b><span>Each game separately, one row per "
+           "trait. <b>Readout</b>: the vector's slope on the steered agents' trait readout (SD per unit c; section 2) "
+           "and the mean readout with the persona prompt + / − (SD). <b>Outcomes</b>, in the game's own reward units, "
+           "paired with the same seat in the unsteered episode with the same seed: the steered agent's reward per "
+           "unit c (vector, section 9); the one prompted agent's mean reward change (prompt + / −); the group's "
+           "total reward per unit c when every agent gets the vector (welfare); in hidden-role games the deceiving "
+           "side's reward per unit c when all its members get the vector.</span><b>How to read it</b><span>Slopes "
+           "carry stars after Benjamini–Hochberg correction over the game's table; prompt columns are means ± 95% CI. "
+           "The unsteered line gives the scale: e.g. a win/loss game with reward 0/1 has mean reward = win rate, so "
+           "a slope of 0.1 = +10 percentage points of wins per unit c.</span></div>"]
+    for cell in cells:
+        cr = [r for r in rows if r["cell"] == cell]
+        unst = [r for r in cr if r["condition"] == "none"]
+        if not any(r["trait"] for r in cr):
+            continue
+        if not unst:
+            out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{len({r['cluster'] for r in cr})} "
+                       "episodes, none unsteered yet: nothing to compare against.</p>")
+            continue
+        has_evil = any(r["team"] == "evil" for r in cr)
+        ev_slope = {t: _diff_slope([r for r in evil if r["cell"] == cell and r["trait"] == t], None) for t in traits}
+        wel_slope = {t: _diff_slope([r for r in wel if r["cell"] == cell and r["trait"] == t], None) for t in traits}
+        cols = [("readout", lambda t: man[t]["per_game"].get(cell)), ("reward", lambda t: eff[t].get(cell)),
+                ("welfare", lambda t: wel_slope[t])] + ([("evil", lambda t: ev_slope[t])] if has_evil else [])
+        found = {(name, t): get(t) for name, get in cols for t in traits}
+        q = dict(zip(found, bh([s["p"] if s else float("nan") for s in found.values()])))
+        pm = lambda rs: mean_ci([v for v, _ in rs], [c for _, c in rs])
+
+        tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>readout: vector slope</th><th>readout: prompt +</th>"
+               "<th>readout: prompt −</th><th>steered agent's reward: vector slope</th><th>prompted agent's reward: +</th>"
+               "<th>prompted agent's reward: −</th><th>welfare: vector slope (all steered)</th>"
+               + ("<th>evil side's reward: vector slope</th>" if has_evil else "") + "</tr>"]
+        hits = []
+        for t in traits:
+            pr = {sgn: pm([(r["mon"][t], r["cluster"]) for r in cr if r["via"] == "prompt" and r["steered"] and r["trait"] == t
+                           and t in r["mon"] and r["team_cond"] is None and (r["coef"] or 0) * sgn > 0]) for sgn in (1, -1)}
+            rw = {sgn: pm([(r["diff"], r["cluster"]) for r in prompted if r["cell"] == cell and r["trait"] == t
+                           and (r["coef"] or 0) * sgn > 0]) for sgn in (1, -1)}
+            tab.append(f"<tr><td class=l>{t}</td>{slope_cell(found[('readout', t)], q[('readout', t)])}{mean_cell(pr[1])}{mean_cell(pr[-1])}"
+                       f"{slope_cell(found[('reward', t)], q[('reward', t)])}{mean_cell(rw[1])}{mean_cell(rw[-1])}"
+                       f"{slope_cell(found[('welfare', t)], q[('welfare', t)])}"
+                       + (slope_cell(found[("evil", t)], q[("evil", t)]) if has_evil else "") + "</tr>")
+            for name, label in (("reward", "steered agent"), ("welfare", "group"), ("evil", "evil side")):
+                s = found.get((name, t))
+                if s and sig(s, q[(name, t)]):
+                    hits.append(f"{t} → {label} {s['b']:+.2f}/unit c")
+        tab.append("</table></div>")
+        rew0 = [r["reward"] for r in unst if r["reward"] is not None]
+        evil0 = [r["reward"] for r in unst if r["reward"] is not None and r["team"] == "evil"]
+        out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{len({r['cluster'] for r in cr})} episodes "
+                   f"({len({r['cluster'] for r in unst})} unsteered). Unsteered: mean reward per agent "
+                   f"{fmt(float(np.mean(rew0)) if rew0 else float('nan'), 2)} (SD {fmt(scale.get(cell, float('nan')), 2)})"
+                   + (f", evil side {fmt(float(np.mean(evil0)), 2)}" if evil0 else "") + ". "
+                   + ("<b>The deceiving side wins every unsteered game</b>, so steering can only make it lose: a "
+                      "positive evil-side slope means it loses at negative c (pushed away from the trait), not that "
+                      "it wins more at positive c. " if evil0 and min(evil0) >= 1 else "")
+                   + ("Significant outcome effects: " + "; ".join(hits) + "." if hits else "No significant outcome effect yet.")
+                   + "</p>" + "".join(tab))
+    return "".join(out)
+
+
+def examples_section(logs_dir, traits, coefs, per_trait=2, chars=700):
+    """What steering looks like: the same seat's first turn of the same game (same seed, so the same prompt)
+    unsteered, with the persona vector at the strongest - and + coefficient, the random direction and the
+    persona prompt (+ / -). Conditions where every agent is steered (all, all_random, prompt_all), so the
+    first-turn agent is steered in each."""
+    logs = Path(logs_dir)
+    if not logs.is_dir() or not coefs:
+        return ""
+    lo, hi = min(coefs), max(coefs)
+    out = ["<h2 id=examples>What steering looks like: matched examples</h2><div class=box><b>What you see</b><span>"
+           "For each trait, games where the same seat's <i>first</i> answer can be compared across conditions: same "
+           "game, same seed, so the agent received exactly the same prompt; the only difference is the steering. "
+           f"Columns: unsteered; persona vector at c = {lo:g} and {hi:g}; a random direction of the same norm at "
+           f"c = {hi:g} (control); the persona prompt (+ / −). The number under each answer is that turn's readout "
+           "of the trait (raw projection, higher = more of the trait; compare within a row).</span>"
+           "<b>Why it matters</b><span>The tables below are averages over thousands of turns; these show what a "
+           "slope of the readout actually corresponds to in text, including where strong steering stops being "
+           "'more of the trait' and becomes caricature or broken output.</span></div>"]
+    for t in traits:
+        shown = 0
+        for group_dir in sorted(p for p in logs.iterdir() if p.is_dir() and not p.name.startswith("_")):
+            if shown >= per_trait:
+                break
+            g = group_dir.name
+            runs = {"unsteered": f"{g}__none", f"vector c={lo:g}": f"{g}__all__{t}_x{lo:g}",
+                    f"vector c={hi:g}": f"{g}__all__{t}_x{hi:g}", f"random c={hi:g}": f"{g}__all_random__{t}_x{hi:g}",
+                    "prompt +": f"{g}__prompt_all__{t}_x1", "prompt −": f"{g}__prompt_all__{t}_x-1"}
+            eps = None
+            for run in runs.values():
+                have = {int(p.name.split("_")[1].split(".")[0]) for p in (group_dir / run).glob("episode_*.summary.json")}
+                eps = have if eps is None else eps & have
+            if not eps:
+                continue
+            ep = min(eps)
+            first = {k: (_turns(group_dir / run / f"episode_{ep}.jsonl") or [None])[0] for k, run in runs.items()}
+            base = first["unsteered"]
+            if not base or len(base.get("completion") or "") < 120:  # one-word moves say little about style
+                continue
+            cells = []
+            for k, rec in first.items():
+                if not rec:
+                    cells.append(f"<td class=l><b>{k}</b><br><span class=muted>missing</span></td>")
+                    continue
+                mon = rec.get("monitor") or {}
+                layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
+                score = mon.get(layer, {}).get(t) if layer else None
+                text = (rec.get("completion") or "").strip()
+                text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
+                cells.append(f"<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{text}<br>"
+                             f"<span class=muted>{t} readout: {fmt(score, 2)}</span></td>")
+            out.append(f"<h3>{t} — {html.escape(g)}, episode {ep}, {html.escape(str(base.get('agent_id')))}'s first "
+                       f"answer</h3><div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
+            shown += 1
+    return "".join(out)
+
+
+def build(rows, sweep=None, logs_dir=None) -> str:
     rows = zscored(rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
     cells = sorted({r["cell"] for r in rows})
@@ -756,34 +1056,140 @@ def build(rows, sweep=None) -> str:
                         "unprompted has little to suppress (floor effect).",
                         f5 or ["Roughly symmetric for all traits."], as_html))
 
-    # 6. channels
-    tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>prompt +</th><th>prompt −</th><th>vector at max +</th>"
-           "<th>vector at max −</th><th>vector-only slope</th><th>prompt+vector slope</th></tr>"]
-    f6, stronger_prompt, both_better = [], [], []
+    # 6. persona prompt vs persona vector
+    ch, agree, corr = channels(rows, traits, base, scale)
+    sides = [(t, s) for t in traits if t in ch for s in (1, -1) if s in ch[t]]
+    sgn = lambda s: "+" if s > 0 else "−"
+
+    def eq_text(eq):
+        x, note = eq
+        return "–" if not math.isfinite(x) else f"beyond {x:+g}" if note == ">" else "≤ 0" if note == "<" else f"{x:+.1f}"
+
+    # a. strength
+    tab_a = ["<h3>a. Strength: how far does each move the trait's own readout?</h3><div class=wrap><table><tr>"
+             "<th class=l>trait</th><th>prompt + (SD)</th><th>≈ vector c</th><th>vector at max + (SD)</th>"
+             "<th>prompt − (SD)</th><th>≈ vector c</th><th>vector at max − (SD)</th>"
+             "<th>vector-only slope</th><th>prompt + vector slope</th></tr>"]
     for t in traits:
-        curve, pr = man[t]["curve"], man[t]["prompt"]
-        vx = [x for (kind, x) in curve if kind == "vector" and x != 0]
-        hi = curve.get(("vector", max(vx))) if vx else None
-        lo = curve.get(("vector", min(vx))) if vx else None
+        if t not in ch:
+            continue
         both = readout_slope(rows, t, lambda r: r["steered"] and r["via"] == "both" and not r["random"])
         only = readout_slope(rows, t, lambda r: r["steered"] and r["via"] == "vector" and not r["random"])
-        mc = lambda v: f"<td>{fmt(v[0], 2)} ± {fmt(v[1], 2)}</td>" if v else "<td class=muted>–</td>"  # noqa: E731
-        tab.append(f"<tr><td class=l>{t}</td>{mc(pr[1])}{mc(pr[-1])}{mc(hi)}{mc(lo)}{slope_cell(only)}{slope_cell(both)}</tr>")
-        if hi and math.isfinite(pr[1][0]) and math.isfinite(hi[0]) and pr[1][0] > hi[0]:
-            stronger_prompt.append(t)
-        if math.isfinite(both.get("b", float("nan"))) and math.isfinite(only.get("b", float("nan"))) and both["b"] > only["b"]:
-            both_better.append(t)
-    tab.append("</table></div>")
-    if traits:
-        f6.append(f"The persona prompt shifts the readout more than the vector at its largest coefficient for "
-                  f"{len(stronger_prompt)} of {len(traits)} traits" + (f" ({', '.join(stronger_prompt)})." if stronger_prompt else "."))
-        f6.append(f"Prompt + vector together is stronger than the vector alone for {len(both_better)} of {len(traits)} traits.")
-    body.append(section(6, "Persona prompt vs vector vs both",
-                        "Which way of giving an agent a persona changes its language most?",
-                        "Mean readout (SD units vs unsteered) of agents with the persona instruction (+ or −), of agents "
-                        "with the vector at the largest coefficients, and slopes for the vector alone vs prompt + vector.",
-                        "Compare 'prompt +' with 'vector at max +'. The two slope columns are per unit coefficient.",
-                        f6, "".join(tab)))
+        cols = "".join(f"{mean_cell(ch[t][s]['shift'])}<td>{eq_text(ch[t][s]['eq'])}</td><td>{fmt(ch[t][s]['vmax'], 2)}</td>"
+                       if s in ch[t] else "<td class=muted>–</td>" * 3 for s in (1, -1))
+        tab_a.append(f"<tr><td class=l>{t}</td>{cols}{slope_cell(only)}{slope_cell(both)}</tr>")
+    tab_a.append("</table></div>")
+
+    # b. direction
+    tab_b = ["<h3>b. Direction: what else moves? (fingerprint over all monitored traits)</h3><div class=wrap><table><tr>"
+             "<th class=l>trait</th><th>side</th><th>cos(prompt, vector)</th><th>cos(prompt, random)</th>"
+             "<th class=l>moved most by the prompt (SD)</th><th class=l>moved most by the vector at max (SD)</th>"
+             "<th>own trait's rank: prompt / vector</th></tr>"]
+    top = lambda lst: ", ".join(f"{html.escape(u)} {v:+.2f}" for u, v in lst)
+    for t, s in sides:
+        d = ch[t][s]
+        tab_b.append(f"<tr><td class=l>{t}</td><td>{sgn(s)}</td><td>{fmt(d['cos_vec'], 2)}</td><td>{fmt(d['cos_rnd'], 2)}</td>"
+                     f"<td class=l>{top(d['top_p'])}</td><td class=l>{top(d['top_v'])}</td>"
+                     f"<td>{d['rank_p'] or '–'} / {d['rank_v'] or '–'}</td></tr>")
+    tab_b.append("</table></div>")
+
+    # c. behaviour
+    tab_c = ["<h3>c. Behaviour: what happens in the game?</h3>"
+             "<div class=wrap><table><tr><th class=l>trait</th><th>side</th><th>own reward: prompt (one agent)</th>"
+             "<th>own reward: vector at max (one agent)</th><th>own reward: vector, next-lower |c|</th>"
+             "<th>evil side's reward: prompt (evil team)</th><th>evil side's reward: vector at max</th>"
+             "<th>welfare: prompt (all agents)</th><th>welfare: vector at max (all agents)</th></tr>"]
+    differ = []
+    for t, s in sides:
+        d = ch[t][s]
+        tab_c.append(f"<tr><td class=l>{t}</td><td>{sgn(s)}</td>{mean_cell(d['reward']['prompt'])}{mean_cell(d['reward']['vector'])}"
+                     f"{mean_cell(d['reward']['vector_next'])}{mean_cell(d['evil']['prompt'])}{mean_cell(d['evil']['vector'])}"
+                     f"{mean_cell(d['welfare']['prompt'])}{mean_cell(d['welfare']['vector'])}</tr>")
+        for what, who in (("reward", "steered agent"), ("evil", "evil side")):
+            a, b = d[what]["prompt"], d[what]["vector"]
+            if all(math.isfinite(v) for v in (a[0], a[1], b[0], b[1])) and abs(a[0] - b[0]) > math.hypot(a[1], b[1]):
+                differ.append(f"{t} {sgn(s)}, {who} (prompt {a[0]:+.2f}, vector {b[0]:+.2f})")
+    tab_c.append("</table></div>")
+    charts = "<div class=charts>"
+    for k, what in (("readout", "trait readout (SD)"), ("reward", "own reward (SD)")):
+        r_pv, r_vv = corr.get(k, {}).get("prompt_vector"), corr.get(k, {}).get("vector_vector")
+        cap = (f"r = {fmt(r_pv[0], 2)} [{fmt(r_pv[1], 2)}, {fmt(r_pv[2], 2)}], n = {r_pv[3]}; reference, vector at "
+               f"max vs next-lower |c|: r = {fmt(r_vv[0], 2)}" if r_pv else "")
+        charts += (f"<div class=chart><h3>Per game: {what}</h3>"
+                   + scatter_chart([(b, a, lab) for a, b, _, lab in agree.get(k, [])], f"vector at max: {what}",
+                                   f"prompt: {what}") + f"<span class=muted>{cap}</span></div>")
+    charts += ("</div><div class=legend><span><i style='background:var(--pos);height:7px;width:7px'></i>+ side "
+               "(instruction / c &gt; 0)</span><span><i style='background:var(--neg);height:7px;width:7px'></i>− side"
+               "</span><span>dashed: y = x (same effect)</span><span>one dot per trait × game; hover for names</span></div>")
+
+    # d. visibility and cost
+    tab_d = ["<h3>d. Visibility and cost</h3><div class=wrap><table><tr><th class=l>trait</th><th>side</th>"
+             "<th>detectability AUC: prompt</th><th>AUC: vector at max</th><th>AUC: prompt + vector at max</th>"
+             "<th>co-players' readout: prompt</th><th>co-players': vector at max</th>"
+             "<th>answer length: prompt / vector / unsteered</th><th>unparseable %: prompt / vector</th></tr>"]
+    auc_p, auc_v, len_p, len_v, len_0 = [], [], [], [], []
+    for t, s in sides:
+        d = ch[t][s]
+        cp, cv, c0 = d["cost"]["prompt"], d["cost"]["vector"], d["cost"]["none"]
+        tab_d.append(f"<tr><td class=l>{t}</td><td>{sgn(s)}</td>{mean_cell(d['det']['prompt'])}{mean_cell(d['det']['vector'])}"
+                     f"{mean_cell(d['det']['both'])}{mean_cell(d['contagion']['prompt'])}{mean_cell(d['contagion']['vector'])}"
+                     f"<td>{fmt(cp[0], 0)} / {fmt(cv[0], 0)} / {fmt(c0[0], 0)}</td><td>{fmt(cp[1], 1)} / {fmt(cv[1], 1)}</td></tr>")
+        if d["det"]["prompt"] and d["det"]["vector"]:
+            auc_p.append(d["det"]["prompt"][0])
+            auc_v.append(d["det"]["vector"][0])
+        len_p.append(cp[0])
+        len_v.append(cv[0])
+        len_0.append(c0[0])
+    tab_d.append("</table></div>")
+
+    f6 = []
+    within = [(t, s) for t, s in sides if not ch[t][s]["eq"][1] and math.isfinite(ch[t][s]["eq"][0])]
+    beyond = [f"{t} {sgn(s)}" for t, s in sides if ch[t][s]["eq"][1] == ">"]
+    if sides:
+        f6.append(f"<b>Strength:</b> for {len(within)} of {len(sides)} trait × side cases the prompt's effect on the "
+                  f"readout equals the vector's somewhere in the tested range (median |c| ≈ "
+                  f"{np.median([abs(ch[t][s]['eq'][0]) for t, s in within]) if within else float('nan'):.1f})"
+                  + (f"; the prompt goes beyond the strongest vector for {', '.join(beyond)}." if beyond else "."))
+        cv_ = [ch[t][s]["cos_vec"] for t, s in sides if math.isfinite(ch[t][s]["cos_vec"])]
+        cr_ = [ch[t][s]["cos_rnd"] for t, s in sides if math.isfinite(ch[t][s]["cos_rnd"])]
+        if cv_:
+            f6.append(f"<b>Direction:</b> the prompt and the vector move the 59 monitored traits in a similar pattern "
+                      f"(mean cosine {np.mean(cv_):.2f}, range {min(cv_):.2f}–{max(cv_):.2f}"
+                      + (f"; prompt vs random direction: {np.mean(cr_):.2f}" if cr_ else "") + "). "
+                      + ("They act as largely the same intervention on the language." if np.mean(cv_) > 0.7 else
+                         "Similar in part: each also moves traits the other does not (table b)."
+                         if np.mean(cv_) > 0.4 else "They change the language in different ways."))
+        rp = corr.get("reward", {}).get("prompt_vector")
+        rv = corr.get("reward", {}).get("vector_vector")
+        if rp and math.isfinite(rp[0]):
+            f6.append(f"<b>Behaviour:</b> per game, the prompt's effect on the agents' reward correlates r = {rp[0]:.2f} "
+                      f"with the vector's (two vector strengths agree r = {fmt(rv[0], 2)}, the ceiling given the noise). "
+                      + (f"Clearly different pooled reward effects: {'; '.join(differ)}." if differ else
+                         "No trait × side where the pooled reward effects clearly differ."))
+        if auc_p:
+            f6.append(f"<b>Visibility:</b> the monitor singles out a prompted agent with mean AUC {np.mean(auc_p):.2f}, a "
+                      f"vector-steered one (max c) with {np.mean(auc_v):.2f}.")
+        f6.append(f"<b>Cost:</b> mean answer length {np.nanmean(len_p):.0f} characters with the prompt, "
+                  f"{np.nanmean(len_v):.0f} with the vector at max, {np.nanmean(len_0):.0f} unsteered.")
+        key.append(f6[0].replace("<b>Strength:</b>", "<b>Prompt vs vector:</b>"))
+    body.append(section(6, "Persona prompt vs persona vector: can the prompt stand in for the vector?",
+                        "Is writing the persona into the system prompt comparable to adding the persona vector — as "
+                        "strong, in the same direction, with the same effect on play, as visible, at the same cost?",
+                        "The same trait given as the PersVecFast instruction in the system prompt (+ = express it, "
+                        "− = its opposite; no strength knob) vs as the vector at c = ±0.5..±2. "
+                        "<b>a</b>: mean readout of the trait (SD vs unsteered) and the vector coefficient with the same "
+                        "readout (interpolated on the vector's dose-response curve). <b>b</b>: the shift of all 59 "
+                        "monitored traits as a profile; cosine 1 = same pattern, 0 = unrelated. <b>c</b>: paired reward "
+                        "(same seat, same seed, unsteered; SD units) of the one steered agent (prompt_one vs one), of "
+                        "the deceiving side when all its members are steered (evil_team_prompt vs evil_team), and the "
+                        "group's total when every agent is steered (prompt_all vs all; ~0 in zero-sum games by "
+                        "construction); scatter: one dot per trait × side × game. <b>d</b>: AUC as in section 4 and contagion as in 8 (one agent "
+                        "steered); answer length and unparseable answers.",
+                        "≈ vector c tells which vector strength the prompt corresponds to ('beyond' = stronger than "
+                        "every tested c). In the scatters, dots on the dashed diagonal = same effect; compare the "
+                        "prompt–vector r with the reference r (two vector strengths), which shows how well two "
+                        "near-identical interventions can agree given the noise. Only games run with both channels.",
+                        f6, "".join(tab_a) + "".join(tab_b) + "".join(tab_c) + charts + "".join(tab_d)))
 
     # 7. who is steered
     conds = sorted({r["condition"] for r in rows if is_vector(r)})
@@ -960,15 +1366,19 @@ def build(rows, sweep=None) -> str:
                         "x = coefficient; a curve that shoots up at the ends = the model derails before the persona shows.",
                         f13, charts))
 
+    body.append(games_section(rows, traits, cells, man, eff, base, scale))
+
     head = (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
             f"initial-scale=1'><title>Steering report</title><style>{CSS}</style></head><body><h1>Steering report</h1>"
             f"<p class=muted>Persona-vector steering of LLM agents in multi-agent games: does it change what they say, "
             f"how they play, and what happens to the group?</p>"
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
-    toc = ("<p class=muted>Sections: <a href=#setup>setup</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13)) + "</p>")
-    return head + toc + setup_section(rows, sweep, traits, cells) + "".join(body) + "</body></html>"
+    toc = ("<p class=muted>Sections: <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13)) + " · <a href=#games>per game</a></p>")
+    coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
+    ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
+    return head + toc + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
 
 
 def main(argv=None) -> int:
@@ -976,6 +1386,7 @@ def main(argv=None) -> int:
     p.add_argument("agents_csv", help="output of scripts/summarize_runs.py")
     p.add_argument("--out", required=True)
     p.add_argument("--sweep", help="the sweep file (model, generation settings) for the setup section")
+    p.add_argument("--logs", help="the sweep's log dir (<logging_dir>/<name>): adds matched example answers")
     args = p.parse_args(argv)
     rows = load(args.agents_csv)
     if not rows:
@@ -983,7 +1394,7 @@ def main(argv=None) -> int:
         return 1
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     sweep = __import__("yaml").safe_load(Path(args.sweep).read_text(encoding="utf-8")) if args.sweep else None
-    Path(args.out).write_text(build(rows, sweep), encoding="utf-8")
+    Path(args.out).write_text(build(rows, sweep, args.logs), encoding="utf-8")
     print(f"report over {len(rows)} agent-episodes -> {args.out}")
     return 0
 

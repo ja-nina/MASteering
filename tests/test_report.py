@@ -85,7 +85,7 @@ def test_report_recovers_known_effects(tmp_path):
 
     page = build(data)
     assert "<svg" in page and "Steering report" in page and "ga_3p" in page
-    for section in ("Specificity", "Detectability", "Amplify vs suppress", "Persona prompt vs vector",
+    for section in ("Specificity", "Detectability", "Amplify vs suppress", "Persona prompt vs persona vector", "Per game",
                     "Who is steered", "Contagion", "Text vs image", "Coherence cost"):
         assert section in page, section
     (tmp_path / "report.html").write_text(page, encoding="utf-8")
@@ -108,3 +108,36 @@ def test_link_splits_the_effect():
     xs = [(x, w + (x % 3)) for x, w in zip(range(50), range(50, 0, -1))]
     b = ols([2 * x + 3 * w for x, w in xs], [list(v) for v in xs], list(range(50)))
     assert abs(b[0]["b"] - 2) < 1e-6 and abs(b[1]["b"] - 3) < 1e-6
+
+
+def test_examples_show_matched_first_answers(tmp_path):
+    import json
+    from scripts.report import examples_section
+    g = tmp_path / "negotiation_2p"
+    texts = {"none": "I have analyzed my resources and will offer a fair trade of wheat for brick. " * 3,
+             "all__sarcastic_x-2": "A careful, sincere offer. " * 6, "all__sarcastic_x2": "Oh, how WONDERFUL. " * 8,
+             "all_random__sarcastic_x2": "Let me analyze the resources first. " * 5,
+             "prompt_all__sarcastic_x1": "Oh, fantastic, another trade. " * 5, "prompt_all__sarcastic_x-1": "Sure. " * 30}
+    for cond, text in texts.items():
+        d = g / f"negotiation_2p__{cond}"
+        d.mkdir(parents=True)
+        (d / "episode_0.jsonl").write_text(json.dumps({"agent_id": "player_0", "completion": text,
+                                                       "monitor": {"16": {"sarcastic": len(cond) / 10}}}) + "\n")
+        (d / "episode_0.summary.json").write_text("{}")
+    page = examples_section(tmp_path, ["sarcastic"], [-2, -1, 1, 2])
+    assert "sarcastic — negotiation_2p, episode 0" in page
+    for label in ("unsteered", "vector c=-2", "vector c=2", "random c=2", "prompt +", "prompt −"):
+        assert f"<b>{label}</b>" in page
+    assert "how WONDERFUL" in page and "sarcastic readout: 1.80" in page
+
+
+def test_prompt_equivalent_coefficient():
+    """Which vector strength a prompt corresponds to, read off the vector's dose-response curve."""
+    from scripts.report import cosine, equivalent_coef
+    curve = {0.0: 0.0, 0.5: 1.0, 1.0: 2.0, 2.0: 4.0, -1.0: -1.0, -2.0: -2.0}
+    assert equivalent_coef(curve, 3.0, 1) == (1.5, "")
+    assert equivalent_coef(curve, 9.0, 1) == (2.0, ">")  # stronger than every tested c
+    assert equivalent_coef(curve, 0.5, -1) == (0.0, "<")  # the prompt moves the other way
+    assert equivalent_coef(curve, -1.5, -1) == (-1.5, "")
+    assert abs(cosine({"a": 1, "b": 2}, {"a": 2, "b": 4}) - 1) < 1e-9  # same profile, any size
+    assert abs(cosine({"a": 1, "b": 0}, {"a": 0, "b": 3})) < 1e-9  # unrelated profiles
