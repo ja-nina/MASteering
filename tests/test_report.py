@@ -89,3 +89,22 @@ def test_report_recovers_known_effects(tmp_path):
                     "Who is steered", "Contagion", "Text vs image", "Coherence cost"):
         assert section in page, section
     (tmp_path / "report.html").write_text(page, encoding="utf-8")
+
+
+def test_link_splits_the_effect():
+    """Outcome driven by the language: reward = 0.4 x readout, readout = 0.5 x coefficient + noise.
+    The coefficient's effect then runs (almost) entirely through the readout."""
+    from scripts.report import link, ols
+    rng = random.Random(1)
+    rows = []
+    for ep in range(400):
+        c = rng.choice(COEFS)
+        z = 0.5 * c + rng.gauss(0, 1)
+        rows.append({"trait": "evil", "coef": c, "mon": {"evil": z}, "diff": 0.4 * z + rng.gauss(0, 0.1),
+                     "cell": ("g_3p", "text"), "cluster": ("r", ep)})
+    res = link(rows, "evil", {})
+    assert abs(res["total"]["b"] - 0.2) < 0.03 and abs(res["via_readout"]["b"] - 0.4) < 0.03
+    assert abs(res["direct"]["b"]) < 0.03 and res["share"] > 0.85
+    xs = [(x, w + (x % 3)) for x, w in zip(range(50), range(50, 0, -1))]
+    b = ols([2 * x + 3 * w for x, w in xs], [list(v) for v in xs], list(range(50)))
+    assert abs(b[0]["b"] - 2) < 1e-6 and abs(b[1]["b"] - 3) < 1e-6

@@ -17,6 +17,8 @@ Reads the agent-episode rows of summarize_runs.py and answers, per trait and per
    8 contagion       the unsteered co-players' readout of the steered trait
    9-11 outcomes     paired reward effects (the same seat in the unsteered episode with the same seed):
                      steered agent per game, spillover on the others, the evil team
+  11b link          does the trait in the language go with the outcome? (readout -> reward, and how
+                     much of the steering effect on reward the readout accounts for)
   12 text vs image   the same games with image observations
   13 coherence       unparseable answers and answer length vs coefficient
 Slopes come with standard errors clustered by episode; p-values (normal approximation) are
@@ -262,6 +264,56 @@ def detectability(rows, t):
         by_coef[c][0].append(auc)
         by_coef[c][1].append(cl)
     return {c: mean_ci(*v) for c, v in sorted(by_coef.items())}
+
+
+def ols(y, X, clusters, fe=None):
+    """Multiple regression y ~ X (columns, with game fixed effects `fe`); coefficients with SEs clustered by
+    `clusters`. Returns [{"b", "se", "p", "n"}] per column."""
+    y, X = np.asarray(y, float), np.asarray(X, float)
+    keep = np.isfinite(y) & np.isfinite(X).all(axis=1)
+    y, X = y[keep], X[keep]
+    clusters = [c for c, k in zip(clusters, keep) if k]
+    nan = [{"b": float("nan"), "se": float("nan"), "p": float("nan"), "n": len(y)}] * X.shape[1]
+    if len(y) <= X.shape[1] + 2:
+        return nan
+    if fe is not None:
+        fe = [f for f, k in zip(fe, keep) if k]
+        y, X = _demean(y, fe), np.column_stack([_demean(X[:, j], fe) for j in range(X.shape[1])])
+    else:
+        y, X = y - y.mean(), X - X.mean(axis=0)
+    xtx = X.T @ X
+    if np.linalg.matrix_rank(xtx) < X.shape[1]:
+        return nan
+    inv = np.linalg.inv(xtx)
+    b = inv @ X.T @ y
+    e = y - X @ b
+    ids = {c: i for i, c in enumerate(dict.fromkeys(clusters))}
+    g = np.array([ids[c] for c in clusters])
+    scores = np.zeros((len(ids), X.shape[1]))
+    np.add.at(scores, g, X * e[:, None])
+    k = len(ids)
+    cov = inv @ (scores.T @ scores) @ inv * (k / (k - 1) if k > 1 else 1.0)
+    out = []
+    for j in range(X.shape[1]):
+        se = math.sqrt(cov[j, j]) if cov[j, j] > 0 else float("nan")
+        p = math.erfc(abs(b[j] / se) / math.sqrt(2)) if se == se and se > 0 else float("nan")
+        out.append({"b": float(b[j]), "se": se, "p": p, "n": len(y), "clusters": k})
+    return out
+
+
+def link(steered, t, scale):
+    """How the steered agents' readout relates to their outcome (paired reward difference, SD units):
+    total effect of the coefficient on the outcome; association of the readout with the outcome; and
+    the coefficient's effect once the readout is held fixed (what the readout does not account for)."""
+    rs = [r for r in steered if r["trait"] == t and r["coef"] is not None and t in r["mon"]]
+    y = [r["diff"] / scale.get(r["cell"], 1.0) for r in rs]
+    cl, fe = [r["cluster"] for r in rs], [r["cell"] for r in rs]
+    total = slope([r["coef"] for r in rs], y, cl, fe)
+    assoc = slope([r["mon"][t] for r in rs], y, cl, fe)
+    direct, via_readout = ols(y, [[r["coef"], r["mon"][t]] for r in rs], cl, fe)
+    share = (1 - direct["b"] / total["b"]) if total["b"] and math.isfinite(total["b"]) and total["p"] < 0.05 \
+        else float("nan")
+    return {"total": total, "assoc": assoc, "direct": direct, "via_readout": via_readout, "share": share}
 
 
 def obs_compare(rows, t, value_slope):
@@ -575,6 +627,35 @@ def build(rows) -> str:
         out.append(_pooled_table(eff_t, traits))
         out.append(_game_table("Evil-team reward slope, per game", traits,
                                sorted({r["cell"] for r in team_rows}), eff_t))
+
+    # 11b. does the readout go with the outcome?
+    out.append("<h2>11b. Does the trait in the language go with the outcome?</h2><p class=note>Steered agents "
+               "(persona vector). <b>Coefficient → outcome</b>: the total effect of steering on the agent's paired "
+               "reward (SD units per unit coefficient). <b>Readout → outcome</b>: across these agents, how much "
+               "the outcome changes per +1 SD of trait readout (do agents that came out more sarcastic do "
+               "better or worse?). <b>Coefficient → outcome, readout fixed</b>: the steering effect that the "
+               "readout does not account for. <b>Share via readout</b>: 1 − fixed / total, shown only when the "
+               "total effect is significant. This is a correlational split, not proof that the language causes "
+               "the outcome: the vector can change behaviour (votes, bids, moves) through other routes.</p>")
+    lk = {t: link(steered, t, scale) for t in traits}
+    q_lk = bh([lk[t]["total"]["p"] for t in traits] + [lk[t]["assoc"]["p"] for t in traits]
+              + [lk[t]["direct"]["p"] for t in traits])
+    out.append("<div class=wrap><table><tr><th class=l>trait</th><th>coefficient → outcome</th>"
+               "<th>readout → outcome</th><th>coefficient → outcome, readout fixed</th><th>share via readout</th></tr>")
+    n_t = len(traits)
+    for i, t in enumerate(traits):
+        sh = lk[t]["share"]
+        out.append(f"<tr><td class=l>{t}</td>{slope_cell(lk[t]['total'], q_lk[i])}"
+                   f"{slope_cell(lk[t]['assoc'], q_lk[n_t + i])}{slope_cell(lk[t]['direct'], q_lk[2 * n_t + i])}"
+                   f"<td>{'' if not math.isfinite(sh) else f'{100 * sh:.0f}%'}</td></tr>")
+    out.append("</table></div>")
+    out.append(_matrix("Readout → outcome per game (raw reward per +1 SD of readout)", "game", cells, traits,
+                       lambda c, t: slope([r["mon"][t] for r in steered if r["cell"] == c and r["trait"] == t
+                                           and t in r["mon"]],
+                                          [r["diff"] for r in steered if r["cell"] == c and r["trait"] == t
+                                           and t in r["mon"]],
+                                          [r["cluster"] for r in steered if r["cell"] == c and r["trait"] == t
+                                           and t in r["mon"]])))
 
     # 12. text vs image
     out.append("<h2>12. Text vs image observations</h2><p class=note>The same games played with the state as "
