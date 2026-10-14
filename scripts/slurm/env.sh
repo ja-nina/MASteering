@@ -23,7 +23,7 @@ mkdir -p "$MIA_APERTURE_DIR"
 export MIA_APERTURE_GPU_BYTES="${MIA_APERTURE_GPU_BYTES:-8589934592}"
 # how long a capture read waits for its activations (vLLM-Hook's default 60 s; a busy node's /tmp can be slower).
 # A read that still times out is retried once, then those turns are logged without monitor scores
-export MIA_DELIVERY_TIMEOUT_S="${MIA_DELIVERY_TIMEOUT_S:-600}"
+export MIA_DELIVERY_TIMEOUT_S="${MIA_DELIVERY_TIMEOUT_S:-300}"
 
 # /tmp watcher: every TMP_WATCH_SECONDS (default 10, 0 = off) log the node's /tmp use and its
 # largest entries (size, owner) to slurm-logs/ (TMP_LOG), to see who fills node-local disk
