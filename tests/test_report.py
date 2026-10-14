@@ -85,7 +85,7 @@ def test_report_recovers_known_effects(tmp_path):
 
     page = build(data)
     assert "<svg" in page and "Steering report" in page and "ga_3p" in page
-    for section in ("Specificity", "Detectability", "Amplify vs suppress", "Persona prompt vs vector",
+    for section in ("Specificity", "Detectability", "Amplify vs suppress", "Persona prompt vs persona vector", "Per game",
                     "Who is steered", "Contagion", "Text vs image", "Coherence cost"):
         assert section in page, section
     (tmp_path / "report.html").write_text(page, encoding="utf-8")
@@ -129,3 +129,15 @@ def test_examples_show_matched_first_answers(tmp_path):
     for label in ("unsteered", "vector c=-2", "vector c=2", "random c=2", "prompt +", "prompt −"):
         assert f"<b>{label}</b>" in page
     assert "how WONDERFUL" in page and "sarcastic readout: 1.80" in page
+
+
+def test_prompt_equivalent_coefficient():
+    """Which vector strength a prompt corresponds to, read off the vector's dose-response curve."""
+    from scripts.report import cosine, equivalent_coef
+    curve = {0.0: 0.0, 0.5: 1.0, 1.0: 2.0, 2.0: 4.0, -1.0: -1.0, -2.0: -2.0}
+    assert equivalent_coef(curve, 3.0, 1) == (1.5, "")
+    assert equivalent_coef(curve, 9.0, 1) == (2.0, ">")  # stronger than every tested c
+    assert equivalent_coef(curve, 0.5, -1) == (0.0, "<")  # the prompt moves the other way
+    assert equivalent_coef(curve, -1.5, -1) == (-1.5, "")
+    assert abs(cosine({"a": 1, "b": 2}, {"a": 2, "b": 4}) - 1) < 1e-9  # same profile, any size
+    assert abs(cosine({"a": 1, "b": 0}, {"a": 0, "b": 3})) < 1e-9  # unrelated profiles
