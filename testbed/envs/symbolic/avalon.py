@@ -146,8 +146,9 @@ class AvalonAdapter(SymbolicAdapter):
             "known_merlin_candidates": known_merlin_candidates,
             "phase":                   extra["phase"],
             "leader":                  self._ids[extra["leader_idx"]],
-            "quest_num":               extra["quest_num"] + 1,
-            "team_size":               self._quest_sizes[extra["quest_num"]],
+            # after the 5th quest (the assassination) the counter is past the last quest: show the last one
+            "quest_num":               min(extra["quest_num"], len(self._quest_sizes) - 1) + 1,
+            "team_size":               self._quest_sizes[min(extra["quest_num"], len(self._quest_sizes) - 1)],
             "proposed_team":           extra["proposed_team"],
             "quest_wins":              extra["quest_wins"],
             "quest_losses":            extra["quest_losses"],

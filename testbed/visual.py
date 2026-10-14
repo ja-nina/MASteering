@@ -116,8 +116,8 @@ def bar_chart(values: List[Optional[float]], labels: List[str], header: str, wid
     for i, v in enumerate(values):
         x0, x1 = left + i * slot + slot * 0.15, left + (i + 1) * slot - slot * 0.15
         if v is not None:
-            y = bottom - (bottom - top) * v / vmax
-            draw.rectangle([x0, y, x1, bottom], fill=(colors[i] if colors else BLUE))
+            y = min(bottom - (bottom - top) * v / vmax, height - 18)  # a negative value hangs below the axis
+            draw.rectangle([x0, min(y, bottom), x1, max(y, bottom)], fill=(colors[i] if colors else BLUE))
             text_center(draw, ((x0 + x1) / 2, y - 9), f"{v:g}", 13)
             if marks and marks[i]:
                 text_center(draw, ((x0 + x1) / 2, y - 24), marks[i], 13, RED)
