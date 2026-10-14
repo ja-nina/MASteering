@@ -6,7 +6,8 @@
 Each <game>_<players>p directory is meant to be one SLURM array (scripts/slurm/submit_sweep.sh):
 its runs share an engine pair and play concurrently. A condition is a steering-group template
 (pool + selection, see testbed/steering.py) that gets each trait and coefficient filled in;
-`null` is the unsteered baseline (written once per game). Conditions with `team` or `roles`
+`null` is the unsteered baseline (written once per game). Prompt-only conditions (`via: prompt`)
+get one run per coefficient sign, as a persona prompt has no strength. Conditions with `team` or `roles`
 are only generated for games marked `roles: true`. A game's `observation` (one mode or a list of
 text | image | both) multiplies its runs; non-text runs get an `__obs-<mode>` suffix.
 """
@@ -38,8 +39,11 @@ def expand(sweep: dict) -> dict:
                                                for c in sweep["conditions"].items()):
                 if template and ("team" in template or "roles" in template) and not game.get("roles"):
                     continue
+                coeffs = sweep["coefficients"]
+                if template and template.get("via") == "prompt":  # a persona prompt has no strength,
+                    coeffs = sorted({1 if c >= 0 else -1 for c in coeffs})  # only a sign: one run per sign
                 cells = [(None, None)] if template is None else \
-                    [(t, c) for t in sweep["traits"] for c in sweep["coefficients"]]
+                    [(t, c) for t in sweep["traits"] for c in coeffs]
                 for trait, coeff in cells:
                     run_id = f"{group_dir}__{cond_name}" + (f"__{trait}_x{coeff:g}" if trait else "") +                         ("" if obs == "text" else f"__obs-{obs}")
                     steering = None if template is None else {**template, "trait": trait, "coefficient": coeff}

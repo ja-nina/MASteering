@@ -40,3 +40,13 @@ def test_observation_axis_multiplies_runs():
     assert len(runs) == 2 * (1 + 2 * 2)  # 2 modes x (baseline + 2 traits x 2 coefficients); no team conditions
     assert runs["c4_2p/c4_2p__none__obs-image.yaml"]["observation"] == "image"
     assert runs["c4_2p/c4_2p__none.yaml"]["observation"] == "text"
+
+
+def test_prompt_conditions_get_one_run_per_sign():
+    sweep = {**SWEEP, "coefficients": [-2, -1, 1, 2], "traits": ["evil"],
+             "conditions": {"prompt_one": {"select": "one", "via": "prompt"}, "one": {"select": "one"}},
+             "games": {"gbs": {"family": "symbolic", "id": "gbs", "players": 3}}}
+    runs = expand(sweep)
+    prompt = sorted(k for k in runs if "prompt_one" in k)
+    assert prompt == ["gbs_3p/gbs_3p__prompt_one__evil_x-1.yaml", "gbs_3p/gbs_3p__prompt_one__evil_x1.yaml"]
+    assert sum("__one__" in k for k in runs) == 4

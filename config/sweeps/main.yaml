@@ -1,21 +1,22 @@
 # Main steering sweep: python scripts/make_configs.py config/sweeps/main.yaml
 name: main
 model: qwen3.5-9b                    # PersVecFast model key; vectors from ${PVF_OUT}/persona/<model>/bf16
-episodes: 50
+episodes: 2                          # first full pass (16.5k runs); raise to 50 and resubmit to continue
 max_tokens: 1024                     # per turn
+max_turns: 200                       # longer episodes stop there, marked truncated (catan, hanabi, ...)
 max_parse_retries: 3
 image_size: 448                      # longer side of image observations
 monitor: {layers: auto}              # PersVecFast's candidate layers, every trait
 engine:
-  concurrent_episodes: 48
-  max_model_len: 32768
+  concurrent_episodes: 64
+  max_model_len: 16384                 # as in the smoke test (the capture buffer holds 32768 rows)
   max_images: 2                        # per prompt (Melting Pot with global_view sends two)
   steer:   {gpus: "0", memory: 0.85}   # steering engine on the job's first GPU,
   monitor: {gpus: "1", memory: 0.75}   # capture (monitor) engine on the second: --gres=gpu:2; vLLM-Hook
                                        # puts its 8 GiB capture buffer (env.sh) in the GPU memory left over
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
-coefficients: [2.5]                  # PersVecFast's strongest sweep coefficient; negative = suppress
+coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
 
 conditions:                          # steering-group templates (testbed/steering.py); via: vector by default
   none: null                         # unsteered baseline
