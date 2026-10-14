@@ -64,7 +64,7 @@ def errors(paths, sweep: str = "main") -> None:
         print("\nRelaunch them (finished episodes are skipped; only after the dead task has left the queue):")
         for (where, n, _), idx in sorted(rerun.items()):
             ids = ",".join(sorted(set(idx), key=int))
-            print(f"  sbatch --array={ids} --export=ALL,NUM_SHARDS={n} scripts/slurm/run_games.sbatch {where}")
+            print(f"  sbatch --array={ids} scripts/slurm/run_games.sbatch {where} --num-shards {n}")
         print()
     if not groups:
         print("No failed episodes." if not fatal else "No per-episode failures.")

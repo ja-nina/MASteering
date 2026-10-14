@@ -11,9 +11,11 @@
 # configs). As an array, task i plays shard i of the episodes. Resubmitting resumes.
 source "${SLURM_SUBMIT_DIR:-.}/scripts/slurm/env.sh"
 CONFIG_DIR="${1:?Usage: sbatch scripts/slurm/run_games.sbatch <config dir> [args]}"; shift
-# task i plays shard i of NUM_SHARDS (default: the array's size). To rerun single tasks of a 29-task array:
-#   sbatch --array=21,23 --export=ALL,NUM_SHARDS=29 scripts/slurm/run_games.sbatch <config dir>
+# task i plays shard i of --num-shards (default: the array's size). To rerun single tasks of a 29-task array:
+#   sbatch --array=21,23 scripts/slurm/run_games.sbatch <config dir> --num-shards 29
+# (not via sbatch --export=...,VAR=...: on this cluster such jobs end "user env retrieval failed requeued held")
 if [ -n "${SLURM_ARRAY_TASK_COUNT:-}" ]; then
-  set -- "$@" --shard "${SLURM_ARRAY_TASK_ID}" --num-shards "${NUM_SHARDS:-$SLURM_ARRAY_TASK_COUNT}"
+  case " $* " in *" --num-shards "*) ;; *) set -- "$@" --num-shards "$SLURM_ARRAY_TASK_COUNT" ;; esac
+  set -- "$@" --shard "${SLURM_ARRAY_TASK_ID}"
 fi
 "$PYTHON" scripts/run_games.py --config-dir "$CONFIG_DIR" "$@"
