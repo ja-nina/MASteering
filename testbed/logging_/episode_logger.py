@@ -12,23 +12,45 @@ the turn's image observation, relative to the run dir, when save_images is on; e
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import sys
+import time
 from typing import Any, Dict, Optional
 
 _SEP = "=" * 72
+# network filesystems (cluster scratch) drop out for seconds to minutes: wait those out instead of failing
+_TRANSIENT = {getattr(errno, name, code) for name, code in  # Linux numbers where the platform lacks the name
+              (("ECOMM", 70), ("EIO", 5), ("ESTALE", 116), ("ETIMEDOUT", 110), ("EAGAIN", 11), ("EHOSTDOWN", 112))}
+_RETRY_S = float(os.environ.get("MA_FS_RETRY_S", 600))
+
+
+def _retry(fn, *args, **kwargs):
+    """fn(*args, **kwargs), retried with backoff for up to MA_FS_RETRY_S seconds on transient I/O errors."""
+    waited, delay = 0.0, 2.0
+    while True:
+        try:
+            return fn(*args, **kwargs)
+        except OSError as e:
+            if e.errno not in _TRANSIENT or waited >= _RETRY_S:
+                raise
+            print(f"[fs] {e} - retrying in {delay:.0f}s", file=sys.stderr, flush=True)
+            time.sleep(delay)
+            waited += delay
+            delay = min(delay * 2, 60.0)
 
 
 class EpisodeLogger:
     def __init__(self, run_dir: str, run_id: str, episode: int, save_images: bool = False) -> None:
         self.dir = os.path.join(run_dir, run_id)
-        os.makedirs(self.dir, exist_ok=True)
+        _retry(os.makedirs, self.dir, exist_ok=True)
         self.run_id = run_id
         self.episode = episode
         self.path = os.path.join(self.dir, f"episode_{episode}.jsonl")
         self.trace_path = os.path.join(self.dir, f"episode_{episode}.trace.txt")
-        self._fh = open(self.path, "w", encoding="utf-8")
-        self._trace = open(self.trace_path, "w", encoding="utf-8")
+        self._fh = _retry(open, self.path, "w", encoding="utf-8")
+        self._trace = _retry(open, self.trace_path, "w", encoding="utf-8")
         self.save_images = save_images
 
     def log_step(self, *, game: str, turn: int, agent_id: str, system_prompt: str,
@@ -49,7 +71,7 @@ class EpisodeLogger:
             "attempts": attempts or [], "model_input": model_input,
         }
         self._fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        self._fh.flush()
+        _retry(self._fh.flush)
 
         label = steering["label"] if steering else "none"
         shown = f"[IMAGES] {image_log}\n\n" if images else ""
@@ -67,14 +89,14 @@ class EpisodeLogger:
             layer, scores = max(monitor.items(), key=lambda kv: int(kv[0]))
             top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
             self._trace.write(f"[MONITOR L{layer} top-5] {', '.join(f'{t}={v:.2f}' for t, v in top)}\n\n")
-        self._trace.flush()
+        _retry(self._trace.flush)
 
     def _save_images(self, turn: int, agent_id: str, images) -> list:
         paths = []
         for i, image in enumerate(images):
             rel = f"episode_{self.episode}_images/t{turn:04d}_{agent_id}_{i}.png"
-            os.makedirs(os.path.join(self.dir, os.path.dirname(rel)), exist_ok=True)
-            image.save(os.path.join(self.dir, rel))
+            _retry(os.makedirs, os.path.join(self.dir, os.path.dirname(rel)), exist_ok=True)
+            _retry(image.save, os.path.join(self.dir, rel))
             paths.append(rel)
         return paths
 
@@ -87,6 +109,10 @@ class EpisodeLogger:
         if summary is not None:
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
             tmp = spath + f".{os.getpid()}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
-            os.replace(tmp, spath)
+            _retry(self._write_summary, tmp, summary)
+            _retry(os.replace, tmp, spath)
+
+    @staticmethod
+    def _write_summary(path: str, summary: Dict[str, Any]) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
