@@ -118,8 +118,11 @@ Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
     # progress while it runs: per game (and per task with --tasks), from the SLURM logs
     python scripts/progress.py --configs config/runs/main
 
-    # 4. results: one row per agent per episode (condition, team, reward, monitor means)
-    python scripts/summarize_runs.py logs/main --out results/main_agents.csv
+    # 4. results: one row per agent per episode (condition, team, reward, monitor means), then the
+    #    analysis report over all games (coverage, does steering move the trait, outcome and
+    #    spillover effects per game x trait, evil-team steering): one HTML page
+    python scripts/summarize_runs.py <logging_dir>/main --out results/main/agents.csv
+    python scripts/report.py results/main/agents.csv --out results/main/report.html
 
 Resubmitting resumes (episodes with a summary file are skipped). One episode, locally on a GPU:
 `python scripts/run_games.py --config <run config> --episodes 1`. Samples page for any sweep:
@@ -159,6 +162,7 @@ testbed/
 scripts/
   make_configs.py  sweep -> run configs      run_games.py   play
   summarize_runs.py logs -> CSV             smoke_engines.py   GPU engine checks (+ samples)
+  report.py        CSV -> analysis report   progress.py        sweep progress from SLURM logs
   collect_samples.py logs -> samples page (HTML + status CSV)
   slurm/           env.sh (shared setup), run_games.sbatch, submit_sweep.sh,
                    smoke.sbatch, smoke_games.sbatch, submit_smoke.sh

@@ -38,12 +38,15 @@ def agent_rows(run_dir: Path, layer=None):
         for aid in agents:
             steer = summary.get("steered", {}).get(aid)
             yield {
-                "run_id": run["run_id"], "game": run["game"]["id"], "players": run["game"]["players"],
+                "run_id": run["run_id"], "group": run["run_id"].split("__")[0],  # <game>_<n>p, as in the sweep
+                "condition": run["run_id"].split("__")[1] if "__" in run["run_id"] else "none",
+                "game": run["game"]["id"], "players": run["game"]["players"],
                 "observation": run.get("observation", "text"), "episode": ep, "agent": aid,
                 "condition_select": steering.get("select", "all" if steering else None),
                 "condition_team": steering.get("team"), "condition_trait": steering.get("trait"),
                 "condition_coefficient": steering.get("coefficient"),
                 "condition_via": steering.get("via", "vector") if steering else None,
+                "condition_random": bool(steering.get("random_control", False)),
                 "steered": steer is not None, "steer_label": steer["label"] if steer else None,
                 "role": summary.get("player_roles", {}).get(aid), "team": summary.get("teams", {}).get(aid),
                 "reward": summary.get("final_rewards", {}).get(aid),
