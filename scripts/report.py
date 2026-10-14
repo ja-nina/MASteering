@@ -1,7 +1,7 @@
 """Analysis report over every game of a sweep: one self-contained HTML page.
 
     python scripts/summarize_runs.py <logs>/main --out results/main/agents.csv
-    python scripts/report.py results/main/agents.csv --sweep config/sweeps/main.yaml --out results/main/report.html
+    python scripts/report.py results/main/agents.csv --sweep config/sweeps/main.yaml \n        --logs <logging_dir>/main --out results/main/report.html
 
 Reads the agent-episode rows of summarize_runs.py and answers, per trait and per game:
    1 coverage        episodes per game, truncated episodes, unparseable answers
@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import json
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -605,7 +606,70 @@ def setup_section(rows, sweep, traits, cells):
     return "".join(out)
 
 
-def build(rows, sweep=None) -> str:
+def _turns(path):
+    try:
+        return [json.loads(line) for line in open(path, encoding="utf-8")]
+    except OSError:
+        return []
+
+
+def examples_section(logs_dir, traits, coefs, per_trait=2, chars=700):
+    """What steering looks like: the same seat's first turn of the same game (same seed, so the same prompt)
+    unsteered, with the persona vector at the strongest - and + coefficient, the random direction and the
+    persona prompt (+ / -). Conditions where every agent is steered (all, all_random, prompt_all), so the
+    first-turn agent is steered in each."""
+    logs = Path(logs_dir)
+    if not logs.is_dir() or not coefs:
+        return ""
+    lo, hi = min(coefs), max(coefs)
+    out = ["<h2 id=examples>What steering looks like: matched examples</h2><div class=box><b>What you see</b><span>"
+           "For each trait, games where the same seat's <i>first</i> answer can be compared across conditions: same "
+           "game, same seed, so the agent received exactly the same prompt; the only difference is the steering. "
+           f"Columns: unsteered; persona vector at c = {lo:g} and {hi:g}; a random direction of the same norm at "
+           f"c = {hi:g} (control); the persona prompt (+ / −). The number under each answer is that turn's readout "
+           "of the trait (raw projection, higher = more of the trait; compare within a row).</span>"
+           "<b>Why it matters</b><span>The tables below are averages over thousands of turns; these show what a "
+           "slope of the readout actually corresponds to in text, including where strong steering stops being "
+           "'more of the trait' and becomes caricature or broken output.</span></div>"]
+    for t in traits:
+        shown = 0
+        for group_dir in sorted(p for p in logs.iterdir() if p.is_dir() and not p.name.startswith("_")):
+            if shown >= per_trait:
+                break
+            g = group_dir.name
+            runs = {"unsteered": f"{g}__none", f"vector c={lo:g}": f"{g}__all__{t}_x{lo:g}",
+                    f"vector c={hi:g}": f"{g}__all__{t}_x{hi:g}", f"random c={hi:g}": f"{g}__all_random__{t}_x{hi:g}",
+                    "prompt +": f"{g}__prompt_all__{t}_x1", "prompt −": f"{g}__prompt_all__{t}_x-1"}
+            eps = None
+            for run in runs.values():
+                have = {int(p.name.split("_")[1].split(".")[0]) for p in (group_dir / run).glob("episode_*.summary.json")}
+                eps = have if eps is None else eps & have
+            if not eps:
+                continue
+            ep = min(eps)
+            first = {k: (_turns(group_dir / run / f"episode_{ep}.jsonl") or [None])[0] for k, run in runs.items()}
+            base = first["unsteered"]
+            if not base or len(base.get("completion") or "") < 120:  # one-word moves say little about style
+                continue
+            cells = []
+            for k, rec in first.items():
+                if not rec:
+                    cells.append(f"<td class=l><b>{k}</b><br><span class=muted>missing</span></td>")
+                    continue
+                mon = rec.get("monitor") or {}
+                layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
+                score = mon.get(layer, {}).get(t) if layer else None
+                text = (rec.get("completion") or "").strip()
+                text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
+                cells.append(f"<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{text}<br>"
+                             f"<span class=muted>{t} readout: {fmt(score, 2)}</span></td>")
+            out.append(f"<h3>{t} — {html.escape(g)}, episode {ep}, {html.escape(str(base.get('agent_id')))}'s first "
+                       f"answer</h3><div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
+            shown += 1
+    return "".join(out)
+
+
+def build(rows, sweep=None, logs_dir=None) -> str:
     rows = zscored(rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
     cells = sorted({r["cell"] for r in rows})
@@ -966,9 +1030,11 @@ def build(rows, sweep=None) -> str:
             f"how they play, and what happens to the group?</p>"
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
-    toc = ("<p class=muted>Sections: <a href=#setup>setup</a> · " + " · ".join(
+    toc = ("<p class=muted>Sections: <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
         f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13)) + "</p>")
-    return head + toc + setup_section(rows, sweep, traits, cells) + "".join(body) + "</body></html>"
+    coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
+    ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
+    return head + toc + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
 
 
 def main(argv=None) -> int:
@@ -976,6 +1042,7 @@ def main(argv=None) -> int:
     p.add_argument("agents_csv", help="output of scripts/summarize_runs.py")
     p.add_argument("--out", required=True)
     p.add_argument("--sweep", help="the sweep file (model, generation settings) for the setup section")
+    p.add_argument("--logs", help="the sweep's log dir (<logging_dir>/<name>): adds matched example answers")
     args = p.parse_args(argv)
     rows = load(args.agents_csv)
     if not rows:
@@ -983,7 +1050,7 @@ def main(argv=None) -> int:
         return 1
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     sweep = __import__("yaml").safe_load(Path(args.sweep).read_text(encoding="utf-8")) if args.sweep else None
-    Path(args.out).write_text(build(rows, sweep), encoding="utf-8")
+    Path(args.out).write_text(build(rows, sweep, args.logs), encoding="utf-8")
     print(f"report over {len(rows)} agent-episodes -> {args.out}")
     return 0
 
