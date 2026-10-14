@@ -45,6 +45,7 @@ def errors(paths, sweep: str = "main") -> None:
         task = path.stem.removeprefix("games-")
         for run, ep, stage, tb in ERROR_BLOCK.findall(text):
             last = [line for line in tb.strip().splitlines() if line.strip()][-1].strip() if tb.strip() else "?"
+            last = re.sub(r"'/[^']*'", "'<path>'", last)  # one error, not one per file it hit
             groups[re.sub(r"0x[0-9a-f]+|\d{3,}", "N", last)[:200]].append((task, run, ep, stage, tb))
         for m in sorted(set(FATAL.findall(text))):
             fatal[m].append(task)
