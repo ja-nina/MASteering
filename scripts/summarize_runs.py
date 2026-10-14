@@ -25,6 +25,7 @@ def agent_rows(run_dir: Path, layer=None):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         turns, fallbacks, mon = defaultdict(int), defaultdict(int), defaultdict(lambda: defaultdict(list))
         chars = defaultdict(int)
+        at = None
         jsonl = run_dir / f"episode_{ep}.jsonl"
         for line in jsonl.read_text(encoding="utf-8").splitlines() if jsonl.exists() else []:
             rec = json.loads(line)
@@ -54,6 +55,7 @@ def agent_rows(run_dir: Path, layer=None):
                 "reward": summary.get("final_rewards", {}).get(aid),
                 "turns": turns[aid], "parse_fallbacks": fallbacks[aid],
                 "answer_chars": chars[aid] / turns[aid] if turns[aid] else None,  # mean answer length
+                "monitor_layer": at, "steer_layer": (run.get("steering_resolved") or [{}])[0].get("layer"),
                 "episode_turns": summary.get("turns"), "truncated": summary.get("truncated"),
                 **{f"mon_{t}": statistics.mean(v) for t, v in sorted(mon[aid].items())},
             }
