@@ -111,9 +111,9 @@ Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
     #                                               -> results/smoke/samples.html (+ samples.csv status)
     bash scripts/slurm/submit_smoke.sh qwen3.5-9b
 
-    # 3. the main sweep: one array per game group, 8 shards each
+    # 3. the main sweep: one array per game group, one task per ~400 episodes (DRY_RUN=1 to preview)
     python scripts/make_configs.py config/sweeps/main.yaml
-    bash scripts/slurm/submit_sweep.sh config/runs/main 8
+    bash scripts/slurm/submit_sweep.sh config/runs/main
 
     # 4. results: one row per agent per episode (condition, team, reward, monitor means)
     python scripts/summarize_runs.py logs/main --out results/main_agents.csv

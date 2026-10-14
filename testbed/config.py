@@ -131,9 +131,11 @@ def build_jobs(configs: List[RunConfig], store: VectorStore, shard: int = 0, num
                episodes: Optional[int] = None) -> List[Job]:
     """Jobs for one shard of every run's episodes, minus the finished ones.
 
-    Episodes are ordered episode-major (episode 0 of every run, then episode 1, ...) and cut
-    into contiguous shards, so each shard covers every condition; sharding happens before
-    finished episodes are dropped, so an episode always belongs to the same shard."""
+    Episodes are ordered episode-major (episode 0 of every run, then episode 1, ...) and dealt
+    round-robin to the shards, so all shards play episode 0 of every run before any plays
+    episode 1: a sweep stopped part-way has about the same number of episodes in every
+    condition. Sharding happens before finished episodes are dropped, so an episode always
+    belongs to the same shard."""
     plans, order = [], []
     for cfg in configs:
         plan = SteeringPlan.from_config(cfg.steering, store)
@@ -143,7 +145,7 @@ def build_jobs(configs: List[RunConfig], store: VectorStore, shard: int = 0, num
     counts = [episodes if episodes is not None else cfg.episodes for cfg in configs]
     for ep in range(max(counts, default=0)):
         order += [(i, ep) for i in range(len(configs)) if ep < counts[i]]
-    mine = order[len(order) * shard // num_shards:len(order) * (shard + 1) // num_shards]
+    mine = order[shard::num_shards]
     done = [cfg.completed_episodes() for cfg in configs]
     return [_job(configs[i], i, ep, plans[i]) for i, ep in mine if ep not in done[i]]
 

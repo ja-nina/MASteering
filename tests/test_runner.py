@@ -134,7 +134,8 @@ def test_run_games_cli_resumes_and_shards(tmp_path, monkeypatch):
     args = ["--config-dir", str(cfg_dir), "--num-shards", "2"]
     assert run_games.main(args + ["--shard", "0"], open_engines=fake_open_engines(gen)) == 0
     done = sorted(p.parent.name for p in (tmp_path / "logs").rglob("*.summary.json"))
-    assert done == ["gbs_none", "gbs_none", "gbs_one"]  # first half of the episode-major order
+    # every other entry of the episode-major order (none 0, one 0, none 1, ...): none's episodes 0, 1, 2
+    assert done == ["gbs_none"] * 3
     assert run_games.main(args + ["--shard", "1"], open_engines=fake_open_engines(gen)) == 0
     calls = len(gen.batches)
     assert run_games.main(["--config-dir", str(cfg_dir)], open_engines=fake_open_engines(gen)) == 0
