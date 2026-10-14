@@ -2,6 +2,8 @@
 
     python scripts/make_configs.py config/sweeps/main.yaml
     -> config/runs/main/<game>_<players>p/<run_id>.yaml
+    python scripts/make_configs.py config/sweeps/main.yaml --model qwen3.5-2b
+    -> config/runs/main_qwen3.5-2b/...   (another PersVecFast model; its own runs and logs)
 
 Each <game>_<players>p directory is meant to be one SLURM array (scripts/slurm/submit_sweep.sh):
 its runs share an engine pair and play concurrently. A condition is a steering-group template
@@ -21,6 +23,15 @@ import yaml
 
 RUN_KEYS = ("model", "vectors_dir", "traits_dir", "episodes", "max_tokens", "max_parse_retries", "max_turns",
             "monitor", "engine", "logging_dir", "image_size", "save_images")
+
+
+def load_sweep(path, model=None) -> dict:
+    """The sweep file, with `model` swapped for another PersVecFast model key if given; a different
+    model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own."""
+    sweep = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if model and model != sweep["model"]:
+        sweep = {**sweep, "model": model, "name": f"{sweep['name']}_{model}"}
+    return sweep
 
 
 def expand(sweep: dict) -> dict:
@@ -58,8 +69,13 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("sweep")
     p.add_argument("--out", default="config/runs")
+    p.add_argument("--model", help="run the sweep with another PersVecFast model key, e.g. qwen3.5-2b")
+    p.add_argument("--print-name", action="store_true", help="only print the sweep's (model-suffixed) name")
     args = p.parse_args(argv)
-    sweep = yaml.safe_load(Path(args.sweep).read_text(encoding="utf-8"))
+    sweep = load_sweep(args.sweep, args.model)
+    if args.print_name:
+        print(sweep["name"])
+        return
     out = Path(args.out) / sweep["name"]
     if out.exists():
         shutil.rmtree(out)  # generated files only: a sweep edit must not leave stale runs behind

@@ -9,11 +9,13 @@
 # Smoke test of every game x persona channel (config/sweeps/smoke.yaml) in ONE job, then the
 # samples page: results/smoke/samples.html (+ .csv status per run). A failing game only fails
 # its own episodes; the page lists which runs failed. Rerunning resumes.
-# Usage: sbatch scripts/slurm/smoke_games.sbatch [sweep file, default config/sweeps/smoke.yaml]
+# Usage: sbatch scripts/slurm/smoke_games.sbatch [sweep file, default config/sweeps/smoke.yaml] [model key]
 source "${SLURM_SUBMIT_DIR:-.}/scripts/slurm/env.sh"
 SWEEP="${1:-config/sweeps/smoke.yaml}"
-read -r NAME LOGS < <("$PYTHON" -c "import sys, yaml; s = yaml.safe_load(open(sys.argv[1])); print(s['name'], s.get('logging_dir', 'logs') + '/' + s['name'])" "$SWEEP")
-"$PYTHON" scripts/make_configs.py "$SWEEP"
+MODEL_ARGS=(${2:+--model "$2"})
+NAME=$("$PYTHON" scripts/make_configs.py "$SWEEP" "${MODEL_ARGS[@]}" --print-name)
+LOGS=$("$PYTHON" -c "import sys, yaml; print(yaml.safe_load(open(sys.argv[1])).get('logging_dir', 'logs'))" "$SWEEP")/$NAME
+"$PYTHON" scripts/make_configs.py "$SWEEP" "${MODEL_ARGS[@]}"
 STATUS=0
 "$PYTHON" scripts/run_games.py --config-dir "config/runs/$NAME" || STATUS=$?
 "$PYTHON" scripts/collect_samples.py "$LOGS" --configs "config/runs/$NAME" --out "results/$NAME/samples.html"

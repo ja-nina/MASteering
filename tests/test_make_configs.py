@@ -50,3 +50,15 @@ def test_prompt_conditions_get_one_run_per_sign():
     prompt = sorted(k for k in runs if "prompt_one" in k)
     assert prompt == ["gbs_3p/gbs_3p__prompt_one__evil_x-1.yaml", "gbs_3p/gbs_3p__prompt_one__evil_x1.yaml"]
     assert sum("__one__" in k for k in runs) == 4
+
+
+def test_load_sweep_with_another_model(tmp_path):
+    from scripts.make_configs import load_sweep
+    path = tmp_path / "s.yaml"
+    path.write_text(yaml.safe_dump(SWEEP))
+    assert load_sweep(path)["name"] == "t"
+    assert load_sweep(path, "qwen3.5-9b")["name"] == "t"  # the sweep's own model: unchanged
+    other = load_sweep(path, "qwen3.5-2b")
+    assert (other["name"], other["model"]) == ("t_qwen3.5-2b", "qwen3.5-2b")
+    cfg = next(iter(expand(other).values()))
+    assert cfg["model"] == "qwen3.5-2b" and cfg["logging_dir"].startswith("logs/t_qwen3.5-2b/")

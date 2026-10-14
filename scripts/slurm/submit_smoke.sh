@@ -5,6 +5,7 @@
 set -euo pipefail
 MODEL="${1:-qwen3.5-9b}"; shift || true
 ENGINES=$(sbatch --parsable "$@" scripts/slurm/smoke.sbatch "$MODEL")
-GAMES=$(sbatch --parsable "$@" scripts/slurm/smoke_games.sbatch)
+GAMES=$(sbatch --parsable "$@" scripts/slurm/smoke_games.sbatch config/sweeps/smoke.yaml "$MODEL")
+NAME=$(python scripts/make_configs.py config/sweeps/smoke.yaml --model "$MODEL" --print-name)
 echo "engine checks: job $ENGINES -> slurm-logs/smoke-engines-$ENGINES.out, results/smoke/engines/$MODEL/"
-echo "games smoke:   job $GAMES -> slurm-logs/smoke-games-$GAMES.out, results/smoke/samples.html"
+echo "games smoke:   job $GAMES -> slurm-logs/smoke-games-$GAMES.out, results/$NAME/samples.html"
