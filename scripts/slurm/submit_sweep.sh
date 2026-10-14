@@ -3,6 +3,8 @@
 # ~EPISODES_PER_TASK episodes (runs x episodes), so big groups (werewolf, avalon) get more tasks.
 # Usage: bash scripts/slurm/submit_sweep.sh config/runs/NAME [episodes per task, default 400] [extra sbatch args]
 #        DRY_RUN=1 bash scripts/slurm/submit_sweep.sh ...   (print the arrays, submit nothing)
+#        ONLY='avalon|werewolf' bash scripts/slurm/submit_sweep.sh ...   (only game groups matching this regex)
+#        PART=1/2 bash scripts/slurm/submit_sweep.sh ...    (first half of the game groups; 2/2 = the rest)
 set -euo pipefail
 SWEEP="${1:?Usage: submit_sweep.sh <config/runs/NAME> [episodes per task] [sbatch args]}"
 PER_TASK="${2:-400}"; shift; shift || true
@@ -10,7 +12,12 @@ PER_TASK="${2:-400}"; shift; shift || true
 "${PYTHON:-python}" - "$SWEEP" <<'EOF' |
 import re, sys
 from pathlib import Path
-for group in sorted(p for p in Path(sys.argv[1]).iterdir() if p.is_dir()):
+import os
+groups = sorted(p for p in Path(sys.argv[1]).iterdir() if p.is_dir())
+groups = [g for g in groups if re.search(os.environ.get("ONLY") or "", g.name)]
+part, parts = map(int, (os.environ.get("PART") or "1/1").split("/"))
+size = -(-len(groups) // parts)
+for group in groups[(part - 1) * size: part * size]:
     total = sum(int(re.search(r"^episodes: (\d+)$", f.read_text(), re.M).group(1)) for f in group.glob("*.yaml"))
     print(group.as_posix(), total)
 EOF
