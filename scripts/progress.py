@@ -3,6 +3,7 @@
     python scripts/progress.py                            # every games-*.out
     python scripts/progress.py --configs config/runs/main # + each game's full total (queued tasks too)
     python scripts/progress.py 51880001 --tasks           # one array job, one line per task
+    python scripts/progress.py --errors                   # what failed, grouped by error
 
 Per task: the episodes it was given (its `... episode(s) to play in shard` line), how many are
 done / failed, and how long ago it last logged (a long silence = stuck or dead). A resubmitted task
@@ -22,6 +23,45 @@ from pathlib import Path
 TO_PLAY = re.compile(r"\] \d+ run\(s\), (\d+) episode\(s\) to play in shard \d+/\d+(?: of (\S+))?")
 DONE = re.compile(r"^\[[\d:]+\] (\S+) episode \d+ done after", re.M)
 FAILED = re.compile(r"^\[[\d:]+\] ERROR (\S+) episode", re.M)
+# a failed episode's block: "[t] ERROR <run> episode <n> (<stage>):" + traceback, up to a blank line
+ERROR_BLOCK = re.compile(r"^\[[\d:]+\] ERROR (\S+) episode (\d+) \(([^)]*)\):\n(.*?)(?:\n\s*\n|\Z)", re.M | re.S)
+# an engine that died takes the whole task down without per-episode ERROR lines
+FATAL = re.compile(r"(EngineDeadError|ApertureBackpressureError|MiaSizingError|CUDA out of memory|"
+                   r"No space left on device|DUE TO TIME LIMIT|Engine core initialization failed)")
+
+
+def errors(paths) -> None:
+    """Failed episodes grouped by their error (the traceback's last line), with where they come from."""
+    groups = defaultdict(list)  # error -> [(task, run, episode, stage, traceback)]
+    fatal = defaultdict(list)
+    for path in paths:
+        text = path.read_text(errors="replace")
+        task = path.stem.removeprefix("games-")
+        for run, ep, stage, tb in ERROR_BLOCK.findall(text):
+            last = [line for line in tb.strip().splitlines() if line.strip()][-1].strip() if tb.strip() else "?"
+            groups[re.sub(r"0x[0-9a-f]+|\d{3,}", "N", last)[:200]].append((task, run, ep, stage, tb))
+        for m in sorted(set(FATAL.findall(text))):
+            fatal[m].append(task)
+    if fatal:
+        print("Tasks that died (engine / node problems; their unfinished episodes rerun on resubmit):")
+        for kind, tasks in sorted(fatal.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {len(tasks):>4} task(s)  {kind}:  {', '.join(tasks[:6])}{' ...' if len(tasks) > 6 else ''}")
+        print()
+    if not groups:
+        print("No failed episodes." if not fatal else "No per-episode failures.")
+        return
+    print(f"{sum(len(v) for v in groups.values())} failed episode(s), {len(groups)} distinct error(s):\n")
+    for err, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        games = defaultdict(int)
+        for _, run, *_ in items:
+            games[run.split("__")[0]] += 1
+        task, run, ep, stage, tb = items[0]
+        print(f"[{len(items)}x] {err}")
+        print(f"   games: {', '.join(f'{g} ({n})' for g, n in sorted(games.items(), key=lambda kv: -kv[1]))}")
+        print(f"   e.g. {run} episode {ep} ({stage}), task {task}; full traceback:")
+        print("   " + "\n   ".join(tb.strip().splitlines()[-8:]) + "\n")
+
+
 EPISODES = re.compile(r"^episodes: (\d+)$", re.M)
 
 
@@ -67,7 +107,11 @@ def main(argv=None) -> int:
     p.add_argument("--logs", default="slurm-logs")
     p.add_argument("--configs", help="generated sweep (config/runs/NAME): each game's full episode count")
     p.add_argument("--tasks", action="store_true", help="also print every task")
+    p.add_argument("--errors", action="store_true", help="group the failures by error instead")
     args = p.parse_args(argv)
+    if args.errors:
+        errors(sorted(Path(args.logs).glob(f"games-{args.job}*.out")))
+        return 0
 
     tasks = [task_progress(f) for f in sorted(Path(args.logs).glob(f"games-{args.job}*.out"))]
     totals = config_totals(Path(args.configs)) if args.configs else {}

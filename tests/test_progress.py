@@ -19,3 +19,19 @@ def test_progress_reads_task_logs(tmp_path, capsys):
     assert "2 done    1 failed of     4" in out
     assert "werewolf_8p" in out  # queued game still listed
     assert "all: 2 done, 1 failed of 10 episodes (30.0%)" in out
+
+
+def test_errors_grouped(tmp_path, capsys):
+    logs = tmp_path / "slurm-logs"
+    logs.mkdir()
+    tb = "Traceback (most recent call last):\n  File \"x.py\", line 1\nKeyError: 'phase'\n\n"
+    (logs / "games-7_0.out").write_text(
+        "[01:00:00] ERROR avalon_6p__one__evil_x1 episode 3 (turn 4):\n" + tb +
+        "[01:01:00] ERROR avalon_6p__all__evil_x2 episode 5 (turn 9):\n" + tb +
+        "[01:02:00] ERROR gbs_3p__none episode 0 (turn 0):\nTraceback ...\nValueError: bad\n\n")
+    (logs / "games-7_1.out").write_text("vllm.v1.engine.exceptions.EngineDeadError: EngineCore died\n")
+    assert main(["--logs", str(logs), "--errors"]) == 0
+    out = capsys.readouterr().out
+    assert "[2x] KeyError: 'phase'" in out and "avalon_6p (2)" in out
+    assert "[1x] ValueError: bad" in out
+    assert "EngineDeadError" in out and "7_1" in out
