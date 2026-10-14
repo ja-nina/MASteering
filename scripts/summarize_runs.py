@@ -24,12 +24,14 @@ def agent_rows(run_dir: Path, layer=None):
         ep = int(summary_path.name.split("_")[1].split(".")[0])
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         turns, fallbacks, mon = defaultdict(int), defaultdict(int), defaultdict(lambda: defaultdict(list))
+        chars = defaultdict(int)
         jsonl = run_dir / f"episode_{ep}.jsonl"
         for line in jsonl.read_text(encoding="utf-8").splitlines() if jsonl.exists() else []:
             rec = json.loads(line)
             aid = rec["agent_id"]
             turns[aid] += 1
             fallbacks[aid] += not rec.get("parse_ok", True)
+            chars[aid] += len(rec.get("completion") or "")
             if rec.get("monitor"):
                 at = str(layer) if layer is not None else sorted(rec["monitor"], key=int)[len(rec["monitor"]) // 2]
                 for trait, v in rec["monitor"].get(at, {}).items():
@@ -51,6 +53,7 @@ def agent_rows(run_dir: Path, layer=None):
                 "role": summary.get("player_roles", {}).get(aid), "team": summary.get("teams", {}).get(aid),
                 "reward": summary.get("final_rewards", {}).get(aid),
                 "turns": turns[aid], "parse_fallbacks": fallbacks[aid],
+                "answer_chars": chars[aid] / turns[aid] if turns[aid] else None,  # mean answer length
                 "episode_turns": summary.get("turns"), "truncated": summary.get("truncated"),
                 **{f"mon_{t}": statistics.mean(v) for t, v in sorted(mon[aid].items())},
             }
