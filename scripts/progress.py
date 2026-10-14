@@ -30,11 +30,16 @@ FATAL = re.compile(r"(DeliveryReadTimeout|EngineDeadError|ApertureBackpressureEr
                    r"No space left on device|DUE TO TIME LIMIT|Engine core initialization failed)")
 
 
-def errors(paths) -> None:
+def errors(paths, sweep: str = "main") -> None:
     """Failed episodes grouped by their error (the traceback's last line), with where they come from."""
     groups = defaultdict(list)  # error -> [(task, run, episode, stage, traceback)]
     fatal = defaultdict(list)
     rerun = defaultdict(list)  # (config dir, number of shards) -> shard indices of tasks that died
+    job_group = {}  # array job -> game group, from any of its tasks' run ids
+    for path in paths:
+        runs = DONE.findall(path.read_text(errors="replace"))
+        if runs:
+            job_group.setdefault(path.stem.removeprefix("games-").split("_")[0], runs[0].split("__")[0])
     for path in paths:
         text = path.read_text(errors="replace")
         task = path.stem.removeprefix("games-")
@@ -47,8 +52,9 @@ def errors(paths) -> None:
             shard = re.search(r"to play in shard (\d+)/(\d+)(?: of (\S+))?", text)
             if shard:
                 job, idx = task.split("_")[0], shard.group(1)
-                group = slurm_group(job)
-                where = shard.group(3) or (f"config/runs/main/{group}" if group else f"<config dir of job {job}>")
+                runs = DONE.findall(text) + FAILED.findall(text)  # run ids start with their game group
+                group = runs[0].split("__")[0] if runs else job_group.get(job) or slurm_group(job)
+                where = shard.group(3) or (f"config/runs/{sweep}/{group}" if group else f"<config dir of job {job}>")
                 rerun[(where, shard.group(2), job)].append(idx)
     if fatal:
         print("Tasks that died (engine / node problems; their unfinished episodes rerun on resubmit):")
@@ -120,9 +126,10 @@ def main(argv=None) -> int:
     p.add_argument("--configs", help="generated sweep (config/runs/NAME): each game's full episode count")
     p.add_argument("--tasks", action="store_true", help="also print every task")
     p.add_argument("--errors", action="store_true", help="group the failures by error instead")
+    p.add_argument("--sweep", default="main", help="sweep name, for the relaunch commands' config dirs")
     args = p.parse_args(argv)
     if args.errors:
-        errors(sorted(Path(args.logs).glob(f"games-{args.job}*.out")))
+        errors(sorted(Path(args.logs).glob(f"games-{args.job}*.out")), args.sweep)
         return 0
 
     tasks = [task_progress(f) for f in sorted(Path(args.logs).glob(f"games-{args.job}*.out"))]
