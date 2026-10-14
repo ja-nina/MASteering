@@ -1,18 +1,21 @@
 """How far a sweep's SLURM tasks have got, read from their logs (slurm-logs/games-*.out).
 
     python scripts/progress.py                            # every games-*.out
-    python scripts/progress.py --configs config/runs/main # + each game's full total (queued tasks too)
+    python scripts/progress.py --configs config/runs/main # + episodes finished on disk, of each game's total
     python scripts/progress.py 51880001 --tasks           # one array job, one line per task
     python scripts/progress.py --errors                   # what failed, grouped by error
 
 Per task: the episodes it was given (its `... episode(s) to play in shard` line), how many are
 done / failed, and how long ago it last logged (a long silence = stuck or dead). A resubmitted task
-counts only what it was given this time; finished episodes from earlier submissions are in --configs.
+counts only what it was given this time. With --configs, "on disk" counts every finished episode (a
+summary file in the game's logging_dir or in the fallback dir, $MA_FALLBACK_LOG_DIR or
+/BS/ForNet/nobackup/MASteer/logs), whichever submission played it: that is the sweep's real progress.
 """
 from __future__ import annotations
 
 import argparse
 import functools
+import os
 import re
 import subprocess
 import sys
@@ -116,6 +119,33 @@ def config_totals(configs: Path) -> dict:
             for g in sorted(configs.iterdir()) if g.is_dir()}
 
 
+LOGGING_DIR = re.compile(r"^logging_dir: *(.+?) *$", re.M)
+
+
+def disk_done(group: Path) -> int:
+    """Finished episodes of one game group: summary files in its logging_dir and in the fallback dir."""
+    first = next(group.glob("*.yaml"), None)
+    m = LOGGING_DIR.search(first.read_text()) if first else None
+    if not m:
+        return 0
+    primary = Path(m.group(1).strip("'\""))
+    fallback = Path(os.environ.get("MA_FALLBACK_LOG_DIR") or "/BS/ForNet/nobackup/MASteer/logs") \
+        / primary.parent.name / primary.name
+    done = set()
+    for root in (primary, fallback):
+        try:
+            runs = [e for e in os.scandir(root) if e.is_dir() and not e.name.startswith("_")]
+        except OSError:
+            continue
+        for run in runs:
+            try:
+                done.update((run.name, f.name) for f in os.scandir(run.path)
+                            if f.name.startswith("episode_") and f.name.endswith(".summary.json"))
+            except OSError:
+                pass
+    return len(done)
+
+
 def bar(pct: float) -> str:
     return f"{'#' * int(pct / 5):<20} {pct:5.1f}%"
 
@@ -154,19 +184,29 @@ def main(argv=None) -> int:
         g["done"] += t["done"]
         g["failed"] += t["failed"]
         g["idle"] = min(g["idle"], t["idle_min"])
-    for name in totals:
-        groups[name]  # games with no task log yet (all queued) still get a line
-    of = "of sweep" if totals else "of started tasks"
-    print(f"{'game group':<26} {'tasks':>6} {'done':>7} {'failed':>6} {of:>16}   progress")
+    if totals:
+        on_disk = {name: disk_done(Path(args.configs) / name) for name in totals}
+        print(f"{'game group':<26} {'on disk':>8} {'of':>7}   {'progress (finished episodes)':<28}   "
+              f"current tasks: started/logs, done, failed")
+        for name in sorted(totals):
+            g = groups.get(name, {"tasks": 0, "started": 0, "done": 0, "failed": 0})
+            pct = 100 * on_disk[name] / totals[name] if totals[name] else 0.0
+            print(f"{name:<26} {on_disk[name]:>8} {totals[name]:>7}   {bar(pct):<28}   "
+                  f"{g['started']:>3}/{g['tasks']:<3} {g['done']:>6} {g['failed']:>6}")
+        done, total = sum(on_disk.values()), sum(totals.values())
+        print(f"\nall: {done} of {total} episodes finished ({100 * done / max(total, 1):.1f}%); current tasks: "
+              f"{sum(g['done'] for g in groups.values())} done, {sum(g['failed'] for g in groups.values())} failed "
+              f"since they started")
+        return 0
+    print(f"{'game group':<26} {'tasks':>6} {'done':>7} {'failed':>6} {'of started tasks':>16}   progress")
     for name, g in sorted(groups.items()):
-        total = totals.get(name, g["given"])
-        pct = 100 * (g["done"] + g["failed"]) / total if total else 0.0
-        print(f"{name:<26} {g['started']:>3}/{g['tasks']:<2} {g['done']:>7} {g['failed']:>6} {total:>16}   {bar(pct)}")
+        pct = 100 * (g["done"] + g["failed"]) / g["given"] if g["given"] else 0.0
+        print(f"{name:<26} {g['started']:>3}/{g['tasks']:<2} {g['done']:>7} {g['failed']:>6} {g['given']:>16}   {bar(pct)}")
     done = sum(g["done"] for g in groups.values())
     failed = sum(g["failed"] for g in groups.values())
-    total = sum(totals.values()) if totals else sum(g["given"] for g in groups.values())
+    total = sum(g["given"] for g in groups.values())
     print(f"\nall: {done} done, {failed} failed of {total} episodes ({100 * (done + failed) / max(total, 1):.1f}%)"
-          + ("" if totals else "  [only tasks that started; --configs config/runs/<sweep> for the whole sweep]"))
+          "  [only tasks that started; --configs config/runs/<sweep> for the whole sweep]")
     return 0
 
 
