@@ -21,6 +21,9 @@ mkdir -p "$MIA_APERTURE_DIR"
 # 16384 rows, filled up during a long prefill while the previous batch was still being written out).
 # It lives outside vLLM's share, so the capture engine runs at memory 0.75 (0.85 leaves only 6.7 GiB)
 export MIA_APERTURE_GPU_BYTES="${MIA_APERTURE_GPU_BYTES:-8589934592}"
+# how long a capture read waits for its activations (vLLM-Hook's default 60 s; a busy node's /tmp can be slower).
+# A read that still times out is retried once, then those turns are logged without monitor scores
+export MIA_DELIVERY_TIMEOUT_S="${MIA_DELIVERY_TIMEOUT_S:-600}"
 
 # /tmp watcher: every TMP_WATCH_SECONDS (default 10, 0 = off) log the node's /tmp use and its
 # largest entries (size, owner) to slurm-logs/ (TMP_LOG), to see who fills node-local disk

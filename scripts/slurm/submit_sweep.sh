@@ -18,6 +18,6 @@ while read -r GROUP EPISODES; do
   EPISODES="${EPISODES//[!0-9]/}"  # drop a stray carriage return (Windows Python)
   TASKS=$(( (EPISODES + PER_TASK - 1) / PER_TASK ))
   if [ -n "${DRY_RUN:-}" ]; then JOB=dry-run; else
-    JOB=$(sbatch --parsable --array=0-$((TASKS - 1)) "$@" scripts/slurm/run_games.sbatch "$GROUP/"); fi
+    JOB=$(sbatch --parsable --array=0-$((TASKS - 1)) --export=ALL,NUM_SHARDS=$TASKS "$@" scripts/slurm/run_games.sbatch "$GROUP/"); fi
   echo "$(basename "$GROUP"): $EPISODES episodes, $TASKS task(s): $JOB"
 done

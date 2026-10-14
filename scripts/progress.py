@@ -26,7 +26,7 @@ FAILED = re.compile(r"^\[[\d:]+\] ERROR (\S+) episode", re.M)
 # a failed episode's block: "[t] ERROR <run> episode <n> (<stage>):" + traceback, up to a blank line
 ERROR_BLOCK = re.compile(r"^\[[\d:]+\] ERROR (\S+) episode (\d+) \(([^)]*)\):\n(.*?)(?:\n\s*\n|\Z)", re.M | re.S)
 # an engine that died takes the whole task down without per-episode ERROR lines
-FATAL = re.compile(r"(EngineDeadError|ApertureBackpressureError|MiaSizingError|CUDA out of memory|"
+FATAL = re.compile(r"(DeliveryReadTimeout|EngineDeadError|ApertureBackpressureError|MiaSizingError|CUDA out of memory|"
                    r"No space left on device|DUE TO TIME LIMIT|Engine core initialization failed)")
 
 
@@ -34,6 +34,7 @@ def errors(paths) -> None:
     """Failed episodes grouped by their error (the traceback's last line), with where they come from."""
     groups = defaultdict(list)  # error -> [(task, run, episode, stage, traceback)]
     fatal = defaultdict(list)
+    rerun = defaultdict(list)  # (config dir, number of shards) -> shard indices of tasks that died
     for path in paths:
         text = path.read_text(errors="replace")
         task = path.stem.removeprefix("games-")
@@ -42,10 +43,21 @@ def errors(paths) -> None:
             groups[re.sub(r"0x[0-9a-f]+|\d{3,}", "N", last)[:200]].append((task, run, ep, stage, tb))
         for m in sorted(set(FATAL.findall(text))):
             fatal[m].append(task)
+        if FATAL.search(text):
+            shard = re.search(r"to play in shard (\d+)/(\d+)(?: of (\S+))?", text)
+            if shard:
+                job, idx = task.split("_")[0], shard.group(1)
+                group = slurm_group(job)
+                where = shard.group(3) or (f"config/runs/main/{group}" if group else f"<config dir of job {job}>")
+                rerun[(where, shard.group(2), job)].append(idx)
     if fatal:
         print("Tasks that died (engine / node problems; their unfinished episodes rerun on resubmit):")
         for kind, tasks in sorted(fatal.items(), key=lambda kv: -len(kv[1])):
             print(f"  {len(tasks):>4} task(s)  {kind}:  {', '.join(tasks[:6])}{' ...' if len(tasks) > 6 else ''}")
+        print("\nRelaunch them (finished episodes are skipped; only after the dead task has left the queue):")
+        for (where, n, _), idx in sorted(rerun.items()):
+            ids = ",".join(sorted(set(idx), key=int))
+            print(f"  sbatch --array={ids} --export=ALL,NUM_SHARDS={n} scripts/slurm/run_games.sbatch {where}")
         print()
     if not groups:
         print("No failed episodes." if not fatal else "No per-episode failures.")

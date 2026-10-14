@@ -155,3 +155,32 @@ def test_prompt_only_steer_sends_zero_vector():
     engine.generate([TurnRequest(("a",), "sys", "q", seed=1, steer=persona)])
     assert llm.calls[0][1][0].extra_args["steer"]["vector_path"] == "/zero.pt"
     assert llm.calls[0][1][0].extra_args["steer"]["coefficient"] == 0.0
+
+
+class DeliveryReadTimeout(Exception):
+    """Stands in for mia's exception of the same name (matched by name)."""
+
+
+def test_capture_retries_a_lost_delivery_then_skips(tmp_path, monkeypatch):
+    import testbed.mia_engine as me
+    monkeypatch.setenv("MIA_APERTURE_DIR", str(tmp_path))
+    monkeypatch.setattr(me, "clear_delivered", lambda d: None)
+    eng = CaptureEngine(llm=None, spec=SPEC, layers=[2], hidden=4)
+    turns = [TurnResult(("r", 0, "a", 0), "hi", "stop", [1, 2], [3], "x", [])]
+    calls = []
+
+    def flaky(results):
+        calls.append(1)
+        if len(calls) == 1:
+            raise DeliveryReadTimeout("1 of 1 request(s) not delivered")
+        return [{2: torch.ones(1, 4)} for _ in results]
+
+    monkeypatch.setattr(eng, "_read", flaky)
+    assert eng.read(turns)[0][2].shape == (1, 4) and len(calls) == 2   # retried, then delivered
+
+    monkeypatch.setattr(eng, "_read", lambda results: (_ for _ in ()).throw(DeliveryReadTimeout("lost")))
+    assert eng.read(turns)[0][2].shape == (0, 4)                        # lost twice: no readout, no crash
+
+    monkeypatch.setattr(eng, "_read", lambda results: (_ for _ in ()).throw(ValueError("real bug")))
+    with pytest.raises(ValueError):
+        eng.read(turns)                                                 # other errors still surface

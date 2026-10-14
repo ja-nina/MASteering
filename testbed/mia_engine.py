@@ -117,7 +117,7 @@ class CaptureEngine:
         for i in [i for i, r in enumerate(results) if r.token_ids] + [None]:
             n = 0 if i is None else len(results[i].prompt_token_ids) + len(results[i].token_ids)
             if batch and (i is None or len(batch) == CAPTURE_BATCH or tokens + n > CAPTURE_TOKENS):
-                for j, r in zip(batch, self._read([results[j] for j in batch])):
+                for j, r in zip(batch, self._read_or_skip([results[j] for j in batch])):
                     rows[j] = r
                 batch, tokens = [], 0
             if i is not None:
@@ -125,6 +125,21 @@ class CaptureEngine:
                 tokens += n
         empty = {l: torch.zeros(0, self.hidden) for l in self.layers}
         return [r if r is not None else empty for r in rows]
+
+    def _read_or_skip(self, results: List[TurnResult]) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """_read, retried once when vLLM-Hook loses a request's delivery (DeliveryReadTimeout); if it is lost
+        again, these turns get no readout (logged without monitor scores) instead of failing every episode."""
+        for attempt in (1, 2):
+            try:
+                return self._read(results)
+            except Exception as e:  # noqa: BLE001 - mia's DeliveryReadTimeout; anything else is re-raised
+                if type(e).__name__ != "DeliveryReadTimeout":
+                    raise
+                log(f"capture: delivery timed out for {len(results)} turn(s) (attempt {attempt}/2): "
+                    f"{str(e).splitlines()[0]}")
+                clear_delivered(os.environ["MIA_APERTURE_DIR"])
+        log(f"capture: giving up on {len(results)} turn(s); they are logged without monitor scores")
+        return [None] * len(results)
 
     def _read(self, results: List[TurnResult]) -> List[Dict[int, torch.Tensor]]:
         from vllm import SamplingParams
