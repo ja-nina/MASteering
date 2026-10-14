@@ -52,7 +52,8 @@ def main(argv=None, open_engines=None) -> int:
     store = VectorStore(vectors_dir, cache_dir=Path(configs[0].logging_dir) / "_vectors" / model,
                         traits_dir=common(configs, "traits_dir"))
     jobs = build_jobs(configs, store, args.shard, args.num_shards, args.episodes)
-    log(f"{len(configs)} run(s), {len(jobs)} episode(s) to play in shard {args.shard}/{args.num_shards}")
+    log(f"{len(configs)} run(s), {len(jobs)} episode(s) to play in shard {args.shard}/{args.num_shards}"
+        + (f" of {Path(args.config_dir).as_posix().rstrip('/')}" if args.config_dir else ""))  # read by progress.py
     if not jobs:
         return 0
 

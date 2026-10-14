@@ -115,6 +115,9 @@ Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
     python scripts/make_configs.py config/sweeps/main.yaml
     bash scripts/slurm/submit_sweep.sh config/runs/main
 
+    # progress while it runs: per game (and per task with --tasks), from the SLURM logs
+    python scripts/progress.py --configs config/runs/main
+
     # 4. results: one row per agent per episode (condition, team, reward, monitor means)
     python scripts/summarize_runs.py logs/main --out results/main_agents.csv
 
