@@ -1,6 +1,9 @@
 """One CSV row per (run, episode, agent): condition, steering, role/team, reward, monitor means.
 
-    python scripts/summarize_runs.py logs/main --out results/main_agents.csv [--layer 16]
+    python scripts/summarize_runs.py logs/main [fallback/main] --out results/main_agents.csv [--layer 16]
+
+Several log dirs (e.g. scratch and the MA_FALLBACK_LOG_DIR copy of a sweep) are merged per run; an episode
+logged in both counts once, from the first dir given.
 
 Monitor columns `mon_<trait>` are the agent's mean projection over its turns at one layer
 (--layer; default: the middle monitored layer). Steering info comes from each run's run.json
@@ -16,12 +19,18 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def agent_rows(run_dir: Path, layer=None):
-    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+def agent_rows(run_dirs, layer=None):
+    """Rows of one run, logged in `run_dirs` (a dir or a list of dirs of the same run_id)."""
+    run_dirs = [run_dirs] if isinstance(run_dirs, Path) else list(run_dirs)
+    run = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     steering = run.get("steering") or {}
     steering = steering if isinstance(steering, dict) else {"groups": len(steering)}
-    for summary_path in sorted(run_dir.glob("episode_*.summary.json")):
-        ep = int(summary_path.name.split("_")[1].split(".")[0])
+    episodes = {}  # episode -> its dir, the first dir that has it
+    for d in run_dirs:
+        for summary_path in sorted(d.glob("episode_*.summary.json")):
+            episodes.setdefault(int(summary_path.name.split("_")[1].split(".")[0]), d)
+    for ep, run_dir in sorted(episodes.items()):
+        summary_path = run_dir / f"episode_{ep}.summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         turns, fallbacks, mon = defaultdict(int), defaultdict(int), defaultdict(lambda: defaultdict(list))
         chars = defaultdict(int)
@@ -63,12 +72,16 @@ def agent_rows(run_dir: Path, layer=None):
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("logs")
+    p.add_argument("logs", nargs="+", help="log dir(s) of one sweep; the first wins for an episode logged twice")
     p.add_argument("--out", required=True)
     p.add_argument("--layer", type=int)
     args = p.parse_args(argv)
-    rows = [r for run_json in sorted(Path(args.logs).rglob("run.json"))
-            for r in agent_rows(run_json.parent, args.layer)]
+    runs = {}  # run dir relative to its log dir (<group>/<run_id>) -> [dirs that have it]
+    for logs in map(Path, args.logs):
+        if logs.is_dir():
+            for run_json in sorted(logs.rglob("run.json")):
+                runs.setdefault(run_json.parent.relative_to(logs), []).append(run_json.parent)
+    rows = [r for _, dirs in sorted(runs.items()) for r in agent_rows(dirs, args.layer)]
     fields = list(dict.fromkeys(k for r in rows for k in r))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", newline="", encoding="utf-8") as f:

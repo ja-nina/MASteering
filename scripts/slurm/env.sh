@@ -13,6 +13,15 @@ export VLLM_USE_FLASHINFER_SAMPLER=0               # its sampler JIT-compiles wi
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$PWD/.cache/vllm}"
 export HF_HOME="${HF_HOME:-$PWD/.cache/huggingface}"
 export PVF_OUT="${PVF_OUT:-/scratch/inf0/user/nzukowsk/PersVecFast/out}"
+# episodes go here (<this>/<sweep>/<game group>/<run_id>) while the sweep's logging_dir (scratch) fails;
+# resume and summarize_runs.py look in both. MA_FALLBACK_LOG_DIR= (empty) turns it off
+MA_FALLBACK_LOG_DIR="${MA_FALLBACK_LOG_DIR-/BS/ForNet/nobackup/MASteer/logs}"
+if [ -n "$MA_FALLBACK_LOG_DIR" ] && timeout 30 mkdir -p "$MA_FALLBACK_LOG_DIR" 2>/dev/null; then
+  export MA_FALLBACK_LOG_DIR
+  echo "fallback logs -> $MA_FALLBACK_LOG_DIR"
+else
+  echo "no fallback log dir (${MA_FALLBACK_LOG_DIR:-off})"; unset MA_FALLBACK_LOG_DIR
+fi
 # vLLM-Hook's captured activations per job (written, read back, delivered per request: the monitor's
 # bottleneck). In RAM (/dev/shm) when it has room, else node-local disk; never BeeGFS (cannot free rows).
 # MA_APERTURE_ROOT overrides; a task needs ~6-8 GB there.

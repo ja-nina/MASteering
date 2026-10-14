@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from testbed.logging_.episode_logger import EpisodeLogger
+from testbed.logging_.episode_logger import EpisodeLogger, retry_io
 from testbed.registry import build_game
 from testbed.runner import Job
 from testbed.steering import SteeringPlan, VectorStore
@@ -102,8 +102,21 @@ class RunConfig:
     def episode_seed(self, ep: int) -> int:
         return stable_seed("episode", self.game_id, self.players, ep)
 
+    @property
+    def fallback_logging_dir(self) -> Optional[Path]:
+        """Where episodes go while logging_dir is unusable: $MA_FALLBACK_LOG_DIR/<sweep>/<group> (the last two
+        parts of logging_dir); None when MA_FALLBACK_LOG_DIR is unset."""
+        root = os.environ.get("MA_FALLBACK_LOG_DIR")
+        if not root:
+            return None
+        p = Path(self.logging_dir)
+        return Path(root) / p.parent.name / p.name
+
     def completed_episodes(self) -> set:
-        return {int(p.name.split("_")[1].split(".")[0]) for p in self.run_dir.glob("episode_*.summary.json")}
+        """Episodes with a summary in logging_dir or in the fallback."""
+        dirs = [self.run_dir] + ([self.fallback_logging_dir / self.run_id] if self.fallback_logging_dir else [])
+        return {int(p.name.split("_")[1].split(".")[0]) for d in dirs
+                for p in retry_io(lambda d=d: list(d.glob("episode_*.summary.json")))}
 
 
 def _observation(mode: str) -> str:
@@ -136,21 +149,27 @@ def build_jobs(configs: List[RunConfig], store: VectorStore, shard: int = 0, num
     episode 1: a sweep stopped part-way has about the same number of episodes in every
     condition. Sharding happens before finished episodes are dropped, so an episode always
     belongs to the same shard."""
-    plans, order = [], []
+    plans, infos, order = [], [], []
     for cfg in configs:
         plan = SteeringPlan.from_config(cfg.steering, store)
         plans.append(plan)
-        write_json(cfg.run_dir / "run.json", {**cfg.raw, "vectors_dir": cfg.vectors_dir,
-                                              "steering_resolved": [s.to_log() for s in plan.steers]})
+        info = {**cfg.raw, "vectors_dir": cfg.vectors_dir, "steering_resolved": [s.to_log() for s in plan.steers]}
+        infos.append(info)
+        try:
+            retry_io(write_json, cfg.run_dir / "run.json", info, patience=60.0)
+        except OSError:
+            if cfg.fallback_logging_dir is None:
+                raise  # without a fallback, nothing can be logged: stop here
+            # the episode logger writes run.json to the fallback along with the episodes
     counts = [episodes if episodes is not None else cfg.episodes for cfg in configs]
     for ep in range(max(counts, default=0)):
         order += [(i, ep) for i in range(len(configs)) if ep < counts[i]]
     mine = order[shard::num_shards]
     done = [cfg.completed_episodes() for cfg in configs]
-    return [_job(configs[i], i, ep, plans[i]) for i, ep in mine if ep not in done[i]]
+    return [_job(configs[i], i, ep, plans[i], infos[i]) for i, ep in mine if ep not in done[i]]
 
 
-def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan) -> Job:
+def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan, info: Dict[str, Any]) -> Job:
     seed = cfg.episode_seed(ep)
 
     def make_env():
@@ -162,6 +181,7 @@ def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan) -> Job:
     return Job(run_index=index, run_id=cfg.run_id, game=cfg.game_id, episode=ep, make_env=make_env,
                assign=lambda env: plan.assign(env, stable_seed("steer", seed)),
                make_logger=lambda: EpisodeLogger(run_dir=cfg.logging_dir, run_id=cfg.run_id, episode=ep,
-                                                 save_images=cfg.save_images),
+                                                 save_images=cfg.save_images, fallback_dir=cfg.fallback_logging_dir,
+                                                 run_info=info),
                max_parse_retries=cfg.max_parse_retries, max_tokens=cfg.max_tokens, max_turns=cfg.max_turns,
                observation=cfg.observation, image_size=cfg.image_size)

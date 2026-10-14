@@ -26,14 +26,21 @@ _TRANSIENT = {getattr(errno, name, code) for name, code in  # Linux numbers wher
 _RETRY_S = float(os.environ.get("MA_FS_RETRY_S", 600))
 
 
-def _retry(fn, *args, **kwargs):
-    """fn(*args, **kwargs), retried with backoff for up to MA_FS_RETRY_S seconds on transient I/O errors."""
+# a log root that just failed is skipped (episodes go to the fallback) for this long
+_DOWN_S = float(os.environ.get("MA_FS_DOWN_S", 900))
+_DOWN_UNTIL: Dict[str, float] = {}
+
+
+def retry_io(fn, *args, patience: Optional[float] = None, **kwargs):
+    """fn(*args, **kwargs), retried with backoff on transient I/O errors for up to `patience` seconds
+    (default MA_FS_RETRY_S)."""
+    patience = _RETRY_S if patience is None else patience
     waited, delay = 0.0, 2.0
     while True:
         try:
             return fn(*args, **kwargs)
         except OSError as e:
-            if e.errno not in _TRANSIENT or waited >= _RETRY_S:
+            if e.errno not in _TRANSIENT or waited >= patience:
                 raise
             print(f"[fs] {e} - retrying in {delay:.0f}s", file=sys.stderr, flush=True)
             time.sleep(delay)
@@ -42,16 +49,40 @@ def _retry(fn, *args, **kwargs):
 
 
 class EpisodeLogger:
-    def __init__(self, run_dir: str, run_id: str, episode: int, save_images: bool = False) -> None:
-        self.dir = os.path.join(run_dir, run_id)
-        _retry(os.makedirs, self.dir, exist_ok=True)
+    """Writes to `run_dir`/<run_id>; if that is unusable (after a minute of retries) and `fallback_dir` is
+    given, to `fallback_dir`/<run_id> instead, with a copy of `run_info` as run.json there. A failed
+    run_dir is then skipped for MA_FS_DOWN_S seconds, so later episodes go straight to the fallback."""
+
+    def __init__(self, run_dir: str, run_id: str, episode: int, save_images: bool = False,
+                 fallback_dir: Optional[str] = None, run_info: Optional[Dict[str, Any]] = None) -> None:
         self.run_id = run_id
         self.episode = episode
-        self.path = os.path.join(self.dir, f"episode_{episode}.jsonl")
-        self.trace_path = os.path.join(self.dir, f"episode_{episode}.trace.txt")
-        self._fh = _retry(open, self.path, "w", encoding="utf-8")
-        self._trace = _retry(open, self.trace_path, "w", encoding="utf-8")
         self.save_images = save_images
+        roots = [str(run_dir)] + ([str(fallback_dir)] if fallback_dir else [])
+        for i, root in enumerate(roots):
+            last = i == len(roots) - 1
+            if not last and _DOWN_UNTIL.get(root, 0.0) > time.time():
+                continue
+            try:
+                self._open(root, patience=None if last else 60.0)
+            except OSError as e:
+                if last:
+                    raise
+                _DOWN_UNTIL[root] = time.time() + _DOWN_S
+                print(f"[fs] {root} unusable ({e}): episodes go to {roots[i + 1]} for the next "
+                      f"{_DOWN_S / 60:.0f} min", file=sys.stderr, flush=True)
+                continue
+            if i > 0 and run_info is not None:
+                retry_io(self._write_json, os.path.join(self.dir, "run.json"), run_info)
+            break
+
+    def _open(self, root: str, patience: Optional[float]) -> None:
+        self.dir = os.path.join(root, self.run_id)
+        retry_io(os.makedirs, self.dir, exist_ok=True, patience=patience)
+        self.path = os.path.join(self.dir, f"episode_{self.episode}.jsonl")
+        self.trace_path = os.path.join(self.dir, f"episode_{self.episode}.trace.txt")
+        self._fh = retry_io(open, self.path, "w", encoding="utf-8", patience=patience)
+        self._trace = retry_io(open, self.trace_path, "w", encoding="utf-8", patience=patience)
 
     def log_step(self, *, game: str, turn: int, agent_id: str, system_prompt: str,
                  user_prompt: str, completion: str, parsed_action: Any,
@@ -71,7 +102,7 @@ class EpisodeLogger:
             "attempts": attempts or [], "model_input": model_input,
         }
         self._fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        _retry(self._fh.flush)
+        retry_io(self._fh.flush)
 
         label = steering["label"] if steering else "none"
         shown = f"[IMAGES] {image_log}\n\n" if images else ""
@@ -89,14 +120,14 @@ class EpisodeLogger:
             layer, scores = max(monitor.items(), key=lambda kv: int(kv[0]))
             top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
             self._trace.write(f"[MONITOR L{layer} top-5] {', '.join(f'{t}={v:.2f}' for t, v in top)}\n\n")
-        _retry(self._trace.flush)
+        retry_io(self._trace.flush)
 
     def _save_images(self, turn: int, agent_id: str, images) -> list:
         paths = []
         for i, image in enumerate(images):
             rel = f"episode_{self.episode}_images/t{turn:04d}_{agent_id}_{i}.png"
-            _retry(os.makedirs, os.path.join(self.dir, os.path.dirname(rel)), exist_ok=True)
-            _retry(image.save, os.path.join(self.dir, rel))
+            retry_io(os.makedirs, os.path.join(self.dir, os.path.dirname(rel)), exist_ok=True)
+            retry_io(image.save, os.path.join(self.dir, rel))
             paths.append(rel)
         return paths
 
@@ -109,10 +140,10 @@ class EpisodeLogger:
         if summary is not None:
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
             tmp = spath + f".{os.getpid()}.tmp"
-            _retry(self._write_summary, tmp, summary)
-            _retry(os.replace, tmp, spath)
+            retry_io(self._write_json, tmp, summary)
+            retry_io(os.replace, tmp, spath)
 
     @staticmethod
-    def _write_summary(path: str, summary: Dict[str, Any]) -> None:
+    def _write_json(path: str, data: Dict[str, Any]) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
