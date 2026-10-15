@@ -101,7 +101,8 @@ def slope(x, y, clusters, fe=None) -> dict:
     scores = np.bincount(g, weights=x * resid)
     k = len(ids)
     var = float((scores ** 2).sum()) / sxx ** 2 * (k / (k - 1) if k > 1 else 1.0)
-    se = math.sqrt(var) if var > 0 else float("nan")
+    # a perfect fit (e.g. every paired difference 0) leaves only rounding noise: no inference
+    se = math.sqrt(var) if var > 0 and np.abs(resid).max() > 1e-9 else float("nan")
     p = math.erfc(abs(b / se) / math.sqrt(2)) if se and math.isfinite(se) and se > 0 else float("nan")
     return {"n": n, "clusters": k, "b": b, "se": se, "p": p}
 
@@ -300,7 +301,7 @@ def ols(y, X, clusters, fe=None):
     cov = inv @ (scores.T @ scores) @ inv * (k / (k - 1) if k > 1 else 1.0)
     out = []
     for j in range(X.shape[1]):
-        se = math.sqrt(cov[j, j]) if cov[j, j] > 0 else float("nan")
+        se = math.sqrt(cov[j, j]) if cov[j, j] > 0 and np.abs(e).max() > 1e-9 else float("nan")
         p = math.erfc(abs(b[j] / se) / math.sqrt(2)) if se == se and se > 0 else float("nan")
         out.append({"b": float(b[j]), "se": se, "p": p, "n": len(y), "clusters": k})
     return out
