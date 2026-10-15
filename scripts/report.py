@@ -1,7 +1,7 @@
 """Analysis report over every game of a sweep: one self-contained HTML page.
 
-    python scripts/summarize_runs.py <logs>/main --out results/main/agents.csv
-    python scripts/report.py results/main/agents.csv --sweep config/sweeps/main.yaml \n        --logs <logging_dir>/main --out results/main/report.html
+    python scripts/summarize_runs.py <logs>/main [fallback/main] --out results/main/agents.csv.gz
+    python scripts/report.py results/main/agents.csv.gz --sweep config/sweeps/main.yaml \n        --logs <logging_dir>/main --out results/main/report.html
 
 Reads the agent-episode rows of summarize_runs.py and answers, per trait and per game:
    1 coverage        episodes per game, truncated episodes, unparseable answers
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import html
 import json
 import math
@@ -44,7 +45,7 @@ STEERED_VIA = ("vector", "both")
 
 def load(path) -> list:
     rows = []
-    with open(path, newline="", encoding="utf-8") as f:
+    with (gzip.open if str(path).endswith(".gz") else open)(path, "rt", newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None
             row = {

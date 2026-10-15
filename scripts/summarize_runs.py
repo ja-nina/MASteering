@@ -2,6 +2,8 @@
 
     python scripts/summarize_runs.py logs/main [fallback/main] --out results/main_agents.csv [--layer 16]
 
+An --out ending in .gz is gzip-compressed (keeps a large sweep's CSV under GitHub's 100 MB file limit).
+
 Several log dirs (e.g. scratch and the MA_FALLBACK_LOG_DIR copy of a sweep) are merged per run; an episode
 logged in both counts once, from the first dir given.
 
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import statistics
 from collections import defaultdict
@@ -81,10 +84,16 @@ def main(argv=None) -> None:
         if logs.is_dir():
             for run_json in sorted(logs.rglob("run.json")):
                 runs.setdefault(run_json.parent.relative_to(logs), []).append(run_json.parent)
-    rows = [r for _, dirs in sorted(runs.items()) for r in agent_rows(dirs, args.layer)]
+    print(f"{len(runs)} runs found", flush=True)
+    rows = []
+    for i, (_, dirs) in enumerate(sorted(runs.items()), 1):
+        rows.extend(agent_rows(dirs, args.layer))
+        if i % 200 == 0:
+            print(f"  {i}/{len(runs)} runs read, {len(rows)} rows", flush=True)
     fields = list(dict.fromkeys(k for r in rows for k in r))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
+    opener = gzip.open if args.out.endswith(".gz") else open
+    with opener(args.out, "wt", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
