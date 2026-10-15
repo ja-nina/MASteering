@@ -2,13 +2,14 @@
 #SBATCH --job-name=ma-report
 #SBATCH -p gpu-a40
 #SBATCH --gres=gpu:1
-#SBATCH -c 16
+#SBATCH -c 10
 #SBATCH --mem=64G
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm-logs/report-%j.out
 # Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main]
 # Summary CSV + HTML report of a sweep, on a compute node: the first pass over older episodes reads their
-# JSONLs and needs more memory and time than the submit node allows. The partition only takes GPU jobs;
+# JSONLs and needs more memory and time than the submit node allows. The partition only takes GPU jobs
+# (and at most 10 CPUs per GPU);
 # the GPU stays idle. Then, from the submit node: git add results/<sweep> && git commit && git push
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
