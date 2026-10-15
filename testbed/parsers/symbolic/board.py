@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import re
-
 from testbed.envs.symbolic.board import column_letter
+from testbed.parsers.base import keyword_value
 from testbed.types import ParsedAction, ParseError, ParseResult, RawObs, RenderContext
 
 
@@ -10,7 +9,7 @@ class BoardParser:
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
         legal = [tuple(m) for m in raw_obs["legal"]]
-        m = re.search(r"MOVE\s*:\s*([A-Za-z])\s*(\d*)", completion or "", re.IGNORECASE)
+        m = keyword_value(completion, "MOVE", r"[A-Za-z](?![A-Za-z]))\s*(\d*")  # not "<column letter>"
         if not m:
             return ParseError(feedback=self._format(raw_obs))
         c = ord(m.group(1).upper()) - ord("A")

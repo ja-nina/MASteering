@@ -33,6 +33,7 @@ import gzip
 import html
 import json
 import math
+import statistics
 from collections import defaultdict
 from pathlib import Path
 
@@ -789,13 +790,18 @@ def games_section(rows, traits, cells, man, eff, base, scale):
                   [r for r in rows if r["condition"] == "none"])
     evil = paired(rows, base, lambda r: r["team_cond"] == "evil" and r["team"] == "evil" and r["steered"])
     prompted = paired(rows, base, lambda r: r["condition"] == "prompt_one" and r["steered"])
+    # per setting: the steered agents' and their unsteered co-players' paired reward over the coefficient
+    own_all = paired(rows, base, lambda r: r["steered"] and r["trait"] is not None)
+    co_all = paired(rows, base, lambda r: not r["steered"] and r["trait"] is not None)
     out = ["<h2 id=games>Per game</h2><div class=box><b>What you see</b><span>Each game separately, one row per "
            "trait. <b>Readout</b>: the vector's slope on the steered agents' trait readout (SD per unit c; section 2) "
            "and the mean readout with the persona prompt + / − (SD). <b>Outcomes</b>, in the game's own reward units, "
            "paired with the same seat in the unsteered episode with the same seed: the steered agent's reward per "
            "unit c (vector, section 9); the one prompted agent's mean reward change (prompt + / −); the group's "
            "total reward per unit c when every agent gets the vector (welfare); in hidden-role games the deceiving "
-           "side's reward per unit c when all its members get the vector.</span><b>How to read it</b><span>Slopes "
+           "side's reward per unit c when all its members get the vector. Below each game, <b>by setting</b>: the "
+           "same reward slope for every setting (who is steered: one, half, all, one side, the random control, the "
+           "prompt), for the steered agents and for the unsteered co-players of the same episodes.</span><b>How to read it</b><span>Slopes "
            "carry stars after Benjamini–Hochberg correction over the game's table; prompt columns are means ± 95% CI. "
            "The unsteered line gives the scale: e.g. a win/loss game with reward 0/1 has mean reward = win rate, so "
            "a slope of 0.1 = +10 percentage points of wins per unit c.</span></div>"]
@@ -846,8 +852,32 @@ def games_section(rows, traits, cells, man, eff, base, scale):
                       "positive evil-side slope means it loses at negative c (pushed away from the trait), not that "
                       "it wins more at positive c. " if evil0 and min(evil0) >= 1 else "")
                    + ("Significant outcome effects: " + "; ".join(hits) + "." if hits else "No significant outcome effect yet.")
-                   + "</p>" + "".join(tab))
+                   + "</p>" + "".join(tab) + settings_tables(cell, traits, own_all, co_all))
     return "".join(out)
+
+
+SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "all_random",
+                 "prompt_one", "prompt_all", "evil_team_prompt")
+
+
+def settings_tables(cell, traits, own_all, co_all) -> str:
+    """One game: reward slope per unit c (raw units, paired with the same seat unsteered) per setting × trait,
+    for the steered agents and for the unsteered co-players. Prompt settings have only a sign (c = ±1)."""
+    own = [r for r in own_all if r["cell"] == cell]
+    co = [r for r in co_all if r["cell"] == cell]
+    conds = sorted({r["condition"] for r in own},
+                   key=lambda c: (SETTING_ORDER.index(c) if c in SETTING_ORDER else len(SETTING_ORDER), c))
+    if not conds:
+        return ""
+    t_own, f_own, q_own = matrix("By setting: steered agents' reward per unit c", "setting", conds, traits,
+                                 lambda c, t: _diff_slope([r for r in own if r["condition"] == c and r["trait"] == t], None))
+    co_conds = [c for c in conds if any(r["condition"] == c for r in co)]
+    t_co, f_co, q_co = matrix("By setting: unsteered co-players' reward per unit c", "setting", co_conds, traits,
+                              lambda c, t: _diff_slope([r for r in co if r["condition"] == c and r["trait"] == t], None))
+    hits = sig_cells(f_own, q_own, lambda k: f"{k[1]} ({k[0]}): steered") +         sig_cells(f_co, q_co, lambda k: f"{k[1]} ({k[0]}): co-players")
+    note = ("<p class=muted>By setting, significant: " + "; ".join(hits[:10]) + (f"; {len(hits) - 10} more" if len(hits) > 10 else "")
+            + ". Prompt settings: + vs − instruction (c = ±1).</p>") if hits else         "<p class=muted>By setting: no significant reward slope. Prompt settings: + vs − instruction (c = ±1).</p>"
+    return "<details open><summary>By setting (one, half, all, …)</summary>" + note + t_own + t_co + "</details>"
 
 
 def examples_section(logs_dir, traits, coefs, per_trait=2, chars=700):
@@ -1357,9 +1387,31 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         f13.append(f"Answers are {ln_c[0.0][0]:.0f} characters long unsteered, {ln_c[hi_x][0]:.0f} at c = {hi_x:g} and "
                    f"{ln_c[lo_x][0]:.0f} at c = {lo_x:g}.")
     if fb_c:
-        worst = max(fb_c.items(), key=lambda kv: kv[1][0] if math.isfinite(kv[1][0]) else -1)
-        f13.append(f"Unparseable answers peak at {worst[1][0]:.1f}% (c = {worst[0]:g})"
-                   + (" — steering stays coherent at these strengths." if worst[1][0] < 5 else " — strong steering breaks answers."))
+        steered = {x: v[0] for x, v in fb_c.items() if x != 0.0 and math.isfinite(v[0])}
+        if 0.0 in fb_c and steered:
+            worst = max(steered, key=steered.get)
+            f13.append(f"Unparseable answers: {fb_c[0.0][0]:.1f}% of turns unsteered, {min(steered.values()):.1f}–"
+                       f"{steered[worst]:.1f}% steered (most at c = {worst:g})"
+                       + (" — on average steering does not break answers more than the games' own parse failures."
+                          if steered[worst] <= fb_c[0.0][0] + 2 else " — strong steering breaks answers."))
+        # pooled numbers hide that it depends on game and trait: the cells far from their game's unsteered rate
+        per = defaultdict(list)
+        for r in co:
+            key = (r["cell"], None) if r["condition"] == "none" else (r["cell"], r["trait"], r["coef"])
+            per[key].append(r["fallbacks"] / r["turns"])
+        base_fb = {k[0]: statistics.mean(v) for k, v in per.items() if k[1] is None}
+        cells_fb = [(k, statistics.mean(v)) for k, v in per.items() if k[1] is not None and k[0] in base_fb and len(v) >= 20]
+        broken = sorted((x for x in cells_fb if x[1] - base_fb[x[0][0]] >= 0.25), key=lambda x: -x[1])
+        fixed = sorted((x for x in cells_fb if base_fb[x[0][0]] - x[1] >= 0.2), key=lambda x: x[1] - base_fb[x[0][0]])
+        if broken:
+            f13.append("Steering breaks answers (≥ 25 points above the game's unsteered rate) in: " + "; ".join(
+                f"{cell_name(k[0])} × {k[1]} c = {k[2]:g}: {100 * v:.0f}% (unsteered {100 * base_fb[k[0]]:.0f}%)"
+                for k, v in broken[:8]) + (f"; {len(broken) - 8} more" if len(broken) > 8 else "") + ".")
+        if fixed:
+            f13.append("Steering leaves fewer answers unparseable than unsteered (≥ 20 points) in: " + "; ".join(
+                f"{cell_name(k[0])} × {k[1]} c = {k[2]:g}: {100 * v:.0f}% (unsteered {100 * base_fb[k[0]]:.0f}%)"
+                for k, v in fixed[:6]) + (f"; {len(fixed) - 6} more" if len(fixed) > 6 else "")
+                + ". Where a game's reward depends on parsing, part of a reward effect there can come from this.")
     body.append(section(13, "Coherence cost: does steering break the agent?",
                         "Does strong steering make agents produce broken or unusually long/short answers?",
                         "Steered agents (persona vector, all traits) by coefficient, unsteered agents at 0: the share of "
