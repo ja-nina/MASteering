@@ -135,7 +135,7 @@ def main(argv=None) -> None:
                 continue
             if cache.get(str(jsonl), (None,))[0] != size:
                 todo.append((str(jsonl), size))
-    print(f"{len(todo)} episode logs to read ({len(cache) - ("_layer" in cache)} cached in {cache_path})", flush=True)
+    print(f"{len(todo)} episode logs to read ({len(cache) - ('_layer' in cache)} cached in {cache_path})", flush=True)
 
     def save():
         cache["_layer"] = args.layer
