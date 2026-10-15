@@ -1,5 +1,5 @@
-"""summarize_runs reads the episode summaries' agent_stats; older episodes (no agent_stats) come from their
-JSONL, cached, and give the same rows."""
+"""summarize_runs reads the episode summaries' agent_stats; older episodes (no agent_stats) get them from
+their JSONL once, written back into the summary, and give the same rows."""
 import csv
 import gzip
 import json
@@ -42,13 +42,9 @@ def test_summary_stats_match_jsonl_and_cache(tmp_path, capsys):
     r = rows[1]
     assert (r["agent"], r["turns"], r["parse_fallbacks"], r["answer_chars"], r["monitor_layer"], r["mon_evil"]) == \
         ("p1", "3", "1", "2.0", "16", "1.0")
-    assert "(1 older ones read from their JSONL)" in capsys.readouterr().out
+    assert "(1 older ones read from their JSONL" in capsys.readouterr().out
+    assert json.loads(old.read_text())["agent_stats"] == summary["agent_stats"]  # written back
 
-    summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])  # rerun: the old episode comes from the cache
-    assert "(0 older ones read from their JSONL)" in capsys.readouterr().out
+    summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])  # rerun: summaries only
+    assert "(0 older ones read from their JSONL" in capsys.readouterr().out
     assert read(out) == rows
-
-    cache = tmp_path / "res" / "agents.csv.gz.cache.pkl"
-    cache.write_bytes(cache.read_bytes()[:20])  # cut off (Ctrl+C mid-save): read again, not a crash
-    summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])
-    assert "unreadable" in capsys.readouterr().out and read(out) == rows
