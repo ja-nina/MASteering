@@ -4,7 +4,7 @@
 #SBATCH -c 16
 #SBATCH --gres=gpu:2
 #SBATCH --mem=96G
-#SBATCH --time=20:00:00
+#SBATCH --time=7:00:00
 #SBATCH --output=slurm-logs/games-%A_%a.out
 # Usage: sbatch [--array=0-N] scripts/slurm/run_games.sbatch <config dir> [run_games.py args]
 # All configs under <config dir> share one steer + one monitor engine (2 GPUs, see engine: in the
