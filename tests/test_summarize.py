@@ -47,3 +47,8 @@ def test_summary_stats_match_jsonl_and_cache(tmp_path, capsys):
     summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])  # rerun: the old episode comes from the cache
     assert "(0 older ones read from their JSONL)" in capsys.readouterr().out
     assert read(out) == rows
+
+    cache = tmp_path / "res" / "agents.csv.gz.cache.pkl"
+    cache.write_bytes(cache.read_bytes()[:20])  # cut off (Ctrl+C mid-save): read again, not a crash
+    summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])
+    assert "unreadable" in capsys.readouterr().out and read(out) == rows
