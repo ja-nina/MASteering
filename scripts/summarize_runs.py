@@ -134,13 +134,21 @@ def main(argv=None) -> None:
     cache_path = Path(args.out + ".cache.pkl")
     cache = {}
     if cache_path.exists():
-        with gzip.open(cache_path, "rb") as f:
-            cache = pickle.load(f)
+        try:
+            with gzip.open(cache_path, "rb") as f:
+                cache = pickle.load(f)
+            if not all(isinstance(k, str) and k.endswith(".summary.json") for k in cache):
+                cache = {}  # an older layout
+        except Exception as e:  # noqa: BLE001 - e.g. cut off by Ctrl+C: start over
+            print(f"cache {cache_path} unreadable ({e!r}): starting a new one", flush=True)
+            cache = {}
 
-    def save():
+    def save():  # to a temp file, then renamed: an interrupted save never leaves a broken cache
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(cache_path, "wb") as f:
+        tmp = cache_path.with_name(cache_path.name + ".tmp")
+        with gzip.open(tmp, "wb") as f:
             pickle.dump(cache, f)
+        tmp.replace(cache_path)
 
     summaries, n_read = {}, 0
     with multiprocessing.Pool(args.jobs) as pool:
