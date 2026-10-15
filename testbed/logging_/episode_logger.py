@@ -9,6 +9,9 @@ Each JSONL record carries what the agent was given and what it said:
 and `steering` (the agent's steering config, null when unsteered),
 `monitor` ({layer: {trait: projection}}, empty when monitoring is off) and `images` (paths of
 the turn's image observation, relative to the run dir, when save_images is on; else a count).
+
+The summary (written last) also gets `agent_stats`: per agent its turns, parse fallbacks, answer chars and
+mean monitor projection per layer and trait, so analyses never need to read the (large) JSONL.
 """
 from __future__ import annotations
 
@@ -58,6 +61,7 @@ class EpisodeLogger:
         self.run_id = run_id
         self.episode = episode
         self.save_images = save_images
+        self._stats: Dict[str, Dict[str, Any]] = {}
         roots = [str(run_dir)] + ([str(fallback_dir)] if fallback_dir else [])
         for i, root in enumerate(roots):
             last = i == len(roots) - 1
@@ -91,6 +95,15 @@ class EpisodeLogger:
                  finish_reason: str = "stop", n_tokens: int = 0,
                  monitor: Optional[Dict[str, Dict[str, float]]] = None, images=(),
                  attempts: Optional[list] = None, model_input: str = "") -> None:
+        st = self._stats.setdefault(agent_id, {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": {}})
+        st["turns"] += 1
+        st["fallbacks"] += not parse_ok
+        st["chars"] += len(completion or "")
+        for layer, scores in (monitor or {}).items():  # running sums and counts; means in agent_stats()
+            for trait, v in scores.items():
+                acc = st["monitor"].setdefault(str(layer), {}).setdefault(trait, [0.0, 0])
+                acc[0] += v
+                acc[1] += 1
         image_log = self._save_images(turn, agent_id, images) if self.save_images else len(images)
         rec = {
             "run_id": self.run_id, "episode": self.episode, "game": game,
@@ -138,10 +151,18 @@ class EpisodeLogger:
         if not self._trace.closed:
             self._trace.close()
         if summary is not None:
+            summary = {**summary, "agent_stats": self.agent_stats()}
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
             tmp = spath + f".{os.getpid()}.tmp"
             retry_io(self._write_json, tmp, summary)
             retry_io(os.replace, tmp, spath)
+
+    def agent_stats(self) -> Dict[str, Dict[str, Any]]:
+        """{agent: {turns, fallbacks, chars, monitor: {layer: {trait: mean projection over its turns}}}}."""
+        return {aid: {**{k: st[k] for k in ("turns", "fallbacks", "chars")},
+                      "monitor": {layer: {t: total / n for t, (total, n) in traits.items()}
+                                  for layer, traits in st["monitor"].items()}}
+                for aid, st in self._stats.items()}
 
     @staticmethod
     def _write_json(path: str, data: Dict[str, Any]) -> None:
