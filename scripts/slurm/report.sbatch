@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH -c 10
 #SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm-logs/report-%j.out
 # Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main]
 # Summary CSV + HTML report of a sweep, on a compute node: the first pass over older episodes reads their

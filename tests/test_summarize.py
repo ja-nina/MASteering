@@ -13,12 +13,14 @@ def play(logs, run_id, ep):
     d = logs / run_id.split("__")[0]
     d.mkdir(parents=True, exist_ok=True)
     (d / run_id).mkdir(exist_ok=True)
-    (d / run_id / "run.json").write_text(json.dumps({"run_id": run_id, "game": {"id": "g", "players": 2}}))
+    (d / run_id / "run.json").write_text(json.dumps({"run_id": run_id, "game": {"id": "g", "players": 2},
+                                                     "steering": {"select": "one", "trait": "evil", "coefficient": 1}}))
     log = EpisodeLogger(str(d), run_id, ep)
     for turn in range(3):
         for aid in ("p0", "p1"):
             log.log_step(game="g", turn=turn, agent_id=aid, system_prompt="s", user_prompt="u",
-                         completion="x" * (turn + 1), parsed_action=None, parse_retries=0, reward=0.0,
+                         completion="x" * (turn + 1), parse_retries=0, reward=0.0,
+                         parsed_action=f"I bid. [Bid {10 * (turn + 1)}]" if aid == "p0" else ["APPROVE", "REJECT", 3][turn],
                          parse_ok=turn != 2 or aid == "p0", monitor={"8": {"evil": 9.0}, "16": {"evil": float(turn)}})
     log.close(summary={"final_rewards": {"p0": 1, "p1": 0}})
     return d / run_id / f"episode_{ep}.summary.json"
@@ -33,7 +35,11 @@ def test_summary_stats_match_jsonl_and_cache(tmp_path, capsys):
     logs, out = tmp_path / "main", str(tmp_path / "res" / "agents.csv.gz")
     new = play(logs, "g_2p__none", 0)
     summary = json.loads(new.read_text())
-    assert summary["agent_stats"]["p1"]["monitor"]["16"]["evil"] == 1.0
+    p0, p1 = summary["agent_stats"]["p0"], summary["agent_stats"]["p1"]
+    assert p1["monitor"]["16"]["evil"] == 1.0
+    assert p1["phase_layer"] == "16" and [ph["evil"] for ph in p1["phases"]] == [0.0, 1.0, 2.0]  # turn i in third i
+    assert p0["actions"] == {"n": 3, "numeric": 20.0, "labels": {"bid #": 3}}
+    assert p1["actions"]["labels"] == {"approve": 1, "reject": 1}  # turn 2 of p1: parse failed, not counted
     old = play(logs, "g_2p__none", 1)  # logged before summaries had agent_stats
     old.write_text(json.dumps({k: v for k, v in summary.items() if k != "agent_stats"}))
     summarize_runs.main([str(logs), "--out", out, "--jobs", "2"])
@@ -42,6 +48,7 @@ def test_summary_stats_match_jsonl_and_cache(tmp_path, capsys):
     r = rows[1]
     assert (r["agent"], r["turns"], r["parse_fallbacks"], r["answer_chars"], r["monitor_layer"], r["mon_evil"]) == \
         ("p1", "3", "1", "2.0", "16", "1.0")
+    assert (r["mon_early_evil"], r["mon_late_evil"], r["act_n"], json.loads(r["act_labels"])) ==         ("0.0", "2.0", "2", {"approve": 1, "reject": 1})
     assert "(1 older ones read from their JSONL" in capsys.readouterr().out
     assert json.loads(old.read_text())["agent_stats"] == summary["agent_stats"]  # written back
 

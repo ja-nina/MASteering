@@ -60,7 +60,12 @@ def load(path) -> list:
                 "reward": num("reward"), "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
                 "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
                 "monitor_layer": num("monitor_layer"), "steer_layer": num("steer_layer"),
-                "mon": {k[4:]: float(v) for k, v in r.items() if k.startswith("mon_") and v not in (None, "")},
+                "mon": {k[4:]: float(v) for k, v in r.items() if k.startswith("mon_") and v not in (None, "")
+                        and not k.startswith(("mon_early_", "mon_mid_", "mon_late_"))},
+                "phase": {ph: {k[len(ph) + 5:]: float(v) for k, v in r.items()
+                               if k.startswith(f"mon_{ph}_") and v not in (None, "")} for ph in ("early", "mid", "late")},
+                "act_n": num("act_n"), "act_num": num("act_numeric"),
+                "act_labels": json.loads(r["act_labels"]) if r.get("act_labels") else {},
             }
             rows.append(row)
     for r in rows:
@@ -195,12 +200,17 @@ def zscored(rows):
         if r["condition"] == "none":
             for t, v in r["mon"].items():
                 vals[(r["cell"], t)].append(v)
+            for ph, vs in r["phase"].items():  # each third against the same third of unsteered agents
+                for t, v in vs.items():
+                    vals[(r["cell"], ph, t)].append(v)
     stats = {k: (float(np.mean(v)), float(np.std(v)) or 1.0) for k, v in vals.items() if len(v) > 1}
     out = []
     for r in rows:
         z = {t: (v - stats[(r["cell"], t)][0]) / stats[(r["cell"], t)][1]
              for t, v in r["mon"].items() if (r["cell"], t) in stats}
-        out.append({**r, "mon_raw": r["mon"], "mon": z})
+        zp = {ph: {t: (v - stats[(r["cell"], ph, t)][0]) / stats[(r["cell"], ph, t)][1]
+                   for t, v in vs.items() if (r["cell"], ph, t) in stats} for ph, vs in r["phase"].items()}
+        out.append({**r, "mon_raw": r["mon"], "mon": z, "phase": zp})
     return out
 
 
@@ -1082,6 +1092,258 @@ def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_
     return take
 
 
+PHASES = ("early", "mid", "late")
+
+
+def _three(r, u):
+    """The agent has a readout of `u` in all three thirds of its turns."""
+    return all(u in (r["phase"].get(ph) or {}) for ph in PHASES)
+
+
+def phase_slope(rows, t, select, value, readout=None):
+    """Like readout_slope, on value(r, u) (a per-third readout) of agents with all three thirds."""
+    u = readout or t
+    chosen = [r for r in rows if r["trait"] == t and r["coef"] is not None and select(r) and _three(r, u)]
+    cells = {r["cell"] for r in chosen}
+    pts = chosen + [r for r in rows if r["condition"] == "none" and r["cell"] in cells and _three(r, u)]
+    return slope([r["coef"] if r["condition"] != "none" else 0.0 for r in pts], [value(r, u) for r in pts],
+                 [r["cluster"] for r in pts], [r["cell"] for r in pts])
+
+
+def over_episode_section(rows, traits):
+    """14: does the persona fade or grow over the episode; does contagion build up? -> (html, takeaways)"""
+    if not any(any(v for v in r["phase"].values()) for r in rows):
+        return [], section(14, "Over the episode: does the persona fade or grow?", "", "", "",
+                       ["No per-turn data yet: rerun scripts/summarize_runs.py (it adds the readout per third of the "
+                        "episode to the summaries)."], "")
+    co_sel = lambda r: not r["steered"] and r["select"] in ("one", "count", "fraction") and r["condition"] != "none"
+    cols = ["early", "mid", "late", "late − early", "co-players: early", "co-players: late", "co-players: late − early"]
+    ph = lambda p: (lambda r, u: r["phase"][p][u])
+    diff = lambda r, u: r["phase"]["late"][u] - r["phase"]["early"][u]
+    get = {"early": (is_vector, ph("early")), "mid": (is_vector, ph("mid")), "late": (is_vector, ph("late")),
+           "late − early": (is_vector, diff), "co-players: early": (co_sel, ph("early")),
+           "co-players: late": (co_sel, ph("late")), "co-players: late − early": (co_sel, diff)}
+    tab, found, q = matrix("Readout slope per third of the agent's turns (SD per unit c)", "trait", traits, cols,
+                           lambda t, c: phase_slope(rows, t, get[c][0], get[c][1]))
+    fades, grows, builds = [], [], []
+    for t in traits:
+        e, d = found[(t, "early")], found[(t, "late − early")]
+        if e and d and sig(d, q[(t, "late − early")]) and math.isfinite(e["b"]) and e["b"]:
+            share = d["b"] / e["b"]
+            (grows if share > 0 else fades).append(f"{t} ({e['b']:+.2f} early → {found[(t, 'late')]['b']:+.2f} late)")
+        cd = found[(t, "co-players: late − early")]
+        if cd and sig(cd, q[(t, "co-players: late − early")]) and cd["b"] > 0:
+            builds.append(f"{t} ({found[(t, 'co-players: early')]['b']:+.2f} → {found[(t, 'co-players: late')]['b']:+.2f})")
+    n = len({r["cluster"] for r in rows if any(_three(r, t) for t in traits)})
+    f = [f"Episodes long enough for three thirds (≥ 3 monitored turns per agent): {n}."]
+    f.append(("The persona <b>fades</b> over the episode for: " + "; ".join(fades) + "." if fades else
+              "No trait's effect fades significantly over the episode.")
+             + (" It <b>grows</b> for: " + "; ".join(grows) + "." if grows else ""))
+    f.append("Contagion builds up over the episode for: " + "; ".join(builds) + "." if builds else
+             "Contagion does not significantly build up over the episode.")
+    take = []
+    if fades or grows:
+        take.append("<b>The persona " + ("fades" if len(fades) >= len(grows) else "grows") + " over a game.</b> "
+                    + (f"Pushed agents drift back toward their usual selves for {', '.join(x.split(' (')[0] for x in fades)}"
+                       if fades else "") + ("; " if fades and grows else "")
+                    + (f"the effect builds for {', '.join(x.split(' (')[0] for x in grows)}" if grows else "")
+                    + " (section 14): one steering strength does not mean one persona strength throughout an episode.")
+    if builds:
+        take.append(f"<b>Contagion accumulates.</b> The co-players' drift toward {', '.join(x.split(' (')[0] for x in builds)} "
+                    "grows from the first to the last third of their turns (section 14).")
+    return take, section(14, "Over the episode: does the persona fade or grow?",
+                   "Does the steered persona hold over a whole game, or does the conversation pull the agent back "
+                   "(or push it further)? Does the co-players' drift toward the trait build up as they keep talking?",
+                   "Each agent's turns are split into thirds (first, middle, last third of <i>its own</i> turns); the "
+                   "readout is averaged per third, in SD units of the unsteered agents in the <i>same</i> third of the "
+                   "same game (so a game's own drift, e.g. longer answers late, is removed). Per third: the slope over "
+                   "the coefficient, as in section 2. late − early: the slope of each agent's change from its first to "
+                   "its last third. Co-players: the unsteered agents of episodes where one agent or half are steered "
+                   "(as in section 8). Only agents with at least 3 monitored turns.",
+                   "late − early with the same sign as the early slope = the effect grows; opposite sign = it fades "
+                   "(e.g. early +5, late − early −2: the agent drifts back toward its usual self). A rising co-players' "
+                   "late − early = contagion accumulates over the conversation.", f, tab)
+
+
+def actions_section(rows, traits, cells):
+    """15: what the steered agents choose, per game: numeric choices and the share of each action type."""
+    if not any(r["act_n"] for r in rows):
+        return [], section(15, "Actions: what do steered agents do differently?", "", "", "",
+                       ["No action data yet: rerun scripts/summarize_runs.py (it adds each agent's choices to the "
+                        "summaries)."], "")
+    out, hits, n_sig, n_all = [], [], 0, 0
+    for cell in cells:
+        cr = [r for r in rows if r["cell"] == cell and r["act_n"]]
+        vec = [r for r in cr if is_vector(r) and r["team_cond"] is None]
+        base = [r for r in cr if r["condition"] == "none"]
+        if not vec or len(base) < 3:
+            continue
+        measures = []
+        if sum(r["act_num"] is not None for r in base) >= len(base) / 2:
+            m0 = float(np.mean([r["act_num"] for r in base if r["act_num"] is not None]))
+            measures.append((f"mean numeric choice (unsteered {m0:.3g})", lambda r: r["act_num"], 1.0))
+        total = defaultdict(float)
+        for r in base:
+            for lab, k in r["act_labels"].items():
+                total[lab] += k
+        n = sum(total.values()) or 1
+        labs = [lab for lab, k in sorted(total.items(), key=lambda kv: -kv[1])
+                if k / n >= 0.05 and lab not in ("text", "move", "number")][:6]
+        if len(labs) >= 2 or (labs and total[labs[0]] / n < 0.95):
+            for lab in labs:
+                measures.append((f"share '{lab}' (unsteered {100 * total[lab] / n:.0f}%)",
+                                 (lambda lab: lambda r: r["act_labels"].get(lab, 0) / r["act_n"])(lab), 100.0))
+        if not measures:
+            continue
+        mrow = {m[0]: m for m in measures}
+
+        def get(name, t):
+            _, value, k = mrow[name]
+            pts = [r for r in vec if r["trait"] == t and r["coef"] is not None] + base
+            pts = [r for r in pts if value(r) is not None]
+            s = slope([r["coef"] if r["condition"] != "none" else 0.0 for r in pts], [k * value(r) for r in pts],
+                      [r["cluster"] for r in pts])
+            return s
+
+        tab, found, q = matrix(cell_name(cell), "action", list(mrow), traits, get)
+        game_hits = sorted(((k, s) for k, s in found.items() if sig(s, q[k])), key=lambda kv: -abs(kv[1]["b"] / kv[1]["se"]))
+        n_sig += len(game_hits)
+        n_all += sum(1 for s in found.values() if s and math.isfinite(s.get("p", float("nan"))))
+        hits += [f"{cell_name(cell)}: {k[1]} → {k[0].split(' (')[0]} {s['b']:+.2f}" for k, s in game_hits[:3]]
+        out.append(tab)
+    f = [f"{n_sig} of {n_all} game × action × trait slopes are significant."]
+    if hits:
+        f.append("Strongest per game: " + "; ".join(hits[:15]) + (f"; {len(hits) - 15} more" if len(hits) > 15 else "") + ".")
+    take = [f"<b>Steering changes concrete choices.</b> {n_sig} of {n_all} game × action × trait slopes are "
+            "significant (section 15); strongest: " + "; ".join(hits[:4]) + "."] if hits else []
+    return take, section(15, "Actions: what do steered agents do differently?",
+                   "Beyond the final reward: which choices change — bids, guesses and amounts, votes, play vs discard "
+                   "vs hint, cooperate vs defect?",
+                   "Each agent's parsed choices over the episode (default moves after an unparseable answer excluded). "
+                   "<b>Numeric</b>: the mean of its numeric choices (a bid, a guess, an amount harvested). <b>Shares</b>: "
+                   "the share of its choices of each type (an action label: APPROVE / REJECT, SUCCESS / FAIL, play / "
+                   "discard / hint, TextArena's bracketed command with numbers replaced by #, e.g. 'bid #'). Only types "
+                   "with ≥ 5% of the unsteered agents' choices. Steered agents with the persona vector (not the "
+                   "evil-side settings) against the unsteered agents at c = 0: the slope per unit c.",
+                   "Numeric rows are in the game's own units per unit c (e.g. +12 = bids 12 coins higher per unit c); "
+                   "share rows in percentage points per unit c (+5 = that action 5 points more often per unit c, so +10 "
+                   "at c = 2). Steered seats are drawn at random, so role-specific actions (only spies can FAIL a "
+                   "mission) compare like with like on average. Stars: Benjamini–Hochberg within each game's table.",
+                   f, "".join(out))
+
+
+def _shape(fit, q1, q2, cmax):
+    """Shape of a reward curve from y = b1 c + b2 c²."""
+    b1, b2 = fit[0], fit[1]
+    s1, s2 = sig(b1, q1), sig(b2, q2)
+    if s2 and b2["b"]:
+        v = -b1["b"] / (2 * b2["b"])
+        if abs(v) <= 0.25:  # turning point at no steering: either direction does the same
+            return "∩ any steering hurts" if b2["b"] < 0 else "∪ any steering helps"
+        if abs(v) < cmax:
+            return ("∩ peaks" if b2["b"] < 0 else "∪ dips") + f" at c ≈ {v:+.1f}"
+        return ("↑" if b1["b"] > 0 else "↓") + " saturating" if (b1["b"] > 0) != (b2["b"] > 0) else \
+            ("↑" if b1["b"] > 0 else "↓") + " accelerating"
+    if s1:
+        return "↑ rising" if b1["b"] > 0 else "↓ falling"
+    return ""
+
+
+def dose_response_section(steered, traits, cells, scale):
+    """16: the steered agent's reward over the coefficient, per game and trait: where it saturates or flips."""
+    coefs = sorted({r["coef"] for r in steered if r["coef"] is not None})
+    cmax = max([abs(c) for c in coefs] or [2])
+    charts = ["<div class=charts>"]
+    for t in traits:
+        tr = [r for r in steered if r["trait"] == t and r["coef"] is not None]
+        pts = defaultdict(lambda: ([], []))
+        for r in tr:
+            pts[r["coef"]][0].append(r["diff"] / scale.get(r["cell"], 1.0))
+            pts[r["coef"]][1].append(r["cluster"])
+        curve = [(c, *mean_ci(*v)[:2]) for c, v in sorted(pts.items())] + [(0.0, 0.0, float("nan"))]
+        charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                      f"{line_chart({'vector': curve}, t, 'reward change (SD)')}</div>")
+    charts.append("</div>")
+    fits = {}
+    for cell in cells:
+        for t in traits:
+            cr = [r for r in steered if r["cell"] == cell and r["trait"] == t and r["coef"] is not None]
+            if len({r["coef"] for r in cr}) >= 4:
+                fits[(cell, t)] = ols([r["diff"] for r in cr], [[r["coef"], r["coef"] ** 2] for r in cr],
+                                      [r["cluster"] for r in cr])
+    keys = list(fits)
+    q = bh([fits[k][0]["p"] for k in keys] + [fits[k][1]["p"] for k in keys])
+    q1, q2 = dict(zip(keys, q[:len(keys)])), dict(zip(keys, q[len(keys):]))
+    shapes = {k: _shape(fits[k], q1[k], q2[k], cmax) for k in keys}
+    tab = ["<h3>Shape of the reward curve per game × trait</h3><div class=wrap><table><tr><th class=l>game</th>"
+           + "".join(f"<th>{html.escape(t)}</th>" for t in traits) + "</tr>"]
+    for cell in cells:
+        if not any((cell, t) in shapes for t in traits):
+            continue
+        tds = []
+        for t in traits:
+            k = (cell, t)
+            if k not in fits:
+                tds.append("<td><span class=muted>–</span></td>")
+                continue
+            b1, b2 = fits[k]
+            tip = (f"linear {b1['b']:+.3f} (q {q1[k]:.3f}), quadratic {b2['b']:+.3f} (q {q2[k]:.3f}), n {b1['n']}"
+                   if math.isfinite(b1["b"]) else "not enough data")
+            tds.append(f"<td title='{html.escape(tip)}'>{html.escape(shapes[k]) or '<span class=muted>flat</span>'}</td>")
+        tab.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td>{''.join(tds)}</tr>")
+    tab.append("</table></div>")
+    per_game = ["<details><summary>Mean reward change at each coefficient, per game (game's own units)</summary>"]
+    for cell in cells:
+        cr = [r for r in steered if r["cell"] == cell and r["coef"] is not None]
+        if not cr:
+            continue
+        rows_ = ["<h3>" + html.escape(cell_name(cell)) + "</h3><div class=wrap><table><tr><th class=l>trait</th>"
+                 + "".join(f"<th>c = {c:g}</th>" for c in coefs) + "</tr>"]
+        for t in traits:
+            cells_ = []
+            for c in coefs:
+                v = [(r["diff"], r["cluster"]) for r in cr if r["trait"] == t and r["coef"] == c]
+                cells_.append(mean_cell(mean_ci([a for a, _ in v], [b for _, b in v])) if v else "<td>–</td>")
+            rows_.append(f"<tr><td class=l>{t}</td>{''.join(cells_)}</tr>")
+        per_game.append("".join(rows_) + "</table></div>")
+    per_game.append("</details>")
+    peaks = [f"{cell_name(k[0])} × {k[1]} ({s})" for k, s in shapes.items() if s.startswith(("∩", "∪"))]
+    sat = [f"{cell_name(k[0])} × {k[1]}" for k, s in shapes.items() if "saturating" in s]
+    lin = sum(1 for s in shapes.values() if s.endswith(("rising", "falling")))
+    f = [f"Of {len(shapes)} game × trait curves: {lin} change steadily with c, {len(sat)} saturate, {len(peaks)} peak or "
+         f"dip inside the tested range, {sum(1 for s in shapes.values() if not s)} show no significant trend."]
+    if peaks:
+        f.append("Not monotonic (more steering is not more effect): " + "; ".join(peaks[:10])
+                 + (f"; {len(peaks) - 10} more" if len(peaks) > 10 else "") + ".")
+    if sat:
+        f.append("Saturating: " + "; ".join(sat[:10]) + (f"; {len(sat) - 10} more" if len(sat) > 10 else "") + ".")
+    hurt = [f"{cell_name(k[0])} × {k[1]}" for k, v in shapes.items() if v == "∩ any steering hurts"]
+    take = []
+    if peaks or sat:
+        take.append(f"<b>More steering is not simply more effect.</b> Of {len(shapes)} game × trait reward curves, {lin} "
+                    f"change steadily with c, {len(peaks)} bend inside ±{cmax:g}"
+                    + (f" — in {len(hurt)} of them any steering, in either direction, costs the agent (e.g. "
+                       f"{'; '.join(hurt[:3])}): pushing a persona away from the model's default play hurts" if hurt else "")
+                    + f"; {sum(1 for v in shapes.values() if not v)} show no trend (section 16).")
+    return take, section(16, "Dose–response: how does the reward change with steering strength?",
+                   "Does more steering give proportionally more effect, or does the effect level off, peak at a "
+                   "moderate strength, or flip?",
+                   "The steered agent's reward minus the same seat's in the unsteered episode with the same seed (as "
+                   "in section 9), at each coefficient. Charts: all games pooled (SD units of each game's unsteered "
+                   "rewards), with 95% CIs. Table: per game × trait, a fit y = b₁c + b₂c² (SEs clustered by episode, "
+                   "Benjamini–Hochberg over the table): ↑/↓ rising/falling = only the straight part is significant; "
+                   "saturating = it bends back but the turning point lies beyond ±" + f"{cmax:g}" + "; ∩/∪ = it peaks or "
+                   "dips inside the range (turning point given); flat = no significant trend. Details: the mean reward "
+                   "change at every coefficient, per game.",
+                   "A ∩ means the trait helps up to a point and hurts beyond it — e.g. a little assertiveness wins "
+                   "bids, a lot breaks the answers. '∩ any steering hurts': the turning point is at c ≈ 0, so pushing "
+                   "the persona either way costs the agent (its unsteered play is already its best). Every point is measured against the same "
+                   "unsteered games, so a lucky or unlucky baseline shifts the whole curve up or down: the <i>shape</i> "
+                   "(rising, bending) is robust to that, the level is not — with few unsteered episodes, trust shapes more "
+                   "than levels. Hover a table cell for the fitted coefficients. Shapes need data "
+                   "at ≥ 4 coefficients.", f, "".join(charts) + "".join(tab) + "".join(per_game))
+
+
 def build(rows, sweep=None, logs_dir=None) -> str:
     rows = zscored(rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
@@ -1533,13 +1795,13 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         f13.append(f"Answers are {ln_c[0.0][0]:.0f} characters long unsteered, {ln_c[hi_x][0]:.0f} at c = {hi_x:g} and "
                    f"{ln_c[lo_x][0]:.0f} at c = {lo_x:g}.")
     if fb_c:
-        steered = {x: v[0] for x, v in fb_c.items() if x != 0.0 and math.isfinite(v[0])}
-        if 0.0 in fb_c and steered:
-            worst = max(steered, key=steered.get)
-            f13.append(f"Unparseable answers: {fb_c[0.0][0]:.1f}% of turns unsteered, {min(steered.values()):.1f}–"
-                       f"{steered[worst]:.1f}% steered (most at c = {worst:g})"
+        fb_steered = {x: v[0] for x, v in fb_c.items() if x != 0.0 and math.isfinite(v[0])}
+        if 0.0 in fb_c and fb_steered:
+            worst = max(fb_steered, key=fb_steered.get)
+            f13.append(f"Unparseable answers: {fb_c[0.0][0]:.1f}% of turns unsteered, {min(fb_steered.values()):.1f}–"
+                       f"{fb_steered[worst]:.1f}% steered (most at c = {worst:g})"
                        + (" — on average steering does not break answers more than the games' own parse failures."
-                          if steered[worst] <= fb_c[0.0][0] + 2 else " — strong steering breaks answers."))
+                          if fb_steered[worst] <= fb_c[0.0][0] + 2 else " — strong steering breaks answers."))
         # pooled numbers hide that it depends on game and trait: the cells far from their game's unsteered rate
         per = defaultdict(list)
         for r in co:
@@ -1565,11 +1827,18 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                         "x = coefficient; a curve that shoots up at the ends = the model derails before the persona shows.",
                         f13, charts))
 
+    late_take = []
+    for part in (over_episode_section(rows, traits), actions_section(rows, traits, cells),
+                 dose_response_section(steered, traits, cells, scale)):
+        late_take += part[0]
+        body.append(part[1])
     body.append(games_section(rows, traits, cells, man, eff, base, scale))
 
     # takeaways: what the sections add up to, written from their numbers
     take = takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_q, p9_q, o_found, w_found, w_q,
                      ch, sides, beyond, corr, allm, small, entangled, readable, with_effect, through, hits, stronger_img)
+    at = len(take) - 1 if take and take[-1].startswith("<b>Read with care") else len(take)
+    take[at:at] = late_take  # sections 14-16, before the caveats
     take_html = ("<h2 id=takeaways>Takeaways</h2><div class=result><ol>" + "".join(f"<li>{t}</li>" for t in take)
                 + "</ol><span class=muted>What the sections add up to, written from their numbers; the evidence for "
                   "each point is in the sections below.</span></div>")
@@ -1581,7 +1850,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
