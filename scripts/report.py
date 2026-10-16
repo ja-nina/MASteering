@@ -876,8 +876,15 @@ def settings_tables(cell, traits, own_all, co_all) -> str:
     t_co, f_co, q_co = matrix("By setting: unsteered co-players' reward per unit c", "setting", co_conds, traits,
                               lambda c, t: _diff_slope([r for r in co if r["condition"] == c and r["trait"] == t], None))
     hits = sig_cells(f_own, q_own, lambda k: f"{k[1]} ({k[0]}): steered") +         sig_cells(f_co, q_co, lambda k: f"{k[1]} ({k[0]}): co-players")
-    note = ("<p class=muted>By setting, significant: " + "; ".join(hits[:10]) + (f"; {len(hits) - 10} more" if len(hits) > 10 else "")
-            + ". Prompt settings: + vs − instruction (c = ±1).</p>") if hits else         "<p class=muted>By setting: no significant reward slope. Prompt settings: + vs − instruction (c = ±1).</p>"
+    how = ("<p class=muted><b>How to read:</b> a cell is the change in this game's own reward per +1 of steering "
+           "coefficient, for the agents in that setting, against the same seat in the unsteered game with the same "
+           "seed. E.g. +0.10 in a win/loss game = +10 points of win rate per unit c, so +20 points at c = 2 and −20 at "
+           "c = −2. Top table: the steered agents; bottom: the agents of the same episodes that were not steered "
+           "(what the steered ones do to them). Prompt settings have no strength, only + vs − instruction (c = ±1). "
+           "Stars: Benjamini–Hochberg over the table; '–' = too little data.</p>")
+    note = how + (("<p class=muted>By setting, significant: " + "; ".join(hits[:10])
+                   + (f"; {len(hits) - 10} more" if len(hits) > 10 else "") + ".</p>") if hits else
+                  "<p class=muted>By setting: no significant reward slope.</p>")
     return "<details open><summary>By setting (one, half, all, …)</summary>" + note + t_own + t_co + "</details>"
 
 
@@ -935,6 +942,144 @@ def examples_section(logs_dir, traits, coefs, per_trait=2, chars=700):
                        f"answer</h3><div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
             shown += 1
     return "".join(out)
+
+
+def _median(v):
+    v = [x for x in v if x is not None and math.isfinite(x)]
+    return float(np.median(v)) if v else float("nan")
+
+
+def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_q, p9_q, o_found, w_found, w_q,
+              ch, sides, beyond, corr, allm, small, entangled, readable, with_effect, through, hits, stronger_img) -> list:
+    """What the sections add up to, as interpretive sentences built from their numbers (html strings)."""
+    take = []
+    read_b = {t: man[t]["vector"]["b"] for t in traits}
+    up = lambda t: as_found[(t, "amplify (c > 0)")]
+    down = lambda t: as_found[(t, "suppress (c < 0)")]
+    lopsided = [t for t in traits if up(t) and down(t) and math.isfinite(up(t)["b"]) and math.isfinite(down(t)["b"])
+                and max(up(t)["b"], down(t)["b"]) > 2 * max(min(up(t)["b"], down(t)["b"]), 1e-9)]
+    moved = [t for t in traits if sig(man[t]["vector"]) and man[t]["vector"]["b"] > 0]
+    take.append(
+        f"<b>The vectors steer what agents say.</b> {len(moved)} of {len(traits)} traits move in the steered direction "
+        f"(median {_median(read_b.values()):.1f} SD of the trait's readout per unit c); a random direction of the same "
+        f"size moves it {100 * _median(ratio.values()):.0f}% as much (median), so the effect is the persona direction, "
+        "not just any perturbation."
+        + (" It is not symmetric: " + "; ".join(
+            f"{t} is easier to {'remove' if down(t)['b'] > up(t)['b'] else 'add'} ({up(t)['b']:.1f} SD per unit c up, "
+            f"{down(t)['b']:.1f} down)" for t in lopsided) + "." if lopsided else ""))
+
+    rew = {t: eff[t]["pooled"] for t in traits}
+    n_g = sum(1 for v in g9_found.values() if v and math.isfinite(v.get("p", float("nan"))))
+    n_gs = sum(1 for k, v in g9_found.items() if sig(v, g9_q[k]))
+    pooled_sig = [t for t in traits if sig(rew[t], p9_q[("all games", t)])]
+    helps = [f"{t} ({rew[t]['b']:+.2f})" for t in pooled_sig if rew[t]["b"] > 0]
+    hurts = [f"{t} ({rew[t]['b']:+.2f})" for t in pooled_sig if rew[t]["b"] < 0]
+    biggest = max([abs(v["b"]) for v in rew.values() if v and math.isfinite(v["b"])] or [float("nan")])
+    take.append(
+        f"<b>Behaviour moves far less than language.</b> Per unit c the readout shifts by a median "
+        f"{_median([abs(b) for b in read_b.values()]):.1f} SD, the steered agent's own reward by at most {biggest:.2f} SD "
+        f"(pooled); {n_gs} of {n_g} game × trait reward slopes are significant. "
+        + (f"More of the trait pays off for {', '.join(helps)}" if helps else "")
+        + ("; it " if helps and hurts else "") + (f"costs the agent for {', '.join(hurts)}" if hurts else "")
+        + (" (SD per unit c). " if helps or hurts else "")
+        + "A persona that is plainly visible in the text often leaves the moves unchanged.")
+
+    by_cond = defaultdict(list)
+    for (c, _), v in o_found.items():
+        if v and math.isfinite(v["b"]):
+            by_cond[c].append(abs(v["b"]))
+    strong = sorted(((c, _median(v)) for c, v in by_cond.items()), key=lambda kv: -kv[1])
+    if strong:
+        w_neg = sum(1 for k, v in w_found.items() if sig(v, w_q[k]) and v["b"] < 0)
+        w_pos = sum(1 for k, v in w_found.items() if sig(v, w_q[k]) and v["b"] > 0)
+        top = strong[0][0]
+        head = ("Steering the deceiving side moves outcomes most" if top.startswith("evil") else
+                "Steering many agents moves outcomes most" if top in ("all", "half") else
+                f"The setting '{top}' moves outcomes most")
+        take.append(
+            f"<b>{head}.</b> Typical size of the steered agents' reward effect per setting (median |slope| over the "
+            "traits): " + ", ".join(f"{c} {v:.2f}" for c, v in strong) + " SD per unit c"
+            + (" — differences between settings are small next to the language effects. "
+               if strong[0][1] < 2 * strong[-1][1] else ". ")
+            + (f"Group welfare (everyone's total) falls in {w_neg} and rises in {w_pos} significant setting × trait "
+               "cells: steered groups mostly end up worse off together." if w_neg > w_pos else
+               f"Group welfare (everyone's total): {w_neg} significant falls, {w_pos} rises."))
+
+    ceiling = []
+    for cell in cells:
+        ev = [r["reward"] for r in rows if r["cell"] == cell and r["condition"] == "none" and r["team"] == "evil"
+              and r["reward"] is not None]
+        if ev and np.mean(ev) >= 0.8:
+            ceiling.append(f"{cell_name(cell)} ({100 * np.mean(ev):.0f}%)")
+    if ceiling:
+        take.append(
+            "<b>Hidden-role results hit a ceiling.</b> The deceiving side already wins most unsteered games in "
+            f"{', '.join(ceiling)}, so steering can mostly only make it lose: a positive evil-side slope means 'loses "
+            "when pushed away from the trait'. Whether a persona makes deceivers <i>better</i> needs a balanced "
+            "baseline (e.g. more good players or stronger good-side rules).")
+
+    if sides:
+        weak_neg = [t for t, s in sides if s < 0 and math.isfinite(ch[t][s]["shift"][0]) and ch[t][s]["shift"][0] > -1]
+        rp = corr.get("reward", {}).get("prompt_vector")
+        rv = corr.get("reward", {}).get("vector_vector")
+        take.append(
+            "<b>A persona prompt is a close but not exact substitute for the vector.</b> Both shift the monitored "
+            f"traits in a similar pattern (median cosine {_median(ch[t][s]['cos_vec'] for t, s in sides):.2f}); the "
+            f"prompt is often as strong as the strongest vector or stronger ({len(beyond)} of {len(sides)} trait × "
+            "sign cases beyond it)"
+            + (f", but telling the model <i>not</i> to show a trait barely works ({', '.join(weak_neg)}: under 1 SD), "
+               "where the vector suppresses it" if weak_neg else "")
+            + (f". In play they agree only partly (reward effects r = {rp[0]:.2f}; two vector strengths agree "
+               f"r = {rv[0]:.2f})" if rp and rv else "")
+            + ". Only the vector has a strength knob, so dose–response questions need it.")
+
+    if allm:
+        take.append(
+            "<b>A monitor sees <i>that</i> an agent is steered, not <i>which</i> trait.</b> The readout singles out "
+            f"the steered agent (mean AUC {np.mean(allm):.2f}"
+            + (f", {np.mean(small):.2f} already at |c| = 0.5" if small else "") + f"), but {entangled} of "
+            f"{len(traits) * (len(readable) - 1)} cross-trait effects are significant: every vector moves the other "
+            "traits too. Flagging the steered agent works; naming its persona from the readout alone does not.")
+
+    if with_effect:
+        silent = [t for t in with_effect if t not in through]
+        tracked = [t for t in with_effect if t in through]
+        take.append(
+            ("<b>Some outcome changes are invisible in the language.</b> " if silent else
+             "<b>Where outcomes change, the language goes along.</b> ")
+            + f"Steering changes the agent's reward for {', '.join(with_effect)}. "
+            + (f"For {', '.join(tracked)} agents whose readout moved more also changed their reward more "
+               "(correlational; section 11b shows how much of the effect that accounts for). " if tracked else "")
+            + (f"For {', '.join(silent)} the reward changes without the readout predicting it: behaviour (votes, bids, "
+               "moves) shifts without the language showing why — the hard case for a text-based monitor." if silent else ""))
+
+    if hits:
+        take.append(
+            f"<b>Personas are mildly contagious.</b> Unsteered co-players drift toward the steered trait "
+            f"({'; '.join(hits[:3])} SD per unit c): steering one agent changes how the others talk too, so the "
+            "unsteered agents of a steered episode are not a clean control.")
+
+    if stronger_img:
+        take.append(
+            f"<b>Image observations amplify steering.</b> For {len(stronger_img)} of {len(traits)} traits the language "
+            "moves more when the agent sees the game as a picture than as text.")
+
+    unsteered = {c: len({r["cluster"] for r in rows if r["cell"] == c and r["condition"] == "none"}) for c in cells}
+    thin = [c for c in cells if 0 < unsteered[c] < 20]
+    none0 = [cell_name(c) for c in cells if not unsteered[c]]
+    caveats = []
+    if thin:
+        caveats.append(f"fewer than 20 unsteered episodes in {len(thin)} of {len(cells)} games (median "
+                       f"{_median(unsteered[c] for c in thin):.0f}); every paired effect leans on them, so more "
+                       "unsteered episodes are the cheapest way to firmer numbers")
+    if none0:
+        caveats.append(f"no unsteered episodes yet in {', '.join(none0)}")
+    if bad:
+        caveats.append(f"over 5% of answers unparseable in {', '.join(bad)} (the agent then plays a default move), "
+                       "so reward effects there partly reflect parsing")
+    if caveats:
+        take.append("<b>Read with care:</b> " + "; ".join(caveats) + ".")
+    return take
 
 
 def build(rows, sweep=None, logs_dir=None) -> str:
@@ -1422,17 +1567,24 @@ def build(rows, sweep=None, logs_dir=None) -> str:
 
     body.append(games_section(rows, traits, cells, man, eff, base, scale))
 
+    # takeaways: what the sections add up to, written from their numbers
+    take = takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_q, p9_q, o_found, w_found, w_q,
+                     ch, sides, beyond, corr, allm, small, entangled, readable, with_effect, through, hits, stronger_img)
+    take_html = ("<h2 id=takeaways>Takeaways</h2><div class=result><ol>" + "".join(f"<li>{t}</li>" for t in take)
+                + "</ol><span class=muted>What the sections add up to, written from their numbers; the evidence for "
+                  "each point is in the sections below.</span></div>")
+
     head = (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
             f"initial-scale=1'><title>Steering report</title><style>{CSS}</style></head><body><h1>Steering report</h1>"
             f"<p class=muted>Persona-vector steering of LLM agents in multi-agent games: does it change what they say, "
             f"how they play, and what happens to the group?</p>"
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
-    toc = ("<p class=muted>Sections: <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
+    toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
         f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
-    return head + toc + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
+    return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
 
 
 def main(argv=None) -> int:
