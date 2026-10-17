@@ -601,7 +601,8 @@ def slope_cell(s, q=None):
     return f'<td{heat(s["b"], s["se"])} title="{tip}">{fmt(s["b"], 2)}<span class="sig">{stars(q if q is not None else s["p"])}</span></td>'
 
 
-def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None):
+def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None, notes=None):
+    """`notes`: {series: text} shown when hovering that series' line (e.g. its fitted slope)."""
     """series: {name: [(x, mean, half_ci)]} -> SVG with axes, labels and a zero line."""
     pts = [p for s in series.values() for p in s if math.isfinite(p[1])]
     if not pts:
@@ -631,8 +632,11 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
         c = colours.get(name, "currentColor")
         dash = ' stroke-dasharray="4 3"' if name == "random" else ""
         if len(s) > 1 and name != "prompt":
-            parts.append(f'<polyline fill="none" stroke="{c}" stroke-width="1.8"{dash} points="'
-                         + " ".join(f"{sx(x):.1f},{sy(m):.1f}" for x, m, _ in s) + '"/>')
+            pts_ = " ".join(f"{sx(x):.1f},{sy(m):.1f}" for x, m, _ in s)
+            parts.append(f'<polyline fill="none" stroke="{c}" stroke-width="1.8"{dash} points="{pts_}"/>')
+            if notes and name in notes:  # a wide invisible copy: an easy hover target with the line's note
+                parts.append(f'<polyline fill="none" stroke="{c}" stroke-opacity="0" stroke-width="9" points="{pts_}">'
+                             f'<title>{html.escape(notes[name])}</title></polyline>')
         for x, m, h in s:
             if math.isfinite(h):
                 parts.append(f'<line x1="{sx(x):.1f}" x2="{sx(x):.1f}" y1="{sy(m - h):.1f}" y2="{sy(m + h):.1f}" '
@@ -1290,6 +1294,49 @@ def _shape(fit, q1, q2, cmax):
     return ""
 
 
+def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8):
+    """Slopes as dots with 95% CIs: groups = [(label, [(series, slope dict, q)])], one row per series, rows grouped
+    under their label; hover a dot for its numbers."""
+    items = [(g, s, d, q) for g, ss in groups for s, d, q in ss if math.isfinite(d.get("b", float("nan")))]
+    if not items:
+        return "<p class=muted>no data yet</p>"
+    ci = lambda d: 1.96 * d["se"] if math.isfinite(d.get("se", float("nan"))) else 0.0
+    lo = min([d["b"] - ci(d) for _, _, d, _ in items] + [0])
+    hi = max([d["b"] + ci(d) for _, _, d, _ in items] + [0])
+    lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
+    L, R, T = 120, 12, 6
+    n_rows = sum(len(ss) for _, ss in groups)
+    height = T + n_rows * row + len(groups) * gap + 34
+    sx = lambda v: L + (v - lo) / (hi - lo) * (width - L - R)
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" style="max-width:{width}px" role="img" '
+             f'aria-label="{html.escape(xlabel)}">',
+             f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - 30}" stroke="currentColor" '
+             f'stroke-opacity=".35" stroke-dasharray="2 2"/>']
+    y = T
+    for g, ss in groups:
+        y += gap
+        parts.append(f'<text x="4" y="{y + row * len(ss) / 2 + 3:.1f}" font-weight="600">{html.escape(g)}</text>')
+        for s, d, q in ss:
+            yc = y + row / 2
+            if math.isfinite(d.get("b", float("nan"))):
+                c, h = colour.get(s, "currentColor"), ci(d)
+                faint = "" if sig(d, q) else ' fill-opacity=".45"'
+                tip = (f"{g} · {s}: {d['b']:+.3f} per unit c ± {h:.3f} (95% CI), n={d.get('n')}, "
+                       f"episodes={d.get('clusters', '?')}, p={fmt(d.get('p'), 4)}, q={fmt(q, 4)}")
+                parts.append(f'<g><title>{html.escape(tip)}</title>'
+                             f'<rect x="{L}" y="{y:.1f}" width="{width - L - R}" height="{row}" fill="transparent"/>'
+                             f'<line x1="{sx(d["b"] - h):.1f}" x2="{sx(d["b"] + h):.1f}" y1="{yc:.1f}" y2="{yc:.1f}" '
+                             f'stroke="{c}" stroke-width="2" stroke-opacity=".7"/>'
+                             f'<circle cx="{sx(d["b"]):.1f}" cy="{yc:.1f}" r="{4.5 if sig(d, q) else 3}" fill="{c}"'
+                             f'{faint}/></g>')
+            y += row
+    for v in (lo, 0, hi):
+        parts.append(f'<text x="{sx(v):.1f}" y="{height - 18}" text-anchor="middle">{v:.2g}</text>')
+    parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def setting_charts(own_all, traits, cells) -> str:
     """Per game: one chart per trait, the steered agents' reward change over c, one line per setting."""
     shown = [c for c in SETTING_ORDER if c not in ("all_random", "prompt_one", "prompt_all", "evil_team_prompt")][:7]
@@ -1299,7 +1346,19 @@ def setting_charts(own_all, traits, cells) -> str:
         if r["condition"] in colour and r["coef"] is not None:
             pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][0].append(r["diff"])
             pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][1].append(r["cluster"])
-    out = ["<h3>Per game and setting</h3><p class=muted>Each game: one chart per trait; each line one setting "
+    fits = {}  # (cell, trait, setting) -> slope of the reward change over c (game units), BH over all of them
+    for k, by_c in pts.items():
+        xs = [x for x, v in by_c.items() for _ in v[0]]
+        fits[k] = slope(xs, [d for v in by_c.values() for d in v[0]], [cl for v in by_c.values() for cl in v[1]])
+    keys = list(fits)
+    qs = dict(zip(keys, bh([fits[k]["p"] for k in keys])))
+    note = lambda k: (f"{k[2]}: slope {fits[k]['b']:+.3f} per unit c (SE {fmt(fits[k]['se'])}, q {fmt(qs[k], 4)}"
+                      f"{', significant' if sig(fits[k], qs[k]) else ''})")
+    out = ["<h3>Per game and setting</h3><p class=muted>Each game: first an overview of the slopes (reward change "
+           "per unit c, one dot per trait × setting with its 95% CI; large dots = significant after Benjamini–Hochberg "
+           "over all game × trait × setting slopes; hover a dot for the numbers), then one chart per trait with one "
+           "line per setting (hover a line for its slope; the slopes are also listed under each chart). "
+           "Each game: one chart per trait; each line one setting "
            "(who is steered), the steered agents' mean reward change vs the same seats in the unsteered episode with the "
            "same seed, in the game's own reward units, with 95% CIs; c = 0 is the unsteered reference. Lines that "
            "diverge = the same trait at the same strength pays off differently depending on who carries it.</p>"]
@@ -1313,10 +1372,19 @@ def setting_charts(own_all, traits, cells) -> str:
             series = {c: [(x, *mean_ci(*v)[:2]) for x, v in sorted(pts[(cell, t, c)].items())]
                       + [(0.0, 0.0, float("nan"))] for c in here if (cell, t, c) in pts}
             if series:
+                listed = " · ".join(
+                    f'<span style="color:{colour[c]}">■</span> {html.escape(c)} {fits[(cell, t, c)]["b"]:+.2f}'
+                    f'<span class=sig>{stars(qs[(cell, t, c)])}</span>' for c in here if (cell, t, c) in fits
+                    and math.isfinite(fits[(cell, t, c)]["b"]))
                 charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
-                              f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour)}</div>")
+                              f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour, notes={c: note((cell, t, c)) for c in series if (cell, t, c) in fits})}"
+                              f"<div class=muted style='font-size:12px'>slope per unit c: {listed}</div></div>")
+        forest = forest_chart([(t, [(c, fits[(cell, t, c)], qs[(cell, t, c)]) for c in here if (cell, t, c) in fits])
+                               for t in traits], colour, "slope: reward change per unit c (game units)")
         out.append(f"<details><summary>{html.escape(cell_name(cell))}: reward change per setting</summary>"
-                   f"<div class=legend>{legend}<span>bars: 95% CI</span></div><div class=charts>{''.join(charts)}</div></details>")
+                   f"<div class=legend>{legend}<span>bars: 95% CI</span></div>"
+                   f"<div class=chart><h3>Slopes, all traits × settings</h3>{forest}</div>"
+                   f"<div class=charts>{''.join(charts)}</div></details>")
     return "".join(out)
 
 
