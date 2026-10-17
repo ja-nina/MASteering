@@ -44,7 +44,7 @@ def test_dynamics_actions_dose_response(tmp_path):
     s14 = page[page.index("id=s14"):page.index("id=s15")]
     s15 = page[page.index("id=s15"):page.index("id=s16")]
     s16 = page[page.index("id=s16"):page.index("id=games")]
-    assert "<b>fades</b> over the episode for: evil" in s14
+    assert "<b>fades</b> over the episode (by ≥ 10% of its early effect) for: evil" in s14
     assert "mean numeric choice" in s15 and "evil → mean numeric choice +" in s15
     assert "share &#x27;approve&#x27;" in s15 or "share 'approve'" in s15
     assert "∩ peaks at c ≈ +0." in s16
