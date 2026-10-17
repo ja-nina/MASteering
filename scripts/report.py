@@ -21,6 +21,17 @@ Reads the agent-episode rows of summarize_runs.py and answers, per trait and per
                      much of the steering effect on reward the readout accounts for)
   12 text vs image   the same games with image observations
   13 coherence       unparseable answers and answer length vs coefficient
+  14 over the episode the readout per third of the agent's turns: does the persona fade, does contagion build
+  15 actions         numeric choices and action shares (votes, bids, play/discard/hint) per unit c
+  16 dose-response   the reward curve over c per game x trait: rising, saturating, peaked
+  17 footprint       each vector's effect on all monitored personas, not only its own trait
+  18 naming          can a classifier name the injected trait from the readout (held-out episodes)
+  19 prompt + vector both together vs each alone: additive, reinforcing or competing
+  20 length          readout slope with answer length held fixed
+  21 group           group size vs one agent's effect; everyone steered vs one steered (welfare)
+  22 role            the same persona on the deceiving vs the honest side
+  23 natural         unsteered agents' trait-reward correlation vs the steered effect
+  24 risk, tempo     spread of reward changes by |c|; game length when everyone is steered
 Slopes come with standard errors clustered by episode; p-values (normal approximation) are
 Benjamini-Hochberg corrected over all cells of a table (q). Pooled slopes across games use game
 fixed effects; for rewards, each game's rewards are first scaled by its unsteered reward SD.
@@ -69,6 +80,7 @@ def load(path) -> list:
             "steered": r.get("steered") == "True", "team": r.get("team") or None,
             "reward": num("reward"), "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
             "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
+            "players": num("players"), "episode_turns": num("episode_turns"),
             "monitor_layer": num("monitor_layer"), "steer_layer": num("steer_layer"),
             "mon": {k[4:]: float(v) for k, v in r.items() if k.startswith("mon_") and v not in (None, "")
                     and not k.startswith(("mon_early_", "mon_mid_", "mon_late_"))},
@@ -1370,6 +1382,516 @@ def dose_response_section(steered, traits, cells, scale):
                    "than levels. Hover a table cell for the fitted coefficients. Shapes need data "
                    "at ≥ 4 coefficients.", f, "".join(charts) + "".join(tab) + "".join(per_game))
 
+# ---------------------------------------------------------------- 17-24: more analyses of the same rows
+
+def _single_vector(r):
+    """The steered agent of a one-agent persona-vector condition (no side, no prompt, no random control)."""
+    return r["steered"] and r["via"] == "vector" and not r["random"] and r["select"] == "one" and r["team_cond"] is None
+
+
+def _by(rows, key):
+    out = defaultdict(list)
+    for r in rows:
+        out[key(r)].append(r)
+    return out
+
+
+def _rank_corr(x, y):
+    """Spearman rank correlation."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    keep = np.isfinite(x) & np.isfinite(y)
+    if keep.sum() < 4:
+        return float("nan")
+    rx, ry = np.argsort(np.argsort(x[keep])), np.argsort(np.argsort(y[keep]))
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+def _value_td(v, h=None, scale=4.0, d=1):
+    """A table cell coloured by its value (red up, blue down); `h` = half CI shown in the tooltip."""
+    if v is None or not math.isfinite(v):
+        return "<td class=muted>–</td>"
+    a = max(-1.0, min(1.0, v / scale))
+    colour = "192,57,43" if a > 0 else "44,111,187"
+    tip = f" title='± {h:.2f} (95% CI)'" if h is not None and math.isfinite(h) else ""
+    return f'<td style="background:rgba({colour},{abs(a) * 0.55:.2f})"{tip}>{v:+.{d}f}</td>'
+
+
+def footprint_section(rows, traits):
+    """17: what each vector does to all monitored personas, not only its own trait."""
+    sv = [r for r in rows if _single_vector(r)]
+    if not sv:
+        return [], section(17, "Footprint: what else does each vector change?", "", "", "", [], "")
+    cmax = max(abs(r["coef"]) for r in sv)
+    groups = _by([r for r in sv if abs(r["coef"]) == cmax], lambda r: (r["trait"], 1 if r["coef"] > 0 else -1))
+    monitored = sorted({u for r in sv for u in r["mon"]})
+    tab = [f"<div class=wrap><table><tr><th class=l>vector</th><th>own trait</th><th>own trait's rank (of {len(monitored)})</th>"
+           "<th class=l>moved most up</th><th class=l>moved most down</th></tr>"]
+    full = [f"<details><summary>All {len(monitored)} monitored personas (mean readout, SD units, at c = ±{cmax:g})</summary>"
+            "<div class=wrap><table><tr><th class=l>persona</th>"
+            + "".join(f"<th>{html.escape(t)} {'+' if s > 0 else '−'}</th>" for t in traits for s in (1, -1)) + "</tr>"]
+    fps, not_top = {}, []
+    for t in traits:
+        for s in (1, -1):
+            fp = fingerprint(groups.get((t, s), []))
+            fps[(t, s)] = fp
+            if t not in fp:
+                continue
+            order = sorted(fp, key=lambda u: -s * fp[u])
+            rank = order.index(t) + 1
+            if rank > 1:
+                not_top.append(f"{t} {'+' if s > 0 else '−'} (own trait ranks {rank}; {order[0]} moves most, {fp[order[0]]:+.1f})")
+            up = sorted(fp, key=lambda u: -fp[u])[:4]
+            down = sorted(fp, key=lambda u: fp[u])[:3]
+            tab.append(f"<tr><td class=l>{t} c = {s * cmax:+g}</td>{_value_td(fp[t])}<td>{rank}</td>"
+                       f"<td class=l>{', '.join(f'{u} {fp[u]:+.1f}' for u in up)}</td>"
+                       f"<td class=l>{', '.join(f'{u} {fp[u]:+.1f}' for u in down)}</td></tr>")
+    tab.append("</table></div>")
+    for u in monitored:
+        full.append(f"<tr><td class=l>{html.escape(u)}</td>"
+                    + "".join(_value_td(fps[(t, s)].get(u)) for t in traits for s in (1, -1)) + "</tr>")
+    full.append("</table></div></details>")
+    n_cases = sum(1 for k in fps if k[0] in fps[k])
+    f = [f"The steered trait is the most-moved of all {len(monitored)} monitored personas in "
+         f"{n_cases - len(not_top)} of {n_cases} vector × sign cases."]
+    if not_top:
+        f.append("Where another persona moves more than the steered one: " + "; ".join(not_top) + ".")
+    take = [f"<b>Each vector moves a whole persona, not one trait.</b> Over all {len(monitored)} monitored personas, the "
+            f"steered trait moves most in only {n_cases - len(not_top)} of {n_cases} cases (section 17)"
+            + (f"; e.g. {not_top[0]}" if not_top else "") + ": name a vector by its footprint, not its label."]
+    return take, section(17, "Footprint: what else does each vector change?",
+                         "The report so far reads 8 traits; the monitor reads all monitored personas. What does each "
+                         "persona vector do to the others — does 'evil' read as scheming, or as rude?",
+                         f"Steered agents of the one-agent persona-vector condition at the strongest coefficient (c = "
+                         f"±{cmax:g}): mean readout of every monitored persona, in SD units of the unsteered agents of "
+                         "the same game (as in section 2). The rank: where the steered trait itself comes among all "
+                         "personas, by movement in the steered direction.",
+                         "Rank 1 = the vector's strongest effect is its own trait. A high rank means the label "
+                         "undersells what the vector does: read 'moved most' as its actual content. The collapsible "
+                         "table has every persona × vector.", f, "".join(tab) + "".join(full))
+
+
+def naming_section(rows, traits):
+    """18: can the monitor name the steered trait (not only flag the agent)?"""
+    sv = [r for r in rows if _single_vector(r) and r["mon"]]
+    if len(sv) < 100:
+        return [], section(18, "Naming the trait: can a monitor tell which persona was injected?", "", "", "", [], "")
+    monitored = sorted({u for r in sv for u in r["mon"]})
+
+    def classify(us):
+        X = np.nan_to_num(np.array([[r["mon"].get(u, 0.0) for u in us] for r in sv]))
+        classes = sorted({(r["trait"], r["coef"] > 0) for r in sv})
+        y = np.array([classes.index((r["trait"], r["coef"] > 0)) for r in sv])
+        fold = np.array([r["episode"] % 2 for r in sv])  # held-out deals: episodes share seeds across conditions
+        pred = np.zeros(len(sv), int)
+        for k in (0, 1):
+            tr, te = fold != k, fold == k
+            C = np.stack([X[tr & (y == j)].mean(0) if (tr & (y == j)).any() else np.full(len(us), 1e6)
+                          for j in range(len(classes))])
+            pred[te] = (-2 * X[te] @ C.T + (C * C).sum(1)).argmin(1)
+        return np.array([classes[j][0] for j in pred])
+
+    truth = np.array([r["trait"] for r in sv])
+    pred = classify(monitored)
+    pred8 = classify(traits)
+    absc = np.array([abs(r["coef"]) for r in sv])
+    acc = lambda m: float((pred[m] == truth[m]).mean()) if m.any() else float("nan")
+    chance = 1 / len(traits)
+    by_c = {c: acc(absc == c) for c in sorted(set(absc))}
+    tab = ["<h3>Accuracy by steering strength</h3><div class=wrap><table><tr><th class=l>|c|</th>"
+           + "".join(f"<th>{c:g}</th>" for c in by_c) + "<th>all</th></tr><tr><td class=l>trait named correctly</td>"
+           + "".join(f"<td>{100 * v:.0f}%</td>" for v in by_c.values()) + f"<td>{100 * acc(absc > 0):.0f}%</td></tr></table></div>"]
+    tab.append("<h3>Confusion: true trait (rows) → named trait (columns), % of the row</h3><div class=wrap><table><tr>"
+               "<th class=l>true \\ named</th>" + "".join(f"<th>{t}</th>" for t in traits) + "</tr>")
+    recall = {}
+    for t in traits:
+        m = truth == t
+        shares = {u: float((pred[m] == u).mean()) if m.any() else float("nan") for u in traits}
+        recall[t] = shares[t]
+        tab.append(f"<tr><td class=l>{t}</td>" + "".join(
+            f"<td style='background:rgba(192,57,43,{0.6 * v:.2f})'>{100 * v:.0f}%</td>" if math.isfinite(v)
+            else "<td>–</td>" for v in shares.values()) + "</tr>")
+    tab.append("</table></div>")
+    sink = max(traits, key=lambda u: float((pred == u).mean()))
+    f = [f"Named correctly: {100 * acc(absc > 0):.0f}% of steered agents (chance {100 * chance:.0f}%); "
+         + ", ".join(f"{100 * v:.0f}% at |c| = {c:g}" for c, v in by_c.items()) + ".",
+         "Share of each trait's agents named right: " + ", ".join(f"{t} {100 * v:.0f}%" for t, v in
+                                                                  sorted(recall.items(), key=lambda kv: -kv[1])) + ".",
+         f"Most errors go to <b>{sink}</b> ({100 * float((pred == sink).mean()):.0f}% of all guesses): the shared persona "
+         "axis of section 3 makes it the default guess.",
+         f"With only the {len(traits)} steered traits' readouts instead of all {len(monitored)}: "
+         f"{100 * float((pred8 == truth).mean()):.0f}% — the other personas add little."]
+    take = [f"<b>Naming the persona is possible but unreliable.</b> From its readout alone, the injected trait is named "
+            f"right for {100 * acc(absc > 0):.0f}% of steered agents (chance {100 * chance:.0f}%; "
+            f"{100 * by_c[min(by_c)]:.0f}% at |c| = {min(by_c):g}); {min(recall, key=recall.get)} is hardest "
+            f"({100 * min(recall.values()):.0f}%) and most mistakes are named {sink} (section 18)."]
+    return take, section(18, "Naming the trait: can a monitor tell which persona was injected?",
+                         "Section 4 shows a monitor can flag the steered agent. Can it also say <i>which</i> persona "
+                         "was injected, and at what strength does that start to work?",
+                         f"Steered agents of the one-agent persona-vector condition. Each is described by its readout of "
+                         f"all {len(monitored)} monitored personas (SD units). A nearest-centroid classifier learns the "
+                         f"average readout of each trait × sign (16 classes: the monitor does not know whether the trait "
+                         "was pushed up or down) on even-numbered episodes and names the trait of agents in "
+                         "odd-numbered ones, and vice versa — the test deals were never seen in training.",
+                         "Accuracy above chance = the readout carries the persona's identity. The confusion table shows "
+                         "which traits are mistaken for which; a column that collects many errors is a 'default' "
+                         "persona the readout drifts to whatever is steered.", f, "".join(tab))
+
+
+def prompt_vector_section(rows, traits):
+    """19: persona prompt + vector together vs each alone."""
+    sv = [r for r in rows if _single_vector(r)]
+    if not sv:
+        return [], section(19, "Prompt and vector together: do they add up?", "", "", "", [], "")
+    cmax = max(abs(r["coef"]) for r in sv)
+    one = lambda via: [r for r in rows if r["steered"] and r["via"] == via and r["select"] == "one"
+                       and r["team_cond"] is None and not r["random"]]
+    vec, pr, both = _by([r for r in sv if abs(r["coef"]) == cmax], lambda r: (r["trait"], r["coef"] > 0)), \
+        _by(one("prompt"), lambda r: (r["trait"], (r["coef"] or 0) > 0)), \
+        _by([r for r in one("both") if abs(r["coef"]) == cmax], lambda r: (r["trait"], r["coef"] > 0))
+    m = lambda rs, t: mean_ci([r["mon"][t] for r in rs if t in r["mon"]], [r["cluster"] for r in rs if t in r["mon"]])
+    tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>side</th>"
+           f"<th>vector (c = ±{cmax:g})</th><th>prompt</th><th>both</th><th>vector + prompt</th><th>both ÷ (vector + prompt)</th></tr>"]
+    more, adds, less, against = [], [], [], []
+    for t in traits:
+        for up in (True, False):
+            k, s = (t, up), 1 if up else -1
+            v, p, b = m(vec.get(k, []), t), m(pr.get(k, []), t), m(both.get(k, []), t)
+            tot = v[0] + p[0]
+            ratio = b[0] / tot if math.isfinite(tot) and abs(tot) > 0.5 and s * tot > 0 else float("nan")
+            name = f"{t} {'+' if up else '−'}"
+            if math.isfinite(p[0]) and s * p[0] < 0:
+                against.append(f"{name} (prompt {p[0]:+.1f})")
+            if math.isfinite(b[0]) and math.isfinite(v[0]) and s * (b[0] - v[0]) < -2 * max(b[1], v[1]):
+                against.append(f"{name}: with the prompt the vector does less ({v[0]:+.1f} → {b[0]:+.1f})")
+            if math.isfinite(ratio):
+                (more if ratio > 1.25 else less if ratio < 0.8 else adds).append(f"{name} ({ratio:.2f})")
+            tab.append(f"<tr><td class=l>{t}</td><td>{'+' if up else '−'}</td>"
+                       + "".join(_value_td(x[0], x[1], scale=10) for x in (v, p, b))
+                       + _value_td(tot, None, scale=10)
+                       + (f"<td>{ratio:.2f}</td>" if math.isfinite(ratio) else "<td class=muted>–</td>") + "</tr>")
+    tab.append("</table></div>")
+    f = [f"Together they add up (ratio 0.8–1.25) for {len(adds)}, more than add for {len(more)}, less for {len(less)} "
+         "of the trait × side cases with a clear combined push."
+         + (f" More than additive: {'; '.join(more)}." if more else "") + (f" Less: {'; '.join(less)}." if less else "")]
+    if against:
+        f.append("Prompt working against the push: " + "; ".join(against)
+                 + ". A 'do not be X' instruction names X, and can prime what it forbids.")
+    take = [f"<b>Prompt and vector stack.</b> Given together, their effects on the readout roughly add or more than add "
+            f"({len(adds) + len(more)} of {len(adds) + len(more) + len(less)} cases, section 19)"
+            + (f"; but {against[0].split(' (')[0].split(':')[0]}: the negative prompt undercuts the vector" if against else "")
+            + ". For a strong persona, combine them; to suppress one, use the vector alone."]
+    return take, section(19, "Prompt and vector together: do they add up?",
+                         "If an agent gets the persona instruction AND the vector (condition both_one), is the persona "
+                         "the sum of the two, more (they reinforce), or less (they compete)?",
+                         f"The steered agent's readout of its own trait (SD units vs unsteered) in three one-agent "
+                         f"conditions: vector alone at c = ±{cmax:g}, persona prompt alone (+ = the trait's "
+                         "instruction, − = its opposite), both together at the same coefficient. 'vector + prompt' "
+                         "is what the two would give if they simply added.",
+                         "Ratio ≈ 1: additive. > 1: they reinforce each other. < 1: they overlap or compete. A prompt "
+                         "with the wrong sign (e.g. 'do not be sarcastic' reading more sarcastic) works against the "
+                         "instruction. Hover a cell for its 95% CI.", f, "".join(tab))
+
+
+def length_section(rows, traits):
+    """20: how much of the readout shift is the answer getting shorter or longer."""
+    tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>readout slope</th><th>answer length per unit c</th>"
+           "<th>readout slope, length held fixed</th><th>share of the shift that is not length</th></tr>"]
+    kept, out = {}, {}
+    base_by = _by([r for r in rows if r["condition"] == "none" and r["chars"]], lambda r: r["cell"])
+    for t in traits:
+        pts = [r for r in rows if is_vector(r, t) and r["team_cond"] is None and r["chars"] and t in r["mon"]]
+        pts += [r for c in {r["cell"] for r in pts} for r in base_by.get(c, []) if t in r["mon"]]
+        x = [r["coef"] if r["condition"] != "none" else 0.0 for r in pts]
+        y = [r["mon"][t] for r in pts]
+        ll = [math.log(max(r["chars"], 1.0)) for r in pts]
+        cl, fe = [r["cluster"] for r in pts], [r["cell"] for r in pts]
+        plain = slope(x, y, cl, fe)
+        held = ols(y, list(zip(x, ll)), cl, fe)[0]
+        ln = slope(x, ll, cl, fe)
+        share = held["b"] / plain["b"] if plain["b"] else float("nan")
+        kept[t], out[t] = share, ln["b"]
+        pct = 100 * (math.exp(ln["b"]) - 1) if math.isfinite(ln["b"]) else float("nan")
+        tab.append(f"<tr><td class=l>{t}</td>{slope_cell(plain)}<td>{pct:+.0f}%</td>{slope_cell(held)}"
+                   f"<td>{100 * share:.0f}%</td></tr>")
+    tab.append("</table></div>")
+    low = {t: v for t, v in kept.items() if math.isfinite(v) and v < 0.8}
+    f = [f"Holding answer length fixed keeps ≥ 80% of the readout shift for {len(traits) - len(low)} of {len(traits)} traits."]
+    if low:
+        f.append("Partly length: " + "; ".join(f"{t} ({100 * v:.0f}% left; answers {100 * (math.exp(out[t]) - 1):+.0f}% "
+                                                f"per unit c)" for t, v in low.items())
+                 + " — for these, part of what reads as the trait is answers getting shorter or longer.")
+    take = [f"<b>The readout is not just answer length.</b> Controlling for length keeps most of the shift for "
+            f"{len(traits) - len(low)} of {len(traits)} traits"
+            + (f"; for {', '.join(low)} about {100 * (1 - min(low.values())):.0f}% at most comes with the length change" if low else "")
+            + " (section 20)."]
+    return take, section(20, "Is the readout just answer length?",
+                         "Steering changes how long answers are (section 13). Is the trait readout really measuring "
+                         "the trait, or mostly that answers got shorter or longer?",
+                         "Steered agents (persona vector) and unsteered agents at c = 0, as in section 2. The readout "
+                         "slope over the coefficient, then the same slope in a regression that also contains the log of "
+                         "the agent's mean answer length (game fixed effects, SEs clustered by episode). Length per "
+                         "unit c: the change in answer length per unit coefficient.",
+                         "If 100% of the shift remains with length held fixed, length explains none of it. A low share "
+                         "means steering and the readout both move with length: the readout partly measures verbosity. "
+                         "This is a statistical control, not proof — length can itself be part of a persona (an "
+                         "assertive agent is brief).", f, "".join(tab))
+
+
+def group_section(rows, traits, steered, scale):
+    """21: does a group dilute one steered agent; is steering everyone the sum of steering one?"""
+    by_cell = _by(rows, lambda r: r["cell"])
+    own = _by([r for r in steered if r["condition"] == "one" and _single_vector(r)], lambda r: (r["cell"], r["trait"]))
+    size = {}
+    for cell, cr in by_cell.items():
+        if cr and cr[0].get("players"):
+            size[cell] = int(cr[0]["players"])
+    per = []
+    for (cell, t), rs in own.items():
+        if len(rs) < 50 or cell not in size:
+            continue
+        s = _diff_slope(rs, scale)
+        co = [r for r in by_cell[cell] if r["condition"] == "one" and not r["steered"] and r["trait"] == t and t in r["mon"]]
+        b0 = [r for r in by_cell[cell] if r["condition"] == "none" and t in r["mon"]]
+        k = slope([r["coef"] for r in co] + [0.0] * len(b0), [r["mon"][t] for r in co + b0], [r["cluster"] for r in co + b0])
+        per.append((size[cell], abs(s["b"]), k["b"]))
+    by_n = _by(per, lambda p: p[0])
+    tab = ["<h3>One steered agent, by group size</h3><div class=wrap><table><tr><th class=l>players</th><th>game × trait cells</th>"
+           "<th>median |own reward slope| (SD per unit c)</th><th>median contagion (co-players' readout, SD per unit c)</th></tr>"]
+    for n, ps in sorted(by_n.items()):
+        tab.append(f"<tr><td class=l>{n}</td><td>{len(ps)}</td><td>{statistics.median(p[1] for p in ps):.3f}</td>"
+                   f"<td>{statistics.median(p[2] for p in ps):+.3f}</td></tr>")
+    tab.append("</table></div>")
+    r_own = _rank_corr([p[0] for p in per], [p[1] for p in per])
+    r_con = _rank_corr([p[0] for p in per], [p[2] for p in per])
+    wel = welfare([r for r in rows if r["condition"] in ("one", "all") and r["via"] == "vector" and not r["random"]
+                   and r["team_cond"] is None], [r for r in rows if r["condition"] == "none"])
+    wb = _by(wel, lambda r: (r["cell"], r["trait"], r["condition"]))
+    pairs = []
+    for cell in sorted(size):
+        for t in traits:
+            a, o = wb.get((cell, t, "all"), []), wb.get((cell, t, "one"), [])
+            if len(a) >= 40 and len(o) >= 40:
+                pairs.append((cell, t, _diff_slope(o, None), _diff_slope(a, None)))
+    q = bh([p[3]["p"] for p in pairs] + [p[2]["p"] for p in pairs])
+    qa, qo = q[:len(pairs)], q[len(pairs):]
+    x = np.array([p[2]["b"] for p in pairs]); y = np.array([p[3]["b"] for p in pairs])
+    ok = np.isfinite(x) & np.isfinite(y)
+    k_one = float((x[ok] @ y[ok]) / (x[ok] @ x[ok])) if ok.any() and (x[ok] @ x[ok]) > 0 else float("nan")
+    nx = np.array([size[p[0]] * p[2]["b"] for p in pairs])
+    k_n = float((nx[ok] @ y[ok]) / (nx[ok] @ nx[ok])) if ok.any() and (nx[ok] @ nx[ok]) > 0 else float("nan")
+    flips = [(p, qa[i]) for i, p in enumerate(pairs) if sig(p[3], qa[i]) and (not sig(p[2], qo[i]) or
+             np.sign(p[2]["b"]) != np.sign(p[3]["b"])) and abs(p[3]["b"]) > 3 * abs(p[2]["b"])]
+    tab.append("<h3>Group welfare: everyone steered vs one steered (SD per unit c)</h3><div class=wrap><table><tr>"
+               "<th class=l>game</th><th>trait</th><th>players</th><th>one steered</th><th>players × one (if additive)</th>"
+               "<th>everyone steered</th></tr>")
+    for i, (cell, t, o, a) in enumerate(pairs):
+        if sig(a, qa[i]):
+            tab.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td><td>{t}</td><td>{size[cell]}</td>"
+                       f"{slope_cell(o, qo[i])}{_value_td(size[cell] * o['b'], None, scale=1, d=2)}{slope_cell(a, qa[i])}</tr>")
+    tab.append("</table></div>")
+    f = [f"One steered agent's own reward effect does not shrink in bigger groups (rank correlation with group size "
+         f"{r_own:+.2f}); its contagion {'weakens' if r_con < -0.1 else 'does not weaken'} with size ({r_con:+.2f}).",
+         f"Steering everyone changes group welfare by about {k_one:.2f}× the effect of steering one agent. If each "
+         f"steered agent added its own effect, it would be players × as much; it is {k_n:.2f} of that: effects do not "
+         f"add up across agents ({len(pairs)} game × trait cells)."]
+    if flips:
+        f.append("Where everyone steered does something one steered agent does not (all-steered effect > 3× the one-agent "
+                 "effect, and that one is not significant or has the other sign): "
+                 + "; ".join(f"{cell_name(p[0])} × {p[1]} (one {p[2]['b']:+.2f}, all {p[3]['b']:+.2f})" for p, _ in flips[:8])
+                 + ". A shared persona can break coordination that one agent with it does not.")
+    take = [f"<b>Steering everyone is not the sum of steering one.</b> The group's welfare moves about {k_one:.1f}× as much "
+            f"as with one steered agent, far from additive"
+            + (f"; in {len(flips)} game × trait cells the all-steered group changes where one steered agent does not (e.g. "
+               f"{cell_name(flips[0][0][0])} × {flips[0][0][1]})" if flips else "")
+            + ". Group size does not dilute one agent's own effect (section 21)."]
+    return take, section(21, "Group size and collective steering",
+                         "Does one steered agent matter less in a bigger group? And if every agent is steered, does the "
+                         "group change n times as much as with one?",
+                         "Top: per game × trait of the one-agent condition, the steered agent's reward slope (as in "
+                         "section 9, SD units) and the co-players' readout slope (contagion, as in section 8), by the "
+                         "game's number of players. Bottom: group welfare (everyone's total reward vs the unsteered "
+                         "episode with the same seed, as in section 7) per unit c, with one agent steered and with all "
+                         "steered; 'players × one' is what all-steered would give if each agent's effect simply added. "
+                         "The factors are least-squares ratios over all game × trait cells.",
+                         "Factor ≈ players: effects add. ≈ 1: steering everyone does about what steering one does. "
+                         "Rows of the bottom table: cells where steering everyone significantly changes welfare.",
+                         f, "".join(tab))
+
+
+def role_section(rows, traits, base, scale):
+    """22: the same persona on the deceiving vs the honest side."""
+    prs = paired(rows, base, lambda r: is_vector(r) and r["condition"] in ("evil_one", "good_one"))
+    cells_ = sorted({r["cell"] for r in prs})
+    if not cells_:
+        return [], section(22, "Same persona, opposite role", "", "", "", [], "")
+    by = _by(prs, lambda r: (r["cell"], r["trait"], r["condition"]))
+    cols = ["deceiver steered (evil_one)", "honest player steered (good_one)", "difference"]
+    out, take_hits, f, n_better = [], [], [], []
+    for cell in cells_:
+        def get(t, col):
+            e, g = _diff_slope(by.get((cell, t, "evil_one"), []), scale), _diff_slope(by.get((cell, t, "good_one"), []), scale)
+            if col != "difference":
+                return e if col == cols[0] else g
+            se = math.hypot(e["se"], g["se"])
+            b = e["b"] - g["b"]
+            p = math.erfc(abs(b / se) / math.sqrt(2)) if se and math.isfinite(se) and se > 0 else float("nan")
+            return {"b": b, "se": se, "p": p, "n": e["n"] + g["n"]}
+        tab, found, q = matrix(cell_name(cell), "trait", traits, cols, get)
+        out.append(tab)
+        better = sum(1 for t in traits if math.isfinite(found[(t, "difference")]["b"]) and found[(t, "difference")]["b"] > 0)
+        hits = [f"{t} ({found[(t, cols[0])]['b']:+.2f} as deceiver vs {found[(t, cols[1])]['b']:+.2f} as honest)"
+                for t in traits if sig(found[(t, "difference")], q[(t, "difference")])]
+        f.append(f"{cell_name(cell)}: steering the deceiver pays more than steering an honest player for {better} of "
+                 f"{len(traits)} traits" + (f"; significantly for {'; '.join(hits)}" if hits else "; no difference significant")
+                 + ".")
+        take_hits += [f"{cell_name(cell)}: {h.split(' (')[0]}" for h in hits]
+        n_better.append((better, len(traits)))
+    if take_hits:
+        take = [f"<b>A persona's payoff depends on the role.</b> In hidden-role games the same vector helps a deceiver "
+                f"more than an honest player ({'; '.join(take_hits)}; section 22): a friendlier or more opportunistic spy "
+                "blends in."]
+    else:
+        take = ["<b>Personas tend to pay off more for deceivers.</b> In every hidden-role game, steering a deceiver beats "
+                "steering an honest player for most traits (" + ", ".join(f"{b} of {n}" for b, n in n_better)
+                + "; section 22), but no single trait's difference survives correction yet: a direction, not a result."]
+    return take, section(22, "Same persona, opposite role",
+                         "In hidden-role games, does a persona help the deceiving side and the honest side alike, or "
+                         "does the same trait pay off for one role and not the other?",
+                         "The steered agent's reward vs the same seat in the unsteered episode with the same seed (SD "
+                         "units), per unit c, when one deceiver is steered (evil_one) and when one honest player is "
+                         "(good_one); the difference with its SE. BH within each game's table.",
+                         "Difference > 0 = the trait pays off more for a deceiver than for an honest player. Same sign "
+                         "in both columns = the trait helps or hurts regardless of role.", f, "".join(out))
+
+
+def natural_section(rows, traits, steered, scale):
+    """23: do agents that are naturally more X fare like agents steered toward X?"""
+    by_cell = _by(rows, lambda r: r["cell"])
+    own = _by([r for r in steered if r["condition"] == "one" and _single_vector(r)], lambda r: (r["cell"], r["trait"]))
+    res = []
+    for cell, cr in sorted(by_cell.items()):
+        b0 = [r for r in cr if r["condition"] == "none" and r["reward"] is not None]
+        sd = scale.get(cell, 1.0)
+        for t in traits:
+            u = [r for r in b0 if t in r["mon"]]
+            g = [r for r in own.get((cell, t), []) if t in r["mon"]]
+            if len(u) < 30 or len(g) < 50:
+                continue
+            obs = slope([r["mon"][t] for r in u], [r["reward"] / sd for r in u], [r["cluster"] for r in u])
+            rew = _diff_slope(g, scale)
+            z = slope([r["coef"] for r in g] + [0.0] * len(u), [r["mon"][t] for r in g + u], [r["cluster"] for r in g + u])
+            if math.isfinite(obs["b"]) and math.isfinite(rew["b"]) and z["b"] and math.isfinite(z["b"]):
+                res.append((cell, t, obs, rew, rew["b"] / z["b"]))
+    if not res:
+        return [], section(23, "Natural vs steered: does the correlation predict the intervention?", "", "", "", [], "")
+    q = bh([x[2]["p"] for x in res] + [x[3]["p"] for x in res])
+    qo, qr = q[:len(res)], q[len(res):]
+    agree = float(np.mean([np.sign(x[2]["b"]) == np.sign(x[4]) for x in res]))
+    both = [(x, qo[i], qr[i]) for i, x in enumerate(res) if sig(x[2], qo[i]) and sig(x[3], qr[i])]
+    rc = _rank_corr([x[2]["b"] for x in res], [x[4] for x in res])
+    med_o = statistics.median(abs(x[2]["b"]) for x in res)
+    med_c = statistics.median(abs(x[4]) for x in res)
+    n_obs = sum(1 for i, x in enumerate(res) if sig(x[2], qo[i]))
+    opp = [x for x, _, _ in both if np.sign(x[2]["b"]) != np.sign(x[4])]
+    pts = [(x[2]["b"], x[4], f"{cell_name(x[0])} × {x[1]}" + ("+" if np.sign(x[2]["b"]) == np.sign(x[4]) else ""))
+           for x in res]
+    tab = ["<div class=charts><div class=chart><h3>Each point: a game × trait</h3>"
+           + scatter_chart(pts, "natural: reward per SD of readout", "steered: reward per SD of readout") + "</div></div>"
+           "<div class=wrap><table><tr><th class=l>game</th><th>trait</th><th>natural (unsteered agents)</th>"
+           "<th>steered (reward per unit c)</th><th>steered, per SD of readout moved</th></tr>"]
+    for i, x in enumerate(res):
+        if sig(x[2], qo[i]) or sig(x[3], qr[i]):
+            tab.append(f"<tr><td class=l>{html.escape(cell_name(x[0]))}</td><td>{x[1]}</td>{slope_cell(x[2], qo[i])}"
+                       f"{slope_cell(x[3], qr[i])}<td>{x[4]:+.3f}</td></tr>")
+    tab.append("</table></div>")
+    f = [f"{len(res)} game × trait cells. Among unsteered agents the trait's readout goes with reward significantly in "
+         f"{n_obs}; the steered effect is significant in {sum(1 for i, x in enumerate(res) if sig(x[3], qr[i]))}.",
+         f"The two agree in sign in {100 * agree:.0f}% of cells (50% = chance); rank correlation {rc:+.2f}. Per SD of "
+         f"readout, the natural association is {med_o:.3f} SD of reward (median), the steered effect {med_c:.3f}: "
+         f"{med_o / med_c if med_c else float('nan'):.0f}× smaller.",
+         f"Both significant in {len(both)} cell{'s' if len(both) != 1 else ''}, with opposite signs in {len(opp)}"
+         + (": " + "; ".join(f"{cell_name(x[0])} × {x[1]} (natural {x[2]['b']:+.2f}, steered {x[4]:+.3f})" for x in opp[:5])
+            if opp else "") + "."]
+    take = [f"<b>Correlation is not causation here.</b> Agents that naturally sound more like a trait do not fare like agents "
+            f"steered toward it: the signs agree in {100 * agree:.0f}% of game × trait cells (chance 50%) and the natural "
+            f"association is about {med_o / med_c if med_c else float('nan'):.0f}× larger per SD (section 23). The game "
+            "situation shapes both how an agent talks and whether it wins; only the intervention shows what the persona "
+            "itself does."]
+    return take, section(23, "Natural vs steered: does the correlation predict the intervention?",
+                         "Without steering, one could correlate how agents talk with how they fare. Do agents that are "
+                         "naturally more X do as well as agents steered toward X?",
+                         "Natural: among unsteered agents of a game, the slope of reward (SD units) on the trait's "
+                         "readout (SD units). Steered: the reward effect of the one-agent persona vector per unit c "
+                         "(as in section 9), divided by how far that moves the readout per unit c (section 2), giving "
+                         "reward per SD of readout. Both per game × trait; BH across all cells.",
+                         "If the readout captured a cause of winning, both would agree in sign and size (points on the "
+                         "diagonal). Points off the diagonal, or in the other-sign quadrants, are correlations the "
+                         "intervention does not reproduce: confounded by the game's course (a losing agent talks "
+                         "differently; in hidden-role games the role itself sets both how an agent talks and whether "
+                         "it wins). Table: cells where either side is significant.", f, "".join(tab))
+
+
+def risk_tempo_section(rows, traits, steered, scale):
+    """24: does steering make outcomes more variable; do steered games run longer or shorter?"""
+    sv = [r for r in steered if _single_vector(r) and r["coef"] is not None]
+    by_c = _by(sv, lambda r: abs(r["coef"]))
+    tab = ["<h3>Spread of the steered agent's reward change (SD units), by |c|</h3><div class=wrap><table><tr>"
+           "<th class=l>|c|</th>" + "".join(f"<th>{c:g}</th>" for c in sorted(by_c)) + "</tr><tr><td class=l>SD</td>"]
+    sds = {}
+    for c, rs in sorted(by_c.items()):
+        v = [r["diff"] / scale.get(r["cell"], 1.0) for r in rs]
+        sds[c] = float(np.std(v)) if len(v) > 1 else float("nan")
+        tab.append(f"<td title='n={len(v)}'>{sds[c]:.2f}</td>")
+    tab.append("</tr></table></div>")
+    cell_sd = _by(sv, lambda r: (r["cell"], r["trait"]))
+    lo_c, hi_c = (min(by_c), max(by_c)) if by_c else (None, None)
+    grow = tot = 0
+    for rs in cell_sd.values():
+        a = [r["diff"] for r in rs if abs(r["coef"]) == lo_c]
+        b = [r["diff"] for r in rs if abs(r["coef"]) == hi_c]
+        if len(a) > 10 and len(b) > 10:
+            tot += 1
+            grow += np.std(b) > np.std(a)
+    eps = {r["cluster"]: r for r in rows if (r["condition"] == "all" and r["via"] == "vector" and not r["random"]
+                                            and r["team_cond"] is None) or r["condition"] == "none"}
+    eps = [r for r in eps.values() if r.get("episode_turns")]
+    base_tr = [r["truncated"] for r in eps if r["condition"] == "none"]
+    tab.append("<h3>Game length when every agent is steered</h3><div class=wrap><table><tr><th class=l>trait</th>"
+               "<th>episode length per unit c</th><th>cut off at the turn limit, |c| = " + f"{hi_c:g}" + "</th></tr>")
+    fast = []
+    for t in traits:
+        pts = [r for r in eps if r["trait"] == t or r["condition"] == "none"]
+        s = slope([r["coef"] if r["condition"] != "none" else 0.0 for r in pts],
+                  [math.log(r["episode_turns"]) for r in pts], [r["cluster"] for r in pts], [r["cell"] for r in pts])
+        tr = [r["truncated"] for r in pts if r["coef"] is not None and abs(r["coef"]) == hi_c]
+        pct = 100 * (math.exp(s["b"]) - 1) if math.isfinite(s["b"]) else float("nan")
+        if sig(s) and abs(pct) >= 3:
+            fast.append(f"{t} ({pct:+.1f}%)")
+        tab.append(f"<tr><td class=l>{t}</td><td title='SE {fmt(s['se'])} (log scale), p {fmt(s['p'], 4)}'>{pct:+.1f}%"
+                   f"<span class=sig>{stars(s['p'])}</span></td><td>{100 * np.mean(tr) if tr else float('nan'):.1f}%</td></tr>")
+    tab.append("</table></div>")
+    ratio = sds[hi_c] / sds[lo_c] if lo_c in sds and sds[lo_c] else float("nan")
+    f = [f"Spread of the reward change: SD {sds.get(lo_c, float('nan')):.2f} at |c| = {lo_c:g}, {sds.get(hi_c, float('nan')):.2f} "
+         f"at |c| = {hi_c:g} ({ratio:.2f}×); it grows from the weakest to the strongest coefficient in {grow} of {tot} "
+         "game × trait cells. Steering shifts outcomes; it does not make them more erratic."
+         if math.isfinite(ratio) and ratio < 1.15 else
+         f"Spread of the reward change grows with strength: SD {sds.get(lo_c, float('nan')):.2f} → {sds.get(hi_c, float('nan')):.2f} "
+         f"({ratio:.2f}×), in {grow} of {tot} cells.",
+         ("Games change length by ≥ 3% per unit c when everyone is steered for: " + "; ".join(fast) + "." if fast else
+          "Steering everyone changes game length by less than 3% per unit c for every trait.")
+         + f" Unsteered games are cut off at the turn limit in {100 * np.mean(base_tr) if base_tr else float('nan'):.1f}% of cases."]
+    take = []
+    return take, section(24, "Risk and tempo",
+                         "Besides shifting the average outcome, does steering make outcomes more variable (riskier)? "
+                         "And do steered groups play faster or slower?",
+                         "Risk: the standard deviation of the steered agent's reward change (one-agent persona vector, "
+                         "SD units, as in section 9) at each |c|, pooled, and per game × trait between the weakest and "
+                         "the strongest coefficient. Tempo: per episode with every agent steered, the log of the number "
+                         "of turns over the coefficient (game fixed effects; shown as % per unit c), and the share of "
+                         "episodes stopped at the turn limit at the strongest coefficient.",
+                         "A rising SD = stronger steering makes the agent's results less predictable. Negative length = "
+                         "games end sooner (decisions faster, or an early loss).", f, "".join(tab))
+
 
 def build(rows, sweep=None, logs_dir=None) -> str:
     rows = zscored(rows)
@@ -1856,7 +2378,10 @@ def build(rows, sweep=None, logs_dir=None) -> str:
 
     late_take = []
     for part in (over_episode_section(rows, traits), actions_section(rows, traits, cells),
-                 dose_response_section(steered, traits, cells, scale)):
+                 dose_response_section(steered, traits, cells, scale), footprint_section(rows, traits),
+                 naming_section(rows, traits), prompt_vector_section(rows, traits), length_section(rows, traits),
+                 group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
+                 natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale)):
         late_take += part[0]
         body.append(part[1])
     body.append(games_section(rows, traits, cells, man, eff, base, scale))
@@ -1877,7 +2402,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
