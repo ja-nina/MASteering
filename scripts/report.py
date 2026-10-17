@@ -541,9 +541,11 @@ def _top(fp, sign, k=3):
 
 CSS = """
 :root { --bg:#fff; --fg:#1d1d1f; --muted:#6b6b70; --line:#e3e3e6; --pos:#c0392b; --neg:#2c6fbb; --card:#f6f6f7;
-  --rnd:#8a8a90; --warn:#fff4d6; --ok:#e9f6ec; }
+  --rnd:#8a8a90; --warn:#fff4d6; --ok:#e9f6ec;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; }
 @media (prefers-color-scheme: dark) { :root { --bg:#151517; --fg:#ececee; --muted:#9a9aa1; --line:#2c2c30;
-  --card:#1e1e21; --warn:#3a3220; --ok:#1d3326; } }
+  --card:#1e1e21; --warn:#3a3220; --ok:#1d3326;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; } }
 body { background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; margin:0 auto; max-width:1180px;
   padding:16px; }
 h1 { font-size:26px; margin-bottom:4px; } h2 { margin-top:44px; border-bottom:2px solid var(--line); padding-bottom:4px; }
@@ -599,7 +601,7 @@ def slope_cell(s, q=None):
     return f'<td{heat(s["b"], s["se"])} title="{tip}">{fmt(s["b"], 2)}<span class="sig">{stars(q if q is not None else s["p"])}</span></td>'
 
 
-def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200):
+def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None):
     """series: {name: [(x, mean, half_ci)]} -> SVG with axes, labels and a zero line."""
     pts = [p for s in series.values() for p in s if math.isfinite(p[1])]
     if not pts:
@@ -623,7 +625,7 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
     parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
                  f'{html.escape(ylabel)}</text>')
-    colours = {"vector": "var(--pos)", "random": "var(--rnd)", "prompt": "var(--neg)"}
+    colours = {"vector": "var(--pos)", "random": "var(--rnd)", "prompt": "var(--neg)", **(colours or {})}
     for name, s in series.items():
         s = sorted(p for p in s if math.isfinite(p[1]))
         c = colours.get(name, "currentColor")
@@ -1288,7 +1290,37 @@ def _shape(fit, q1, q2, cmax):
     return ""
 
 
-def dose_response_section(steered, traits, cells, scale):
+def setting_charts(own_all, traits, cells) -> str:
+    """Per game: one chart per trait, the steered agents' reward change over c, one line per setting."""
+    shown = [c for c in SETTING_ORDER if c not in ("all_random", "prompt_one", "prompt_all", "evil_team_prompt")][:7]
+    colour = {c: f"var(--s{i + 1})" for i, c in enumerate(shown)}
+    pts = defaultdict(lambda: defaultdict(lambda: ([], [])))  # (cell, trait, setting) -> c -> (diffs, clusters)
+    for r in own_all:
+        if r["condition"] in colour and r["coef"] is not None:
+            pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][0].append(r["diff"])
+            pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][1].append(r["cluster"])
+    out = ["<h3>Per game and setting</h3><p class=muted>Each game: one chart per trait; each line one setting "
+           "(who is steered), the steered agents' mean reward change vs the same seats in the unsteered episode with the "
+           "same seed, in the game's own reward units, with 95% CIs; c = 0 is the unsteered reference. Lines that "
+           "diverge = the same trait at the same strength pays off differently depending on who carries it.</p>"]
+    for cell in cells:
+        here = [c for c in shown if any((cell, t, c) in pts for t in traits)]
+        if not here:
+            continue
+        legend = "".join(f'<span><i style="background:{colour[c]}"></i>{html.escape(c)}</span>' for c in here)
+        charts = []
+        for t in traits:
+            series = {c: [(x, *mean_ci(*v)[:2]) for x, v in sorted(pts[(cell, t, c)].items())]
+                      + [(0.0, 0.0, float("nan"))] for c in here if (cell, t, c) in pts}
+            if series:
+                charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                              f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour)}</div>")
+        out.append(f"<details><summary>{html.escape(cell_name(cell))}: reward change per setting</summary>"
+                   f"<div class=legend>{legend}<span>bars: 95% CI</span></div><div class=charts>{''.join(charts)}</div></details>")
+    return "".join(out)
+
+
+def dose_response_section(steered, traits, cells, scale, own_all=()):
     """16: the steered agent's reward over the coefficient, per game and trait: where it saturates or flips."""
     coefs = sorted({r["coef"] for r in steered if r["coef"] is not None})
     cmax = max([abs(c) for c in coefs] or [2])
@@ -1380,7 +1412,8 @@ def dose_response_section(steered, traits, cells, scale):
                    "against the same unsteered games, so a lucky or unlucky baseline shifts the whole curve up or down: the "
                    "fit has an intercept, so the <i>shape</i> (rising, bending) is robust to that, the level is not — with few unsteered episodes, trust shapes more "
                    "than levels. Hover a table cell for the fitted coefficients. Shapes need data "
-                   "at ≥ 4 coefficients.", f, "".join(charts) + "".join(tab) + "".join(per_game))
+                   "at ≥ 4 coefficients.", f, "".join(charts) + "".join(tab) + setting_charts(own_all, traits, cells)
+                   + "".join(per_game))
 
 # ---------------------------------------------------------------- 17-24: more analyses of the same rows
 
@@ -2378,7 +2411,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
 
     late_take = []
     for part in (over_episode_section(rows, traits), actions_section(rows, traits, cells),
-                 dose_response_section(steered, traits, cells, scale), footprint_section(rows, traits),
+                 dose_response_section(steered, traits, cells, scale, own), footprint_section(rows, traits),
                  naming_section(rows, traits), prompt_vector_section(rows, traits), length_section(rows, traits),
                  group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale)):
