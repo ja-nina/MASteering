@@ -11,6 +11,7 @@
 # JSONLs and needs more memory and time than the submit node allows. The partition only takes GPU jobs
 # (and at most 10 CPUs per GPU);
 # the GPU stays idle. Then, from the submit node: git add results/<sweep> && git commit && git push
+# (agents.csv.gz is split into agents-2.csv.gz, ... past 90 MB: GitHub refuses files over 100 MB)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 mkdir -p slurm-logs
@@ -24,4 +25,4 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "config/sweeps/$SWEEP.yaml" --logs "$LOGS" --out "$OUT/report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
-echo "$(date)  done: git add $OUT/agents.csv.gz $OUT/report.html && git commit -m 'Report: $SWEEP' && git push"
+echo "$(date)  done: git add $OUT && git commit -m 'Report: $SWEEP' && git push"

@@ -123,6 +123,7 @@ Vectors are read from `${PVF_OUT}/persona/<model>/bf16` (default
     #    spillover effects per game x trait, evil-team steering): one HTML page
     python scripts/summarize_runs.py <logging_dir>/main [<fallback>/main] --out results/main/agents.csv.gz
     python scripts/report.py results/main/agents.csv.gz --out results/main/report.html
+    # (a .csv.gz past 90 MB continues in agents-2.csv.gz, ...; the report reads all parts)
     # or both as a job (a large sweep needs more memory than the submit node allows):
     sbatch scripts/slurm/report.sbatch main
 

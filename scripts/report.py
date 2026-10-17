@@ -34,40 +34,50 @@ import html
 import json
 import math
 import statistics
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.summarize_runs import csv_parts  # noqa: E402
 
 STEERED_VIA = ("vector", "both")
 
 
 # ---------------------------------------------------------------- data
 
+def read_csv(path):
+    """The rows of summarize_runs' output `path`, over all its parts (agents.csv.gz, agents-2.csv.gz, ...)."""
+    for part in csv_parts(path):
+        with (gzip.open if str(part).endswith(".gz") else open)(part, "rt", newline="", encoding="utf-8") as f:
+            yield from csv.DictReader(f)
+
+
 def load(path) -> list:
     rows = []
-    with (gzip.open if str(path).endswith(".gz") else open)(path, "rt", newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None
-            row = {
-                "run_id": r["run_id"], "group": r.get("group") or r["run_id"].split("__")[0],
-                "condition": r.get("condition") or (r["run_id"].split("__")[1] if "__" in r["run_id"] else "none"),
-                "obs": r.get("observation") or "text", "episode": int(r["episode"]), "agent": r["agent"],
-                "trait": r.get("condition_trait") or None, "coef": num("condition_coefficient"),
-                "via": r.get("condition_via") or None, "random": r.get("condition_random") == "True",
-                "team_cond": r.get("condition_team") or None, "select": r.get("condition_select") or None,
-                "steered": r.get("steered") == "True", "team": r.get("team") or None,
-                "reward": num("reward"), "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
-                "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
-                "monitor_layer": num("monitor_layer"), "steer_layer": num("steer_layer"),
-                "mon": {k[4:]: float(v) for k, v in r.items() if k.startswith("mon_") and v not in (None, "")
-                        and not k.startswith(("mon_early_", "mon_mid_", "mon_late_"))},
-                "phase": {ph: {k[len(ph) + 5:]: float(v) for k, v in r.items()
-                               if k.startswith(f"mon_{ph}_") and v not in (None, "")} for ph in ("early", "mid", "late")},
-                "act_n": num("act_n"), "act_num": num("act_numeric"),
-                "act_labels": json.loads(r["act_labels"]) if r.get("act_labels") else {},
-            }
-            rows.append(row)
+    for r in read_csv(path):
+        num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None
+        row = {
+            "run_id": r["run_id"], "group": r.get("group") or r["run_id"].split("__")[0],
+            "condition": r.get("condition") or (r["run_id"].split("__")[1] if "__" in r["run_id"] else "none"),
+            "obs": r.get("observation") or "text", "episode": int(r["episode"]), "agent": r["agent"],
+            "trait": r.get("condition_trait") or None, "coef": num("condition_coefficient"),
+            "via": r.get("condition_via") or None, "random": r.get("condition_random") == "True",
+            "team_cond": r.get("condition_team") or None, "select": r.get("condition_select") or None,
+            "steered": r.get("steered") == "True", "team": r.get("team") or None,
+            "reward": num("reward"), "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
+            "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
+            "monitor_layer": num("monitor_layer"), "steer_layer": num("steer_layer"),
+            "mon": {k[4:]: float(v) for k, v in r.items() if k.startswith("mon_") and v not in (None, "")
+                    and not k.startswith(("mon_early_", "mon_mid_", "mon_late_"))},
+            "phase": {ph: {k[len(ph) + 5:]: float(v) for k, v in r.items()
+                           if k.startswith(f"mon_{ph}_") and v not in (None, "")} for ph in ("early", "mid", "late")},
+            "act_n": num("act_n"), "act_num": num("act_numeric"),
+            "act_labels": json.loads(r["act_labels"]) if r.get("act_labels") else {},
+        }
+        rows.append(row)
     for r in rows:
         r["cell"] = (r["group"], r["obs"])  # a game as played: group and observation mode
         r["cluster"] = (r["run_id"], r["episode"])

@@ -7,7 +7,9 @@ Everything comes from the small episode summaries: rewards, roles, teams, who wa
 had phases and actions) get them once from their JSONL (every prompt of every turn: slow), written back into
 the summary, so the next run reads only summaries. Episodes are read in parallel (--jobs) and rows
 streamed to disk, so memory stays flat however large the sweep.
-An --out ending in .gz is gzip-compressed (keeps a large sweep's CSV under GitHub's 100 MB file limit).
+An --out ending in .gz is gzip-compressed and, past MAX_PART_BYTES, continued in parts <name>-2.csv.gz,
+<name>-3.csv.gz, ... next to it (each a full CSV with header), so every file stays under GitHub's 100 MB limit;
+`csv_parts(out)` lists them (scripts/report.py reads them all).
 
 Several log dirs (e.g. scratch and the MA_FALLBACK_LOG_DIR copy of a sweep) are merged per run; an episode
 logged in both counts once, from the first dir given.
@@ -23,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import io
 import json
 import multiprocessing
 import os
@@ -31,6 +34,54 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from testbed.logging_.agent_stats import stats_from_jsonl  # noqa: E402
+
+MAX_PART_BYTES = 90_000_000  # compressed size of one part of a .gz output
+
+
+def part_path(out, i: int) -> Path:
+    """Part i (1-based) of the output `out`: part 1 is `out` itself, then <name>-2.csv.gz, ..."""
+    out = Path(out)
+    return out if i == 1 else out.with_name(f"{out.name[:-len('.csv.gz')]}-{i}.csv.gz")
+
+
+def csv_parts(out) -> list:
+    """The files of an output written by main(): `out`, then its parts as long as they exist."""
+    parts = [Path(out)]
+    while str(out).endswith(".csv.gz") and part_path(out, len(parts) + 1).exists():
+        parts.append(part_path(out, len(parts) + 1))
+    return parts
+
+
+def write_csv(out: str, fields: list, rows) -> int:
+    """Rows into the CSV `out`; a .csv.gz is split into parts of at most ~MAX_PART_BYTES. Number of files."""
+    if not out.endswith(".csv.gz"):
+        with (gzip.open if out.endswith(".gz") else open)(out, "wt", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        return 1
+    for stale in csv_parts(out)[1:]:  # parts of an earlier, larger output
+        stale.unlink()
+
+    def start(i):
+        raw = open(part_path(out, i), "wb")
+        f = io.TextIOWrapper(gzip.GzipFile(fileobj=raw, mode="wb"), encoding="utf-8", newline="")
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        return raw, f, writer
+
+    n = 1
+    raw, f, writer = start(n)
+    for i, row in enumerate(rows, 1):
+        if i % 5000 == 0 and raw.tell() > MAX_PART_BYTES:
+            f.close()
+            raw.close()
+            n += 1
+            raw, f, writer = start(n)
+        writer.writerow(row)
+    f.close()
+    raw.close()
+    return n
 
 
 def run_episodes(run_dirs) -> dict:
@@ -149,14 +200,10 @@ def main(argv=None) -> None:
             if i % 2000 == 0 or i == len(jobs):
                 print(f"  {i}/{len(jobs)} episodes ({n_jsonl} older ones read from their JSONL, "
                       f"now in their summary)", flush=True)
-    opener = gzip.open if args.out.endswith(".gz") else open
-    with gzip.open(tmp, "rt", encoding="utf-8") as t, opener(args.out, "wt", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(fields))
-        writer.writeheader()
-        for line in t:
-            writer.writerow(json.loads(line))
+    with gzip.open(tmp, "rt", encoding="utf-8") as t:
+        n_files = write_csv(args.out, list(fields), (json.loads(line) for line in t))
     tmp.unlink()
-    print(f"{n_rows} agent-episode rows -> {args.out}")
+    print(f"{n_rows} agent-episode rows -> {args.out}" + (f" (+ {n_files - 1} more part(s))" if n_files > 1 else ""))
 
 
 if __name__ == "__main__":
