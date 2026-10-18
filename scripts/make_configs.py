@@ -12,6 +12,9 @@ its runs share an engine pair and play concurrently. A condition is a steering-g
 get one run per coefficient sign, as a persona prompt has no strength. Conditions with `team` or `roles`
 are only generated for games marked `roles: true`. A game's `observation` (one mode or a list of
 text | image | both) multiplies its runs; non-text runs get an `__obs-<mode>` suffix.
+Logs go to <logging_dir>/<name>/<group>; a sweep with `log_name: <other sweep>` logs into that sweep's dirs
+instead (its configs stay under config/runs/<name>): same run_ids, so the other sweep's finished episodes count
+as done and a larger `episodes` only adds the missing ones; summarize/report on the other sweep's logs see both.
 """
 from __future__ import annotations
 
@@ -30,7 +33,8 @@ def load_sweep(path, model=None) -> dict:
     model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own."""
     sweep = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if model and model != sweep["model"]:
-        sweep = {**sweep, "model": model, "name": f"{sweep['name']}_{model}"}
+        sweep = {**sweep, "model": model, "name": f"{sweep['name']}_{model}",
+                 **({"log_name": f"{sweep['log_name']}_{model}"} if sweep.get("log_name") else {})}
     return sweep
 
 
@@ -58,7 +62,8 @@ def expand(sweep: dict) -> dict:
                 for trait, coeff in cells:
                     run_id = f"{group_dir}__{cond_name}" + (f"__{trait}_x{coeff:g}" if trait else "") +                         ("" if obs == "text" else f"__obs-{obs}")
                     steering = None if template is None else {**template, "trait": trait, "coefficient": coeff}
-                    logging_dir = (Path(base.get("logging_dir", "logs")) / sweep["name"] / group_dir).as_posix()
+                    logging_dir = (Path(base.get("logging_dir", "logs")) / sweep.get("log_name", sweep["name"])
+                                   / group_dir).as_posix()
                     runs[f"{group_dir}/{run_id}.yaml"] = {"run_id": run_id, **base, "logging_dir": logging_dir,
                                                           "game": game_cfg, "observation": obs,
                                                           "steering": steering}

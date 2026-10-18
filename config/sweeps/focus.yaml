@@ -1,0 +1,46 @@
+# Focus sweep: 5 games with convincing first-pass results, to 50 episodes per run, plus good_team.
+#   python scripts/make_configs.py config/sweeps/focus.yaml        -> config/runs/focus/...
+#   bash scripts/slurm/submit_sweep.sh config/runs/focus
+# Logs go into the main sweep's dirs (log_name: main): run_ids, seeds and game settings are main's, so main's
+# 10 finished episodes per run count as done and only episodes 10-49 are played (good_team is new: all 50).
+# summarize_runs / report.sbatch on `main` then see both. Everything below that is shared with main.yaml must
+# stay identical to it, or the extra episodes would not be comparable.
+name: focus
+log_name: main
+model: qwen3.5-9b
+episodes: 50
+max_tokens: 1024
+max_turns: 200
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+image_size: 448
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 16384
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
+coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]
+
+conditions:
+  none: null
+  one: {select: one}
+  all: {select: all}
+  all_random: {select: all, random_control: true}
+  prompt_one: {select: one, via: prompt}
+  both_one: {select: one, via: both}
+  # hidden-role games only (avalon)
+  evil_team: {team: evil}
+  evil_one: {team: evil, select: one}
+  good_team: {team: good}            # new: the honest side's mirror of evil_team
+  good_one: {team: good, select: one}
+
+games:
+  gbs:                {family: symbolic, id: gbs, players: [3], observation: [text, image]}           # coordination
+  harvest:            {family: symbolic, id: harvest, players: [5], observation: [text, image]}       # commons
+  avalon:             {family: symbolic, id: avalon, players: [6], roles: true, observation: [text, image]}  # hidden roles
+  public_goods:       {family: textarena, id: PublicGoodsGame-v0, players: [4]}                       # social dilemma
+  iterated_ultimatum: {family: textarena, id: IteratedUltimatumGame-v0, players: [2]}                 # bargaining

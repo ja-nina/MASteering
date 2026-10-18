@@ -563,10 +563,10 @@ def _top(fp, sign, k=3):
 CSS = """
 :root { --bg:#fff; --fg:#1d1d1f; --muted:#6b6b70; --line:#e3e3e6; --pos:#c0392b; --neg:#2c6fbb; --card:#f6f6f7;
   --rnd:#8a8a90; --warn:#fff4d6; --ok:#e9f6ec;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; }
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#0e8a9e; }
 @media (prefers-color-scheme: dark) { :root { --bg:#151517; --fg:#ececee; --muted:#9a9aa1; --line:#2c2c30;
   --card:#1e1e21; --warn:#3a3220; --ok:#1d3326;
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; } }
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#33aec2; } }
 body { background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; margin:0 auto; max-width:1180px;
   padding:16px; }
 h1 { font-size:26px; margin-bottom:4px; } h2 { margin-top:44px; border-bottom:2px solid var(--line); padding-bottom:4px; }
@@ -793,7 +793,8 @@ def setup_section(rows, sweep, traits, cells):
         "prompt_one": "one agent gets the trait's persona instruction in its system prompt (no vector)",
         "prompt_all": "every agent gets the persona instruction", "both_one": "one agent gets the instruction AND the vector",
         "evil_team": "every member of the deceiving side (hidden-role games)", "evil_one": "one member of the deceiving side",
-        "good_one": "one member of the honest side", "evil_team_prompt": "the deceiving side gets the persona instruction",
+        "good_one": "one member of the honest side", "good_team": "every member of the honest side (hidden-role games)",
+        "evil_team_prompt": "the deceiving side gets the persona instruction",
         "vector_one": "one agent gets the persona vector", "vector_all": "every agent gets the persona vector",
         "evil_team_vector": "every member of the deceiving side gets the vector"}
     gen = ", ".join(f"{k} {sw[k]}" for k in ("max_tokens", "max_turns", "max_parse_retries") if k in sw)
@@ -921,7 +922,7 @@ def games_section(rows, traits, cells, man, eff, base, scale):
     return "".join(out)
 
 
-SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "all_random",
+SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
                  "prompt_one", "prompt_all", "evil_team_prompt")
 
 
@@ -1528,7 +1529,7 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8, unit="per unit
     return "".join(parts)
 
 
-SIDE_SETTINGS = SETTING_ORDER[:7]  # the vector settings: who carries the persona
+SIDE_SETTINGS = SETTING_ORDER[:8]  # the vector settings: who carries the persona
 
 
 def curve_id(cell, t):
@@ -2269,7 +2270,7 @@ def group_section(rows, traits, steered, scale):
                          f, "".join(tab))
 
 
-ROLE_SETTINGS = ("evil_team", "evil_one", "good_one", "all", "one")  # vector settings compared in hidden-role games
+ROLE_SETTINGS = ("evil_team", "evil_one", "good_team", "good_one", "all", "one")  # vector settings compared in hidden-role games
 
 
 def deceiver_wins(rows):
@@ -2347,6 +2348,7 @@ def role_section(rows, traits, base, scale):
             for s in (-1, 1):
                 r_ = {c: rate([w for w in by.get((cell, c), []) if w["trait"] == t], side(s)) for c in ROLE_SETTINGS}
                 cmp_[(cell, t, s, "team − one deceiver")] = _two_props(r_["evil_team"], r_["evil_one"])
+                cmp_[(cell, t, s, "team − one honest")] = _two_props(r_["good_team"], r_["good_one"])
                 cmp_[(cell, t, s, "one deceiver − one honest")] = _two_props(r_["evil_one"], r_["good_one"])
     allk = [("ud", k) for k in ud] + [("sm", k) for k in sm] + [("cmp", k) for k in cmp_]
     src = {"ud": ud, "sm": sm, "cmp": cmp_}
@@ -2355,7 +2357,7 @@ def role_section(rows, traits, base, scale):
 
     out = [legend, "<h3>a. Deceivers' win rate over c, per game (all traits pooled)</h3><div class=charts>",
            "".join(charts), "</div>"]
-    cols = [(cell, c) for c in ("evil_team", "evil_one", "good_one", "all", "evil_team_prompt") for cell in cells_
+    cols = [(cell, c) for c in ("evil_team", "evil_one", "good_team", "good_one", "all", "evil_team_prompt") for cell in cells_
             if any((cell, c, t) in ud for t in traits)]
     tab = ["<h3>b. Pushed up minus pushed down: change in the deceivers' win rate (percentage points)</h3>"
            "<div class=wrap><table><tr><th class=l>trait</th>"
@@ -2373,8 +2375,8 @@ def role_section(rows, traits, base, scale):
                        f"q={fmt(q, 4)}'>{d['b']:+.0f}<span class=sig>{stars(q)}</span></td>")
         tab.append(f"<tr><td class=l>{t}</td>{''.join(tds)}</tr>")
     tab.append("</table></div><p class=muted>Positive = the deceivers win more when the trait is pushed up (c &gt; 0) "
-               "than when it is pushed down (c &lt; 0); for good_one the steered agent is an honest player, so positive "
-               "means the honest side loses more when it carries the trait. No unsteered reference needed: both halves "
+               "than when it is pushed down (c &lt; 0); for good_one and good_team the steered agents are honest players, so "
+               "positive means the honest side loses more when it carries the trait. No unsteered reference needed: both halves "
                "come from the same sweep.</p>")
     out += tab
     smt = ["<h3>c. Strong (|c| &gt; 1) minus mild (|c| ≤ 1): change in the deceivers' win rate (points), all traits pooled</h3>"
@@ -2426,7 +2428,7 @@ def role_section(rows, traits, base, scale):
         f.append("<b>Steering the whole deceiving side hard costs it games</b>: strong vs mild steering lowers the "
                  f"deceivers' win rate in {'; '.join(broke)}. Steering one member does not do this as clearly (table c).")
     agree = []
-    for c in ("evil_team", "evil_one", "good_one", "all"):
+    for c in ("evil_team", "evil_one", "good_team", "good_one", "all"):
         ts = [t for t in traits if any(sig(ud[k], q_of("ud", k)) for k in ud if k[1] == c and k[2] == t)]
         same = [t for t in ts if len({math.copysign(1, ud[(cell, c, t)]["b"]) for cell in cells_
                                       if (cell, c, t) in ud and math.isfinite(ud[(cell, c, t)]["b"])}) == 1]
@@ -2439,9 +2441,26 @@ def role_section(rows, traits, base, scale):
     if sig_ud:
         f.append("Largest up-vs-down differences: " + "; ".join(
             f"{cell_name(k[0])} {k[1]} × {k[2]}: {d['b']:+.0f} points" for k, d in sig_ud[:8]) + ".")
-    n_team = sum(1 for k, d in hits if k[3] == "team − one deceiver")
+    # the same trait on the whole deceiving vs the whole honest side: does it help whichever side carries it?
+    mirror = defaultdict(list)
+    for cell in cells_:
+        for t in traits:
+            e, g = ud.get((cell, "evil_team", t)), ud.get((cell, "good_team", t))
+            if e and g and sig(e, q_of("ud", (cell, "evil_team", t))) and sig(g, q_of("ud", (cell, "good_team", t))):
+                kind = {(1, -1): "helps whichever side carries it", (-1, 1): "hurts whichever side carries it",
+                        (1, 1): "favours the deceivers whoever carries it",
+                        (-1, -1): "favours the honest side whoever carries it"}[(int(math.copysign(1, e["b"])),
+                                                                                 int(math.copysign(1, g["b"])))]
+                mirror[kind].append(f"{cell_name(cell)} × {t}")
+    if any(c == "good_team" for _, c in cols):
+        f.append("<b>Mirror (evil_team vs good_team, trait pushed up vs down, both significant):</b> "
+                 + ("; ".join(f"{kind}: {', '.join(v)}" for kind, v in mirror.items()) if mirror else
+                    "no game × trait is significant for both sides yet")
+                 + ". 'Helps whichever side carries it' points to a persona that makes a team play better; "
+                 "'favours one side whoever carries it' to a trait that matters through the game's roles.")
+    n_team = sum(1 for k, d in hits if k[3] in ("team − one deceiver", "team − one honest"))
     n_role = sum(1 for k, d in hits if k[3] == "one deceiver − one honest")
-    f.append(f"<b>Carrier:</b> the whole side vs one deceiver differs significantly in {n_team} game × trait × "
+    f.append(f"<b>Carrier:</b> the whole side vs one member differs significantly in {n_team} game × trait × "
              f"direction cases, one deceiver vs one honest player in {n_role} (list d): who carries the persona matters "
              + ("mostly through how many carry it." if n_team > n_role else "less than the trait itself."))
     take = [f"<b>Hidden-role games: a whole deceiving side steered hard loses.</b> "
@@ -2451,7 +2470,8 @@ def role_section(rows, traits, base, scale):
             f"it; the trait's direction agrees across games for {'; '.join(agree[:1]) or 'no trait yet'} (section 22)."]
     return take, section(22, "Hidden-role games: who carries the persona, and what it does to who wins",
                          "In Avalon, Mafia and Werewolf, does it matter whether the whole deceiving side carries the "
-                         "persona (evil_team), one deceiver (evil_one), one honest player (good_one) or everyone (all)? "
+                         "persona (evil_team), one deceiver (evil_one), the whole honest side (good_team), one honest "
+                         "player (good_one) or everyone (all)? "
                          "Does the same pattern hold across the games?",
                          "Per episode, whether the deceiving side won (spies, mafia, werewolves; 'evil' is the game's "
                          "name for that side, not the evil trait). <b>a</b>: win rate at each c per setting, pooled over "

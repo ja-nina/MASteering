@@ -181,3 +181,32 @@ def test_prompt_equivalent_coefficient():
     assert equivalent_coef(curve, -1.5, -1) == (-1.5, "")
     assert abs(cosine({"a": 1, "b": 2}, {"a": 2, "b": 4}) - 1) < 1e-9  # same profile, any size
     assert abs(cosine({"a": 1, "b": 0}, {"a": 0, "b": 3})) < 1e-9  # unrelated profiles
+
+
+def test_role_section_mirror_of_evil_and_good_team(tmp_path):
+    """A hidden-role game (2 deceivers of 6) where the trait helps whichever side carries it as a team: pushed up on
+    evil_team the deceivers win more, pushed up on good_team they win less; one carrier does nothing."""
+    from scripts.report import role_section
+    rng, rows = random.Random(1), []
+    for cond in ("none", "evil_team", "good_team", "evil_one", "good_one"):
+        for c in ([None] if cond == "none" else COEFS):
+            for ep in range(150):
+                lift = {"evil_team": 0.3, "good_team": -0.3}.get(cond, 0.0) * (1 if (c or 0) > 0 else -1)
+                won = rng.random() < 0.5 + lift
+                for i in range(6):
+                    team = "evil" if i < 2 else "good"
+                    steered = cond != "none" and team == cond.split("_")[0] and (cond.endswith("team") or i in (0, 2))
+                    rows.append({"run_id": f"av_6p__{cond}" + (f"__evil_x{c}" if c else ""), "group": "av_6p",
+                                 "condition": cond, "game": "avalon", "players": 6, "observation": "text", "episode": ep,
+                                 "agent": f"p{i}", "condition_trait": "evil" if c else "", "condition_coefficient": c or "",
+                                 "condition_via": "vector" if c else "", "condition_random": False, "steered": steered,
+                                 "team": team, "reward": float(won == (team == "evil")), "turns": 5,
+                                 "parse_fallbacks": 0, "mon_evil": 0.0})
+    path = tmp_path / "agents.csv"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    data = load(path)
+    take, html_ = role_section(data, ["evil"], baselines(data), reward_scale(data))
+    assert "good_team" in html_ and "helps whichever side carries it: av_6p × evil" in html_

@@ -62,3 +62,17 @@ def test_load_sweep_with_another_model(tmp_path):
     assert (other["name"], other["model"]) == ("t_qwen3.5-2b", "qwen3.5-2b")
     cfg = next(iter(expand(other).values()))
     assert cfg["model"] == "qwen3.5-2b" and cfg["logging_dir"].startswith("logs/t_qwen3.5-2b/")
+
+
+def test_log_name_extends_another_sweeps_logs(tmp_path):
+    """A sweep with `log_name` logs into that sweep's dirs (same run_ids: finished episodes are kept), while its
+    configs stay under its own name; another model suffixes both."""
+    from scripts.make_configs import load_sweep
+    sweep = {**SWEEP, "name": "focus", "log_name": "t", "episodes": 50}
+    cfg = expand(sweep)["werewolf_8p/werewolf_8p__evil_team__evil_x2.5.yaml"]
+    assert cfg["logging_dir"] == "logs/t/werewolf_8p" and cfg["episodes"] == 50
+    path = tmp_path / "s.yaml"
+    path.write_text(yaml.safe_dump(sweep))
+    other = load_sweep(path, "qwen3.5-2b")
+    assert (other["name"], other["log_name"]) == ("focus_qwen3.5-2b", "t_qwen3.5-2b")
+    assert next(iter(expand(other).values()))["logging_dir"].startswith("logs/t_qwen3.5-2b/")
