@@ -23,13 +23,15 @@ Reads the agent-episode rows of summarize_runs.py and answers, per trait and per
   13 coherence       unparseable answers and answer length vs coefficient
   14 over the episode the readout per third of the agent's turns: does the persona fade, does contagion build
   15 actions         numeric choices and action shares (votes, bids, play/discard/hint) per unit c
-  16 dose-response   the reward curve over c per game x trait: rising, saturating, peaked
+  16 dose-response   the reward curve over c per game x trait: rising, saturating, peaked; per setting: is the
+                     bend real (lack of fit vs a line), pushed down vs up, mild vs strong
   17 footprint       each vector's effect on all monitored personas, not only its own trait
   18 naming          can a classifier name the injected trait from the readout (held-out episodes)
-  19 prompt + vector both together vs each alone: additive, reinforcing or competing
+  19 vector/prompt/both side by side at c = ±1: readout, reward, cost, contagion, per game, groups
   20 length          readout slope with answer length held fixed
   21 group           group size vs one agent's effect; everyone steered vs one steered (welfare)
-  22 role            the same persona on the deceiving vs the honest side
+  22 hidden roles    the deceivers' win rate by who carries the persona, across games (up vs down,
+                     strong vs mild, team vs one member vs an honest player)
   23 natural         unsteered agents' trait-reward correlation vs the steered effect
   24 risk, tempo     spread of reward changes by |c|; game length when everyone is steered
 Slopes come with standard errors clustered by episode; p-values (normal approximation) are
@@ -154,6 +156,25 @@ def mean_ci(values, clusters):
     m = float(np.mean([v for vs in by.values() for v in vs]))
     half = 1.96 * float(cm.std(ddof=1)) / math.sqrt(len(cm)) if len(cm) > 1 else float("nan")
     return m, half, len(cm)
+
+
+def chi2_sf(x, k):
+    """P(X > x) for a chi-square variable with k (integer) degrees of freedom."""
+    if k < 1 or not math.isfinite(x):
+        return float("nan")
+    if x <= 0:
+        return 1.0
+    if k % 2 == 0:
+        term = total = 1.0
+        for j in range(1, k // 2):
+            term *= x / 2 / j
+            total += term
+        return min(1.0, math.exp(-x / 2) * total)
+    total, term = math.erfc(math.sqrt(x / 2)), math.sqrt(2 * x / math.pi) * math.exp(-x / 2)
+    for j in range(1, (k - 1) // 2 + 1):
+        term *= x / (2 * j - 1) if j > 1 else 1.0
+        total += term
+    return min(1.0, total)
 
 
 def bh(pvalues):
@@ -620,7 +641,7 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
              f'<line x1="{L}" y1="{sy(0):.1f}" x2="{width - R}" y2="{sy(0):.1f}" stroke="currentColor" '
              f'stroke-opacity=".3" stroke-dasharray="2 2"/>']
     for v in (lo, 0, hi):
-        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.2g}</text>')
+        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.3g}</text>')
     for v in sorted(set(xs)):
         parts.append(f'<text x="{sx(v):.1f}" y="{height - B + 12}" text-anchor="middle">{v:g}</text>')
     parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
@@ -667,7 +688,7 @@ def scatter_chart(points, xlabel, ylabel, width=320, height=280):
              f'<line x1="{L}" y1="{sy(0):.1f}" x2="{width - R}" y2="{sy(0):.1f}" stroke="currentColor" stroke-opacity=".2"/>',
              f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - B}" stroke="currentColor" stroke-opacity=".2"/>']
     for v in (lo, 0, hi):
-        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.2g}</text>')
+        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.3g}</text>')
         parts.append(f'<text x="{sx(v):.1f}" y="{height - B + 12}" text-anchor="middle">{v:.2g}</text>')
     parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
     parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
@@ -1294,7 +1315,80 @@ def _shape(fit, q1, q2, cmax):
     return ""
 
 
-def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8):
+def _episode_mean(values, clusters):
+    """(mean, SE, episodes) over per-episode means: each episode counts once, its agents averaged first."""
+    by = defaultdict(list)
+    for v, c in zip(values, clusters):
+        if v is not None and math.isfinite(v):
+            by[c].append(v)
+    m = [float(np.mean(v)) for v in by.values()]
+    if len(m) < 2:
+        return (m[0] if m else float("nan")), float("nan"), len(m)
+    return float(np.mean(m)), float(np.std(m, ddof=1)) / math.sqrt(len(m)), len(m)
+
+
+def _misfit(pts, degree):
+    """p that the means [(c, mean, SE)] scatter around their best polynomial of `degree` more than their SEs allow
+    (weighted least squares, chi-square lack of fit)."""
+    pts = [p for p in pts if math.isfinite(p[1]) and math.isfinite(p[2]) and p[2] > 0]
+    df = len(pts) - degree - 1
+    if df < 1 or len(pts) < 4:
+        return float("nan")
+    x, y, w = (np.array(v) for v in zip(*[(c, m, 1 / s ** 2) for c, m, s in pts]))
+    X = np.vander(x, degree + 1)
+    beta = np.linalg.lstsq(X * np.sqrt(w)[:, None], y * np.sqrt(w), rcond=None)[0]
+    return chi2_sf(float((w * (y - X @ beta) ** 2).sum()), df)
+
+
+def curve_checks(own_all, settings):
+    """Per (game cell, trait, setting): the steered agents' reward change as a curve over c, described without a
+    slope: the mean per c; whether it differs from 0 at all, from a straight line, from a smooth bend (beyond what
+    the per-point SEs allow); and the mean for c < 0 and c > 0 (pushed down / up), mild (|c| <= 1) and strong.
+    The side means are compared with 0 with SEs clustered by seed: every steered episode with the same seed is
+    compared with the same unsteered episode, so a lucky or unlucky baseline moves them all (the per-c means share
+    that offset, which cancels in the straight-line and bend checks)."""
+    by = defaultdict(lambda: defaultdict(lambda: ([], [], [])))
+    for r in own_all:
+        if r["condition"] in settings and r["coef"] is not None:
+            by[(r["cell"], r["trait"], r["condition"])][r["coef"]][0].append(r["diff"])
+            by[(r["cell"], r["trait"], r["condition"])][r["coef"]][1].append(r["cluster"])
+            by[(r["cell"], r["trait"], r["condition"])][r["coef"]][2].append(r["episode"])  # the seed
+    out = {}
+    for k, by_c in by.items():
+        pts = {c: _episode_mean(*v[:2]) for c, v in sorted(by_c.items())}
+        line = [(c, m, s) for c, (m, s, _) in pts.items()]
+        res = {"pts": pts, "p_line": _misfit(line, 1), "p_bend": _misfit(line, 2)}
+        for s in (-1, 1):
+            pick = lambda keep: _episode_mean(*[sum((v[i] for c, v in by_c.items() if c * s > 0 and keep(abs(c))), [])
+                                                for i in (0, 2)])
+            m, se, n = pick(lambda a: True)
+            res[s] = {"b": m, "se": se, "clusters": n, "n": n,
+                      "p": math.erfc(abs(m / se) / math.sqrt(2)) if math.isfinite(se) and se > 0 else float("nan"),
+                      "mild": pick(lambda a: a <= 1)[0], "strong": pick(lambda a: a > 1)[0]}
+        out[k] = res
+    keys = list(out)
+    for name, q in (("q_line", bh([out[k]["p_line"] for k in keys])),
+                    ("q_bend", bh([out[k]["p_bend"] for k in keys]))):
+        for k, v in zip(keys, q):
+            out[k][name] = v
+    q = bh([out[k][s]["p"] for k in keys for s in (-1, 1)])
+    for i, k in enumerate(keys):
+        out[k][-1]["q"], out[k][1]["q"] = q[2 * i], q[2 * i + 1]
+    return out
+
+
+def side_pattern(ch):
+    """Which way of pushing changes the reward: from the c < 0 and c > 0 means and their BH q."""
+    dn = (1 if ch[-1]["b"] > 0 else -1) if sig(ch[-1], ch[-1]["q"]) else 0
+    up = (1 if ch[1]["b"] > 0 else -1) if sig(ch[1], ch[1]["q"]) else 0
+    if not dn and not up:
+        return ""
+    if dn and up:
+        return "opposite ways (monotone)" if dn != up else "either push hurts" if dn < 0 else "either push helps"
+    return ("only pushing down " if dn else "only pushing up ") + ("helps" if (dn or up) > 0 else "hurts")
+
+
+def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8, unit="per unit c", span=None):
     """Slopes as dots with 95% CIs: groups = [(label, [(series, slope dict, q)])], one row per series, rows grouped
     under their label; hover a dot for its numbers."""
     items = [(g, s, d, q) for g, ss in groups for s, d, q in ss if math.isfinite(d.get("b", float("nan")))]
@@ -1304,6 +1398,7 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8):
     lo = min([d["b"] - ci(d) for _, _, d, _ in items] + [0])
     hi = max([d["b"] + ci(d) for _, _, d, _ in items] + [0])
     lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
+    lo, hi = span or (lo, hi)  # a shared axis for charts shown side by side
     L, R, T = 120, 12, 6
     n_rows = sum(len(ss) for _, ss in groups)
     height = T + n_rows * row + len(groups) * gap + 34
@@ -1321,7 +1416,7 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8):
             if math.isfinite(d.get("b", float("nan"))):
                 c, h = colour.get(s, "currentColor"), ci(d)
                 faint = "" if sig(d, q) else ' fill-opacity=".45"'
-                tip = (f"{g} · {s}: {d['b']:+.3f} per unit c ± {h:.3f} (95% CI), n={d.get('n')}, "
+                tip = (f"{g} · {s}: {d['b']:+.3f} {unit} ± {h:.3f} (95% CI), n={d.get('n')}, "
                        f"episodes={d.get('clusters', '?')}, p={fmt(d.get('p'), 4)}, q={fmt(q, 4)}")
                 parts.append(f'<g><title>{html.escape(tip)}</title>'
                              f'<rect x="{L}" y="{y:.1f}" width="{width - L - R}" height="{row}" fill="transparent"/>'
@@ -1337,55 +1432,119 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8):
     return "".join(parts)
 
 
-def setting_charts(own_all, traits, cells) -> str:
-    """Per game: one chart per trait, the steered agents' reward change over c, one line per setting."""
-    shown = [c for c in SETTING_ORDER if c not in ("all_random", "prompt_one", "prompt_all", "evil_team_prompt")][:7]
-    colour = {c: f"var(--s{i + 1})" for i, c in enumerate(shown)}
-    pts = defaultdict(lambda: defaultdict(lambda: ([], [])))  # (cell, trait, setting) -> c -> (diffs, clusters)
-    for r in own_all:
-        if r["condition"] in colour and r["coef"] is not None:
-            pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][0].append(r["diff"])
-            pts[(r["cell"], r["trait"], r["condition"])][r["coef"]][1].append(r["cluster"])
-    fits = {}  # (cell, trait, setting) -> slope of the reward change over c (game units), BH over all of them
-    for k, by_c in pts.items():
-        xs = [x for x, v in by_c.items() for _ in v[0]]
-        fits[k] = slope(xs, [d for v in by_c.values() for d in v[0]], [cl for v in by_c.values() for cl in v[1]])
-    keys = list(fits)
-    qs = dict(zip(keys, bh([fits[k]["p"] for k in keys])))
-    note = lambda k: (f"{k[2]}: slope {fits[k]['b']:+.3f} per unit c (SE {fmt(fits[k]['se'])}, q {fmt(qs[k], 4)}"
-                      f"{', significant' if sig(fits[k], qs[k]) else ''})")
-    out = ["<h3>Per game and setting</h3><p class=muted>Each game: first an overview of the slopes (reward change "
-           "per unit c, one dot per trait × setting with its 95% CI; large dots = significant after Benjamini–Hochberg "
-           "over all game × trait × setting slopes; hover a dot for the numbers), then one chart per trait with one "
-           "line per setting (hover a line for its slope; the slopes are also listed under each chart). "
-           "Each game: one chart per trait; each line one setting "
-           "(who is steered), the steered agents' mean reward change vs the same seats in the unsteered episode with the "
-           "same seed, in the game's own reward units, with 95% CIs; c = 0 is the unsteered reference. Lines that "
-           "diverge = the same trait at the same strength pays off differently depending on who carries it.</p>"]
+SIDE_SETTINGS = SETTING_ORDER[:7]  # the vector settings: who carries the persona
+
+
+def setting_charts(checks, traits, cells) -> str:
+    """Per game: one chart per trait, the steered agents' reward change over c, one line per setting; above them the
+    mean change when pushed down (c < 0) and up (c > 0), one dot per trait x setting."""
+    colour = {c: f"var(--s{i + 1})" for i, c in enumerate(SIDE_SETTINGS)}
+    note = lambda ch, st: (f"{st}: pushed down (c < 0) {ch[-1]['b']:+.2f}{stars(ch[-1]['q'])}, pushed up (c > 0) "
+                           f"{ch[1]['b']:+.2f}{stars(ch[1]['q'])}; differs from a straight line: q {fmt(ch['q_line'], 3)}"
+                           f"{' (the bend is real)' if ch['q_line'] < 0.05 else ' (the zigzag is noise)'}")
+    out = ["<h3>Per game and setting</h3><p class=muted>Each game (click to open): first the <b>mean reward change "
+           "when pushed down</b> (all c &lt; 0 together) <b>and when pushed up</b> (c &gt; 0), one dot per trait × "
+           "setting with its 95% CI (large dot = differs from 0 after Benjamini–Hochberg over all of them; hover for "
+           "the numbers); then one chart per trait, one line per setting (who is steered): the steered agents' mean "
+           "reward change at each c vs the same seats in the unsteered episode with the same seed, game units, 95% "
+           "CIs, c = 0 the unsteered reference. Hover a line for its summary; the list under each chart gives "
+           "down / up per setting, ~ marks a curve that really bends (not a straight line, beyond noise).</p>"]
     for cell in cells:
-        here = [c for c in shown if any((cell, t, c) in pts for t in traits)]
+        here = [c for c in SIDE_SETTINGS if any((cell, t, c) in checks for t in traits)]
         if not here:
             continue
         legend = "".join(f'<span><i style="background:{colour[c]}"></i>{html.escape(c)}</span>' for c in here)
         charts = []
         for t in traits:
-            series = {c: [(x, *mean_ci(*v)[:2]) for x, v in sorted(pts[(cell, t, c)].items())]
-                      + [(0.0, 0.0, float("nan"))] for c in here if (cell, t, c) in pts}
-            if series:
-                listed = " · ".join(
-                    f'<span style="color:{colour[c]}">■</span> {html.escape(c)} {fits[(cell, t, c)]["b"]:+.2f}'
-                    f'<span class=sig>{stars(qs[(cell, t, c)])}</span>' for c in here if (cell, t, c) in fits
-                    and math.isfinite(fits[(cell, t, c)]["b"]))
-                charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
-                              f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour, notes={c: note((cell, t, c)) for c in series if (cell, t, c) in fits})}"
-                              f"<div class=muted style='font-size:12px'>slope per unit c: {listed}</div></div>")
-        forest = forest_chart([(t, [(c, fits[(cell, t, c)], qs[(cell, t, c)]) for c in here if (cell, t, c) in fits])
-                               for t in traits], colour, "slope: reward change per unit c (game units)")
+            sets = [c for c in here if (cell, t, c) in checks]
+            if not sets:
+                continue
+            series = {c: [(x, m, 1.96 * se) for x, (m, se, _) in checks[(cell, t, c)]["pts"].items()]
+                      + [(0.0, 0.0, float("nan"))] for c in sets}
+            listed = " · ".join(
+                f'<span style="color:{colour[c]}">■</span> {html.escape(c)} {ch[-1]["b"]:+.2f}<span class=sig>'
+                f'{stars(ch[-1]["q"])}</span> / {ch[1]["b"]:+.2f}<span class=sig>{stars(ch[1]["q"])}</span>'
+                + (" ~" if ch["q_line"] < 0.05 else "") for c in sets for ch in [checks[(cell, t, c)]])
+            charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                          f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour, notes={c: note(checks[(cell, t, c)], c) for c in sets})}"
+                          f"<div class=muted style='font-size:12px'>down / up: {listed}</div></div>")
+        ext = [checks[(cell, t, c)][s] for t in traits for c in here if (cell, t, c) in checks for s in (-1, 1)]
+        ext = [(d["b"] - 1.96 * d["se"], d["b"] + 1.96 * d["se"]) for d in ext if math.isfinite(d["b"]) and math.isfinite(d["se"])]
+        span = (min([a for a, _ in ext] + [0]), max([b for _, b in ext] + [0])) if ext else None
+        sides = "".join(
+            f"<div class=chart><h3>Pushed {lab}</h3>"
+            + forest_chart([(t, [(c, checks[(cell, t, c)][s], checks[(cell, t, c)][s]["q"]) for c in here
+                                 if (cell, t, c) in checks]) for t in traits], colour,
+                           f"mean reward change, c {'<' if s < 0 else '>'} 0 (game units)", width=420,
+                           unit=f"mean change at c {'<' if s < 0 else '>'} 0", span=span) + "</div>"
+            for s, lab in ((-1, "down (c &lt; 0)"), (1, "up (c &gt; 0)")))
         out.append(f"<details><summary>{html.escape(cell_name(cell))}: reward change per setting</summary>"
                    f"<div class=legend>{legend}<span>bars: 95% CI</span></div>"
-                   f"<div class=chart><h3>Slopes, all traits × settings</h3>{forest}</div>"
-                   f"<div class=charts>{''.join(charts)}</div></details>")
+                   f"<div class=charts>{sides}</div><div class=charts>{''.join(charts)}</div></details>")
     return "".join(out)
+
+
+def _shape_reality(checks, cmax):
+    """Findings and a takeaway for section 16: is the zigzag of the per-setting curves real, and which way of
+    pushing matters."""
+    if not checks:
+        return [], []
+    n = len(checks)
+    q_ok = lambda k, name: checks[k][name] == checks[k][name] and checks[k][name] < 0.05
+    anyeff = sum(1 for ch in checks.values() if side_pattern(ch))
+    bent = [k for k in checks if q_ok(k, "q_line")]
+    wiggly = [k for k in checks if q_ok(k, "q_bend")]
+    tested = sum(1 for k in checks if checks[k]["p_line"] == checks[k]["p_line"])
+    raw = sum(1 for k in checks if checks[k]["p_line"] < 0.05)
+    pats = defaultdict(int)
+    for ch in checks.values():
+        pats[side_pattern(ch) or "neither side differs from 0"] += 1
+    grow = []  # strong / mild on the sides that differ from 0
+    for ch in checks.values():
+        for s in (-1, 1):
+            if sig(ch[s], ch[s]["q"]) and math.isfinite(ch[s]["mild"]) and ch[s]["mild"] and math.isfinite(ch[s]["strong"]):
+                grow.append(ch[s]["strong"] / ch[s]["mild"])
+    f = [f"<b>Is the bend real?</b> Of {n} curves (game × trait × setting), {anyeff} differ from 0 on at least one side; "
+         f"{len(bent)} of {tested} depart from a straight line beyond what the per-point noise allows "
+         f"({raw} at uncorrected p &lt; 0.05, ≈ {round(0.05 * tested)} expected by chance), {len(wiggly)} from a smooth "
+         "bend. The zigzag in most per-setting lines is sampling noise (~10 episodes per point), not a shape.",
+         "<b>Which way of pushing matters</b> (mean change over all c &lt; 0 and over all c &gt; 0 vs 0, SEs clustered by "
+         "seed, BH over all sides): "
+         + "; ".join(f"{k}: {v}" for k, v in sorted(pats.items(), key=lambda kv: -kv[1])) + "."]
+    if grow:
+        f.append(f"<b>Mild vs strong:</b> where a side differs from 0, the effect at |c| &gt; 1 is {np.median(grow):.2f}× "
+                 f"the effect at |c| ≤ 1 (median); it flips sign in {sum(1 for g in grow if g < 0)} of {len(grow)}: "
+                 "stronger steering gives more of the same, not the opposite.")
+    one_sided = sum(v for k, v in pats.items() if k.startswith("only"))
+    take = [f"<b>Per setting, the zigzag is noise.</b> Only {len(bent)} of {tested} game × trait × setting reward curves "
+            "depart from a straight line beyond what ~10 episodes per point allow; the bends in the pooled game × trait "
+            "curves below need all settings together to show. Where a setting moves the reward, it is mostly "
+            f"<b>one-sided</b>: {one_sided} curves change only when pushed one way, "
+            f"{pats.get('opposite ways (monotone)', 0)} in opposite ways for the two directions, "
+            f"{pats.get('either push hurts', 0) + pats.get('either push helps', 0)} the same way for both"
+            + (f"; stronger steering gives more of the same ({np.median(grow):.1f}× the mild effect)" if grow else "")
+            + " (section 16)."]
+    return f, take
+
+
+def _bend_table(checks):
+    """The curves whose bend is real (not a straight line, after BH): means at each c."""
+    bent = sorted((k for k in checks if checks[k]["q_line"] == checks[k]["q_line"] and checks[k]["q_line"] < 0.05),
+                  key=lambda k: checks[k]["q_line"])
+    if not bent:
+        return "<h3>Curves that really bend</h3><p class=muted>none: every curve is consistent with a straight line</p>"
+    coefs = sorted({c for k in bent for c in checks[k]["pts"]})
+    rows_ = [f"<h3>Curves that really bend</h3><div class=wrap><table><tr><th class=l>game</th><th class=l>trait</th>"
+             f"<th class=l>setting</th>" + "".join(f"<th>c = {c:g}</th>" for c in coefs) + "<th>q (vs line)</th></tr>"]
+    for k in bent:
+        pts = checks[k]["pts"]
+        top = max([abs(m) for m, _, _ in pts.values() if math.isfinite(m)] or [1.0]) or 1.0
+        rows_.append(f"<tr><td class=l>{html.escape(cell_name(k[0]))}</td><td class=l>{k[1]}</td><td class=l>{k[2]}</td>"
+                     + "".join(_value_td(pts[c][0], 1.96 * pts[c][1], scale=top, d=2) if c in pts else "<td>–</td>" for c in coefs)
+                     + f"<td>{fmt(checks[k]['q_line'], 4)}</td></tr>")
+    rows_.append("</table></div><p class=muted>Mean reward change of the steered agents at each c (game units); "
+                 "colour = sign, strength relative to the row's largest; hover for the 95% CI.</p>")
+    return "".join(rows_)
 
 
 def dose_response_section(steered, traits, cells, scale, own_all=()):
@@ -1457,7 +1616,10 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
     if sat:
         f.append("Saturating: " + "; ".join(sat[:10]) + (f"; {len(sat) - 10} more" if len(sat) > 10 else "") + ".")
     hurt = [f"{cell_name(k[0])} × {k[1]}" for k, v in shapes.items() if v == "∩ stronger either way hurts"]
-    take = []
+    checks = curve_checks(own_all, SIDE_SETTINGS)
+    f_real, t_real = _shape_reality(checks, cmax)
+    f += f_real
+    take = t_real
     if peaks or sat:
         take.append(f"<b>More steering is not simply more effect.</b> Of {len(shapes)} game × trait reward curves, {lin} "
                     f"change steadily with c, {len(peaks)} bend inside ±{cmax:g}"
@@ -1480,7 +1642,11 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
                    "against the same unsteered games, so a lucky or unlucky baseline shifts the whole curve up or down: the "
                    "fit has an intercept, so the <i>shape</i> (rising, bending) is robust to that, the level is not — with few unsteered episodes, trust shapes more "
                    "than levels. Hover a table cell for the fitted coefficients. Shapes need data "
-                   "at ≥ 4 coefficients.", f, "".join(charts) + "".join(tab) + setting_charts(own_all, traits, cells)
+                   "at ≥ 4 coefficients. <b>Jagged lines are not a shape</b>: with ~10 episodes per point, the means "
+                   "zigzag by chance. 'Is the bend real?' tests each curve (game × trait × setting) against a straight "
+                   "line and against a smooth bend, given each point's SE: only curves that fail the straight line "
+                   "after correction really bend. 'Pushed down / up' summarises a curve without a slope: the mean "
+                   "change over all c &lt; 0 and over all c &gt; 0.", f, "".join(charts) + "".join(tab) + _bend_table(checks) + setting_charts(checks, traits, cells)
                    + "".join(per_game))
 
 # ---------------------------------------------------------------- 17-24: more analyses of the same rows
@@ -1638,59 +1804,203 @@ def naming_section(rows, traits):
                          "persona the readout drifts to whatever is steered.", f, "".join(tab))
 
 
-def prompt_vector_section(rows, traits):
-    """19: persona prompt + vector together vs each alone."""
-    sv = [r for r in rows if _single_vector(r)]
-    if not sv:
-        return [], section(19, "Prompt and vector together: do they add up?", "", "", "", [], "")
-    cmax = max(abs(r["coef"]) for r in sv)
-    one = lambda via: [r for r in rows if r["steered"] and r["via"] == via and r["select"] == "one"
-                       and r["team_cond"] is None and not r["random"]]
-    vec, pr, both = _by([r for r in sv if abs(r["coef"]) == cmax], lambda r: (r["trait"], r["coef"] > 0)), \
-        _by(one("prompt"), lambda r: (r["trait"], (r["coef"] or 0) > 0)), \
-        _by([r for r in one("both") if abs(r["coef"]) == cmax], lambda r: (r["trait"], r["coef"] > 0))
-    m = lambda rs, t: mean_ci([r["mon"][t] for r in rs if t in r["mon"]], [r["cluster"] for r in rs if t in r["mon"]])
-    tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>side</th>"
-           f"<th>vector (c = ±{cmax:g})</th><th>prompt</th><th>both</th><th>vector + prompt</th><th>both ÷ (vector + prompt)</th></tr>"]
-    more, adds, less, against = [], [], [], []
+ARMS = {"vector": "var(--pos)", "prompt": "var(--neg)", "both": "var(--s3)"}  # how the persona is given
+ARM_OF = {"one": "vector", "prompt_one": "prompt", "both_one": "both", "all": "vector", "prompt_all": "prompt",
+          "evil_team": "vector", "evil_team_prompt": "prompt"}
+
+
+def _arm_point(rs, value, s, c=None):
+    """(mean, SE, episodes) of value(r) over the rows on side s (sign of c), at |c| = c if given."""
+    vals = [(value(r), r["cluster"]) for r in rs if (r["coef"] or 0) * s > 0 and (c is None or abs(r["coef"]) == c)]
+    vals = [(v, cl) for v, cl in vals if v is not None and math.isfinite(v)]
+    return _episode_mean([v for v, _ in vals], [cl for _, cl in vals])
+
+
+def prompt_vector_section(rows, traits, base, scale):
+    """19: the persona as a vector, as a prompt, or both, side by side at matched strength (c = ±1)."""
+    one = [r for r in rows if r["steered"] and r["condition"] in ("one", "prompt_one", "both_one") and not r["random"]]
+    if not any(r["condition"] == "prompt_one" for r in one):
+        return [], section(19, "Vector, prompt or both?", "", "", "", [], "")
+    arm = _by(one, lambda r: (ARM_OF[r["condition"]], r["trait"]))
+    rew = _by(paired(rows, base, lambda r: r["steered"] and r["condition"] in ARM_OF and not r["random"]),
+              lambda r: (r["condition"], r["trait"]))
+    co = _by([r for r in rows if not r["steered"] and r["condition"] in ("one", "prompt_one", "both_one")],
+             lambda r: (ARM_OF[r["condition"]], r["trait"]))
+    none = [r for r in rows if r["condition"] == "none"]
+    len0 = {c: float(np.mean([math.log(max(r["chars"], 1)) for r in rs if r["chars"] is not None] or [float("nan")]))
+            for c, rs in _by(none, lambda r: r["cell"]).items()}
+    fb0 = 100 * sum(r["fallbacks"] for r in none) / max(1, sum(r["turns"] for r in none))
+    readout = lambda t: lambda r: r["mon"].get(t)
+    reward = lambda r: r["diff"] / scale.get(r["cell"], 1.0)
+    length = lambda r: (100 * (math.exp(math.log(max(r["chars"], 1)) - len0[r["cell"]]) - 1)
+                        if r["chars"] is not None and math.isfinite(len0.get(r["cell"], float("nan"))) else None)
+    unparse = lambda r: 100 * r["fallbacks"] / r["turns"] if r["turns"] else None
+    cond_of = {"vector": "one", "prompt": "prompt_one", "both": "both_one"}
+    at = lambda a: None if a == "prompt" else 1.0  # the prompt has no strength: compared with |c| = 1
+
+    # a. over the dose: readout and reward for vector and both, the prompt as squares at ±1
+    charts = {"readout": [], "reward": []}
     for t in traits:
-        for up in (True, False):
-            k, s = (t, up), 1 if up else -1
-            v, p, b = m(vec.get(k, []), t), m(pr.get(k, []), t), m(both.get(k, []), t)
-            tot = v[0] + p[0]
-            ratio = b[0] / tot if math.isfinite(tot) and abs(tot) > 0.5 and s * tot > 0 else float("nan")
-            name = f"{t} {'+' if up else '−'}"
-            if math.isfinite(p[0]) and s * p[0] < 0:
-                against.append(f"{name} (prompt {p[0]:+.1f})")
-            if math.isfinite(b[0]) and math.isfinite(v[0]) and s * (b[0] - v[0]) < -2 * max(b[1], v[1]):
-                against.append(f"{name}: with the prompt the vector does less ({v[0]:+.1f} → {b[0]:+.1f})")
-            if math.isfinite(ratio):
-                (more if ratio > 1.25 else less if ratio < 0.8 else adds).append(f"{name} ({ratio:.2f})")
-            tab.append(f"<tr><td class=l>{t}</td><td>{'+' if up else '−'}</td>"
-                       + "".join(_value_td(x[0], x[1], scale=10) for x in (v, p, b))
-                       + _value_td(tot, None, scale=10)
-                       + (f"<td>{ratio:.2f}</td>" if math.isfinite(ratio) else "<td class=muted>–</td>") + "</tr>")
-    tab.append("</table></div>")
-    f = [f"Together they add up (ratio 0.8–1.25) for {len(adds)}, more than add for {len(more)}, less for {len(less)} "
-         "of the trait × side cases with a clear combined push."
-         + (f" More than additive: {'; '.join(more)}." if more else "") + (f" Less: {'; '.join(less)}." if less else "")]
-    if against:
-        f.append("Prompt working against the push: " + "; ".join(against)
-                 + ". A 'do not be X' instruction names X, and can prime what it forbids.")
-    take = [f"<b>Prompt and vector stack.</b> Given together, their effects on the readout roughly add or more than add "
-            f"({len(adds) + len(more)} of {len(adds) + len(more) + len(less)} cases, section 19)"
-            + (f"; but {against[0].split(' (')[0].split(':')[0]}: the negative prompt undercuts the vector" if against else "")
-            + ". For a strong persona, combine them; to suppress one, use the vector alone."]
-    return take, section(19, "Prompt and vector together: do they add up?",
-                         "If an agent gets the persona instruction AND the vector (condition both_one), is the persona "
-                         "the sum of the two, more (they reinforce), or less (they compete)?",
-                         f"The steered agent's readout of its own trait (SD units vs unsteered) in three one-agent "
-                         f"conditions: vector alone at c = ±{cmax:g}, persona prompt alone (+ = the trait's "
-                         "instruction, − = its opposite), both together at the same coefficient. 'vector + prompt' "
-                         "is what the two would give if they simply added.",
-                         "Ratio ≈ 1: additive. > 1: they reinforce each other. < 1: they overlap or compete. A prompt "
-                         "with the wrong sign (e.g. 'do not be sarcastic' reading more sarcastic) works against the "
-                         "instruction. Hover a cell for its 95% CI.", f, "".join(tab))
+        for kind, rs_of, val, ylab in (("readout", lambda a: arm.get((a, t), []), readout(t), f"{t} readout (SD)"),
+                                       ("reward", lambda a: rew.get((cond_of[a], t), []), reward, "reward change (SD)")):
+            series = {}
+            for a in ARMS:
+                rs = rs_of(a)
+                cs = sorted({r["coef"] for r in rs if r["coef"]})
+                if not cs:
+                    continue
+                pts = [(c, m, 1.96 * se) for c in cs for m, se, _ in [_arm_point(rs, val, 1 if c > 0 else -1, abs(c))]]
+                series[a] = pts + ([] if a == "prompt" else [(0.0, 0.0, float("nan"))])
+            if series:
+                charts[kind].append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                                    f"{line_chart(series, f'{t} {kind}', ylab, colours=ARMS)}</div>")
+
+    # b-f. matched comparison per trait x side
+    cols = (("readout of the trait (SD)", readout, lambda a, t: arm.get((a, t), []), 10.0),
+            ("reward change (SD)", lambda t: reward, lambda a, t: rew.get((cond_of[a], t), []), 0.5),
+            ("unparseable answers (% of turns)", lambda t: unparse, lambda a, t: arm.get((a, t), []), 20.0),
+            ("answer length vs unsteered (%)", lambda t: length, lambda a, t: arm.get((a, t), []), 200.0),
+            ("co-players' readout of the trait (SD)", readout, lambda a, t: co.get((a, t), []), 0.5))
+    res = {}
+    for t in traits:
+        for s in (1, -1):
+            for i, (_, val, rs_of, _) in enumerate(cols):
+                for a in ARMS:
+                    res[(t, s, i, a)] = _arm_point(rs_of(a, t), val(t), s, at(a))
+            res[(t, s, 0, "vector2")] = _arm_point(arm.get(("vector", t), []), readout(t), s, 2.0)
+    tabs = []
+    for i, (title, _, _, sc) in enumerate(cols):
+        extra = "<th>vector, c = ±2</th><th>both ÷ (vector + prompt)</th>" if i == 0 else ""
+        tab = [f"<h3>{chr(98 + i)}. {html.escape(title)}</h3><div class=wrap><table><tr><th class=l>trait</th>"
+               "<th>side</th><th>vector (c = ±1)</th><th>prompt</th><th>both (c = ±1)</th>" + extra + "</tr>"]
+        for t in traits:
+            for s in (1, -1):
+                v = [res[(t, s, i, a)] for a in ARMS]
+                tds = "".join(_value_td(m, 1.96 * se, scale=sc, d=1 if sc >= 10 else 2) for m, se, _ in v)
+                if i == 0:
+                    tot = v[0][0] + v[1][0]
+                    ratio = v[2][0] / tot if math.isfinite(tot) and s * tot > 0.5 else float("nan")
+                    w = res[(t, s, 0, "vector2")]
+                    tds += _value_td(w[0], 1.96 * w[1], scale=sc) + (
+                        f"<td>{ratio:.2f}</td>" if math.isfinite(ratio) else "<td class=muted>–</td>")
+                tab.append(f"<tr><td class=l>{t}</td><td>{'+' if s > 0 else '−'}</td>{tds}</tr>")
+        tab.append("</table></div>")
+        tabs.append("".join(tab))
+
+    # g. per game: how far each arm moves the trait the intended way (sign-aligned, mean over traits x sides)
+    by_game = defaultdict(lambda: defaultdict(list))
+    for (a, t), rs in arm.items():
+        for r in rs:
+            if t in r["mon"] and math.isfinite(r["mon"][t]) and (at(a) is None or abs(r["coef"]) == at(a)):
+                by_game[r["group"]][a].append(math.copysign(1, r["coef"]) * r["mon"][t])
+    games = sorted(g for g in by_game if all(by_game[g][a] for a in ARMS))
+    gm = {g: {a: float(np.mean(by_game[g][a])) for a in ARMS} for g in games}
+    p_beats = [g for g in games if gm[g]["prompt"] > gm[g]["vector"]]
+    b_beats = [g for g in games if gm[g]["both"] > max(gm[g]["prompt"], gm[g]["vector"])]
+    gtab = ["<h3>g. Per game: how far each moves the trait the intended way</h3><div class=wrap><table><tr>"
+            "<th class=l>game</th><th>vector (c = ±1)</th><th>prompt</th><th>both (c = ±1)</th></tr>"]
+    for g in games:
+        gtab.append(f"<tr><td class=l>{html.escape(g)}</td>"
+                    + "".join(_value_td(gm[g][a], None, scale=20) for a in ARMS) + "</tr>")
+    gtab.append("</table></div><p class=muted>Readout of the steered trait × the sign of the push (SD vs unsteered), "
+                "mean over traits and both sides: higher = moved further the intended way.</p>")
+
+    # h. groups: everyone steered and the whole deceiving side, vector (c = ±1) vs prompt
+    grp = _by([r for r in rows if r["steered"] and not r["random"]
+               and r["condition"] in ("all", "prompt_all", "evil_team", "evil_team_prompt")],
+              lambda r: (r["condition"], r["trait"]))
+    ttab = ["<h3>h. Everyone steered, and the whole deceiving side: readout of the trait (SD)</h3><div class=wrap>"
+            "<table><tr><th class=l>trait</th><th>side</th><th>all: vector (c = ±1)</th><th>all: prompt</th>"
+            "<th>deceiving side: vector (c = ±1)</th><th>deceiving side: prompt</th></tr>"]
+    g_more = g_n = 0
+    for t in traits:
+        for s in (1, -1):
+            v = [_arm_point(grp.get((c, t), []), readout(t), s, at(ARM_OF[c]))
+                 for c in ("all", "prompt_all", "evil_team", "evil_team_prompt")]
+            for vec_, pr_ in ((v[0], v[1]), (v[2], v[3])):
+                if math.isfinite(vec_[0]) and math.isfinite(pr_[0]):
+                    g_n += 1
+                    g_more += s * pr_[0] > s * vec_[0]
+            ttab.append(f"<tr><td class=l>{t}</td><td>{'+' if s > 0 else '−'}</td>"
+                        + "".join(_value_td(m, 1.96 * se, scale=10) for m, se, _ in v) + "</tr>")
+    ttab.append("</table></div>")
+
+    # findings
+    sides = [(t, s) for t in traits for s in (1, -1)]
+    al = lambda t, s, i, a: s * res[(t, s, i, a)][0]
+    stronger = [(t, s) for t, s in sides if al(t, s, 0, "prompt") > al(t, s, 0, "vector")]
+    as_c2 = [(t, s) for t, s in sides if al(t, s, 0, "prompt") >= al(t, s, 0, "vector2")]
+    wrong = [f"{t} {'+' if s > 0 else '−'} ({res[(t, s, 0, 'prompt')][0]:+.1f})" for t, s in sides
+             if res[(t, s, 0, "prompt")][2] and al(t, s, 0, "prompt") <= 0]
+    both_top = [(t, s) for t, s in sides if al(t, s, 0, "both") > max(al(t, s, 0, "prompt"), al(t, s, 0, "vector"))]
+    f = [f"<b>Strength at matched dose:</b> the prompt moves the trait's readout further than the vector at c = ±1 for "
+         f"{len(stronger)} of {len(sides)} trait × side cases, and at least as far as the vector at c = ±2 for "
+         f"{len(as_c2)}; per game, further than the vector in {len(p_beats)} of {len(games)} games (table g)."]
+    if wrong:
+        f.append(f"<b>Prompts that fail:</b> {', '.join(wrong)}: the instruction does not move the readout the intended "
+                 "way ('do not be X' names X); the vector does.")
+    f.append(f"<b>Both together</b> move the readout furthest in {len(both_top)} of {len(sides)} cases and in "
+             f"{len(b_beats)} of {len(games)} games: they stack (ratio column: ≈ 1 additive, &gt; 1 reinforcing).")
+    ri = lambda a: [res[(t, s, 1, a)][0] for t, s in sides]
+    r_pv, r_bv, r_bp = pearson(ri("prompt"), ri("vector")), pearson(ri("both"), ri("vector")), pearson(ri("both"), ri("prompt"))
+    rg = defaultdict(list)  # per game x trait x side: the arms' reward effects, to see whether they agree
+    for a in ARMS:
+        for t in traits:
+            for r in rew.get((cond_of[a], t), []):
+                if at(a) is None or abs(r["coef"]) == at(a):
+                    rg[(r["cell"], t, r["coef"] > 0, a)].append(reward(r))
+    keys = sorted({k[:3] for k in rg})
+    per = {a: [float(np.mean(rg[k + (a,)])) if rg.get(k + (a,)) else float("nan") for k in keys] for a in ARMS}
+    gp = pearson(per["prompt"], per["vector"])
+    f.append(f"<b>Play:</b> the reward effects of the three agree only partly: across trait × side, prompt vs vector "
+             f"r = {fmt(r_pv[0], 2)}, both vs vector {fmt(r_bv[0], 2)}, both vs prompt {fmt(r_bp[0], 2)}; per game × "
+             f"trait × side, prompt vs vector r = {fmt(gp[0], 2)} (n = {gp[3]}). Mean |reward change| (SD): "
+             + ", ".join(f"{a} {np.nanmean(np.abs(per[a])):.2f}" for a in ARMS) + ".")
+    breaks = [f"{t} {'+' if s > 0 else '−'} ({res[(t, s, 2, 'vector')][0]:.0f}% vector vs "
+              f"{res[(t, s, 2, 'prompt')][0]:.0f}% prompt)" for t, s in sides
+              if res[(t, s, 2, "vector")][0] - res[(t, s, 2, "prompt")][0] > 5]
+    f.append(f"<b>Cost:</b> {fb0:.1f}% of turns unparseable unsteered"
+             + (f"; the vector breaks answers far more than the prompt for {'; '.join(breaks)}, and makes those "
+                "answers many times longer (table e)." if breaks else "; no arm breaks answers."))
+    ci = lambda a: float(np.mean([v for v in (al(t, s, 4, a) for t, s in sides) if math.isfinite(v)] or [float("nan")]))
+    f.append(f"<b>Contagion</b> (co-players' readout the intended way, mean over traits and sides): vector "
+             f"{ci('vector'):+.2f}, prompt {ci('prompt'):+.2f}, both {ci('both'):+.2f} SD.")
+    if g_n:
+        f.append(f"<b>Groups:</b> with everyone or the whole deceiving side steered, the prompt again moves the readout "
+                 f"further than the vector at c = ±1 in {g_more} of {g_n} cases (table h).")
+    take = [f"<b>Prompt, vector, both.</b> At matched dose the prompt moves the language more than the vector "
+            f"({len(stronger)} of {len(sides)} trait × side cases, {len(p_beats)} of {len(games)} games) and both "
+            f"together most ({len(both_top)} of {len(sides)})"
+            + (f"; but the {wrong[0].split(' (')[0]} prompt fails where the vector works" if wrong else "")
+            + (f"; suppressing {', '.join(b.split(' (')[0] for b in breaks[:2])} with the vector breaks answers"
+               if breaks else "")
+            + f"; their effects on play agree only partly (prompt vs vector r = {fmt(r_pv[0], 2)}; section 19)."]
+    legend = ("<div class=legend><span><i style='background:var(--pos)'></i>vector</span><span><i style='background:"
+              "var(--s3)'></i>prompt + vector (both)</span><span><i style='background:var(--neg);height:7px;width:7px'>"
+              "</i>prompt (+ / − instruction, shown at c = ±1)</span><span>bars: 95% CI</span></div>")
+    body = (legend + "<h3>a. Over the dose: readout of the trait</h3><div class=charts>" + "".join(charts["readout"])
+            + "</div><details><summary>a. Over the dose: the steered agent's reward change (SD, all games)</summary>"
+            "<div class=charts>" + "".join(charts["reward"]) + "</div></details>" + "".join(tabs) + "".join(gtab)
+            + "".join(ttab))
+    return take, section(19, "Vector, prompt or both? Side by side",
+                         "Giving an agent a persona by the vector, by the instruction in its system prompt, or by both: "
+                         "which moves its language more, which changes its play, which spreads to the others, which "
+                         "costs answer quality? The same for everyone steered and for the whole deceiving side.",
+                         "One steered agent per episode (conditions one, prompt_one, both_one). The prompt has no "
+                         "strength, so it is compared with the vector and with both at c = ±1 (+ = the trait's "
+                         "instruction / c &gt; 0, − = its opposite / c &lt; 0); the vector at c = ±2 for reference. "
+                         "Each a mean over episodes with a 95% CI (hover): <b>b</b> the agent's readout of its trait "
+                         "(SD vs unsteered agents of the same game); <b>c</b> its reward vs the same seat in the "
+                         "unsteered episode with the same seed (SD units); <b>d</b> unparseable answers; <b>e</b> answer "
+                         "length vs the game's unsteered answers; <b>f</b> the unsteered co-players' readout of the "
+                         "trait; <b>g</b> per game; <b>h</b> everyone steered (all vs prompt_all) and the whole "
+                         "deceiving side (evil_team vs evil_team_prompt). Charts a: all coefficients, all games pooled.",
+                         "Compare the three arms within a row. Readout: + rows should be positive, − rows negative; a "
+                         "prompt cell with the wrong sign = the instruction backfires. 'both ÷ (vector + prompt)' ≈ 1: "
+                         "the two add; &gt; 1 reinforce; &lt; 1 overlap. Reward: all arms share the same unsteered "
+                         "reference, so differences between arms are more reliable than each value's distance from 0. "
+                         "Section 6 adds the direction (fingerprint), visibility and the vector strength the prompt "
+                         "equals.", f, body)
 
 
 def length_section(rows, traits):
@@ -1819,50 +2129,202 @@ def group_section(rows, traits, steered, scale):
                          f, "".join(tab))
 
 
+ROLE_SETTINGS = ("evil_team", "evil_one", "good_one", "all", "one")  # vector settings compared in hidden-role games
+
+
+def deceiver_wins(rows):
+    """One row per episode of a hidden-role game: did the deceiving side win (any of its agents rewarded)?"""
+    eps = defaultdict(list)
+    for r in rows:
+        if r["team"] == "evil" and r["reward"] is not None:
+            eps[r["cluster"]].append(r)
+    return [{**rs[0], "won": 100.0 * any(r["reward"] > 0 for r in rs)} for rs in eps.values()]
+
+
+def _two_props(a, b):
+    """Difference of two win rates (in %) with a normal-approximation p: a, b = (mean %, SE, n)."""
+    d, se = a[0] - b[0], math.hypot(a[1], b[1])
+    return {"b": d, "se": se, "n": a[2] + b[2], "clusters": a[2] + b[2],
+            "p": math.erfc(abs(d / se) / math.sqrt(2)) if math.isfinite(se) and se > 0 else float("nan")}
+
+
 def role_section(rows, traits, base, scale):
-    """22: the same persona on the deceiving vs the honest side."""
-    prs = paired(rows, base, lambda r: is_vector(r) and r["condition"] in ("evil_one", "good_one"))
-    cells_ = sorted({r["cell"] for r in prs})
+    """22: hidden-role games: who carries the persona (the whole deceiving side, one deceiver, one honest player,
+    everyone) and what it does to the deceivers' win rate, across games; then the same persona on opposite roles."""
+    wins = deceiver_wins(rows)
+    cells_ = sorted({w["cell"] for w in wins if w["condition"] in ROLE_SETTINGS})
     if not cells_:
-        return [], section(22, "Same persona, opposite role", "", "", "", [], "")
-    by = _by(prs, lambda r: (r["cell"], r["trait"], r["condition"]))
-    cols = ["deceiver steered (evil_one)", "honest player steered (good_one)", "difference"]
-    out, take_hits, f, n_better = [], [], [], []
+        return [], section(22, "Hidden-role games: who carries the persona", "", "", "", [], "")
+    colour = {c: f"var(--s{SIDE_SETTINGS.index(c) + 1})" for c in ROLE_SETTINGS}
+    by = _by(wins, lambda w: (w["cell"], w["condition"]))
+    rate = lambda ws, keep=lambda w: True: _episode_mean([w["won"] for w in ws if keep(w)],
+                                                         [w["cluster"] for w in ws if keep(w)])
+    side = lambda s, strong=None: lambda w: (w["coef"] or 0) * s > 0 and (
+        strong is None or (abs(w["coef"]) > 1) == strong)
+
+    # a. win rate over c per game, pooled over traits, one line per setting
+    charts, base_txt = [], []
     for cell in cells_:
-        def get(t, col):
-            e, g = _diff_slope(by.get((cell, t, "evil_one"), []), scale), _diff_slope(by.get((cell, t, "good_one"), []), scale)
+        b0 = rate(by.get((cell, "none"), []))
+        base_txt.append(f"{cell_name(cell)} {b0[0]:.0f}% (n = {b0[2]})")
+        series = {}
+        for c in ROLE_SETTINGS:
+            ws = by.get((cell, c), [])
+            cs = sorted({w["coef"] for w in ws if w["coef"]})
+            if cs:
+                series[c] = [(x, m, 1.96 * se) for x in cs for m, se, _ in [rate(ws, lambda w, x=x: w["coef"] == x)]]
+        pr = by.get((cell, "evil_team_prompt"), [])
+        if pr:
+            series["prompt"] = [(s, m, 1.96 * se) for s in (-1.0, 1.0) for m, se, _ in [rate(pr, side(s))]]
+        series["unsteered"] = [(0.0, b0[0], 1.96 * b0[1])]
+        charts.append(f"<div class=chart><h3>{html.escape(cell_name(cell))}</h3>"
+                      f"{line_chart(series, cell_name(cell), 'deceivers win (%)', colours={**colour, 'unsteered': 'var(--rnd)'})}</div>")
+    legend = ("<div class=legend>" + "".join(f'<span><i style="background:{colour[c]}"></i>{c}</span>' for c in ROLE_SETTINGS)
+              + "<span><i style='background:var(--neg);height:7px;width:7px'></i>evil_team_prompt (+ / − instruction)</span>"
+              "<span><i style='background:var(--rnd)'></i>unsteered</span><span>bars: 95% CI; pooled over the 8 traits</span></div>")
+
+    # b. up vs down: does pushing the trait up rather than down help the deceivers? per game x setting x trait
+    ud, keys = {}, []
+    for cell in cells_:
+        for c in ROLE_SETTINGS + ("evil_team_prompt",):
+            for t in traits:
+                ws = [w for w in by.get((cell, c), []) if w["trait"] == t]
+                if ws:
+                    ud[(cell, c, t)] = _two_props(rate(ws, side(1)), rate(ws, side(-1)))
+    # c. strong vs mild per side, pooled over traits: does steering the deceivers hard break them either way?
+    sm = {}
+    for cell in cells_:
+        for c in ROLE_SETTINGS:
+            ws = by.get((cell, c), [])
+            for s in (-1, 1):
+                if ws:
+                    sm[(cell, c, s)] = _two_props(rate(ws, side(s, True)), rate(ws, side(s, False)))
+    # d. whole side vs one member / deceiver vs honest player, same trait and side
+    cmp_ = {}
+    for cell in cells_:
+        for t in traits:
+            for s in (-1, 1):
+                r_ = {c: rate([w for w in by.get((cell, c), []) if w["trait"] == t], side(s)) for c in ROLE_SETTINGS}
+                cmp_[(cell, t, s, "team − one deceiver")] = _two_props(r_["evil_team"], r_["evil_one"])
+                cmp_[(cell, t, s, "one deceiver − one honest")] = _two_props(r_["evil_one"], r_["good_one"])
+    allk = [("ud", k) for k in ud] + [("sm", k) for k in sm] + [("cmp", k) for k in cmp_]
+    src = {"ud": ud, "sm": sm, "cmp": cmp_}
+    qs = dict(zip(allk, bh([src[a][k]["p"] for a, k in allk])))
+    q_of = lambda a, k: qs[(a, k)]
+
+    out = [legend, "<h3>a. Deceivers' win rate over c, per game (all traits pooled)</h3><div class=charts>",
+           "".join(charts), "</div>"]
+    cols = [(cell, c) for c in ("evil_team", "evil_one", "good_one", "all", "evil_team_prompt") for cell in cells_
+            if any((cell, c, t) in ud for t in traits)]
+    tab = ["<h3>b. Pushed up minus pushed down: change in the deceivers' win rate (percentage points)</h3>"
+           "<div class=wrap><table><tr><th class=l>trait</th>"
+           + "".join(f"<th>{html.escape(c)}<br><span class=muted>{html.escape(cell_name(cell))}</span></th>"
+                     for cell, c in cols) + "</tr>"]
+    for t in traits:
+        tds = []
+        for cell, c in cols:
+            d = ud.get((cell, c, t))
+            if not d or not math.isfinite(d["b"]):
+                tds.append("<td class=muted>–</td>")
+                continue
+            q = q_of("ud", (cell, c, t))
+            tds.append(f"<td{heat(d['b'], d['se'])} title='up − down {d['b']:+.0f} ± {1.96 * d['se']:.0f} points, "
+                       f"q={fmt(q, 4)}'>{d['b']:+.0f}<span class=sig>{stars(q)}</span></td>")
+        tab.append(f"<tr><td class=l>{t}</td>{''.join(tds)}</tr>")
+    tab.append("</table></div><p class=muted>Positive = the deceivers win more when the trait is pushed up (c &gt; 0) "
+               "than when it is pushed down (c &lt; 0); for good_one the steered agent is an honest player, so positive "
+               "means the honest side loses more when it carries the trait. No unsteered reference needed: both halves "
+               "come from the same sweep.</p>")
+    out += tab
+    smt = ["<h3>c. Strong (|c| &gt; 1) minus mild (|c| ≤ 1): change in the deceivers' win rate (points), all traits pooled</h3>"
+           "<div class=wrap><table><tr><th class=l>game</th>"
+           + "".join(f"<th>{c}: down</th><th>{c}: up</th>" for c in ROLE_SETTINGS) + "</tr>"]
+    for cell in cells_:
+        tds = ""
+        for c in ROLE_SETTINGS:
+            for s in (-1, 1):
+                d = sm.get((cell, c, s))
+                tds += slope_cell(d, q_of("sm", (cell, c, s))) if d else "<td class=muted>–</td>"
+        smt.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td>{tds}</tr>")
+    smt.append("</table></div>")
+    out += smt
+    hits = sorted(((k, d) for k, d in cmp_.items() if sig(d, q_of("cmp", k))), key=lambda kd: -abs(kd[1]["b"]))
+    out.append("<h3>d. Same trait and direction, different carrier (significant after BH)</h3>"
+               + ("<ul>" + "".join(f"<li>{html.escape(cell_name(k[0]))} · {k[1]} pushed {'up' if k[2] > 0 else 'down'} · "
+                                   f"{k[3]}: {d['b']:+.0f} points{stars(q_of('cmp', k))}</li>" for k, d in hits[:20])
+                  + "</ul>" if hits else "<p class=muted>none</p>"))
+
+    # e. the same persona on opposite roles: reward slopes (as before), per game
+    prs = paired(rows, base, lambda r: is_vector(r) and r["condition"] in ("evil_one", "good_one"))
+    byp = _by(prs, lambda r: (r["cell"], r["trait"], r["condition"]))
+    slope_cols = ["deceiver steered (evil_one)", "honest player steered (good_one)", "difference"]
+    mats = []
+    for cell in sorted({r["cell"] for r in prs}):
+        def get(t, col, cell=cell):
+            e, g = _diff_slope(byp.get((cell, t, "evil_one"), []), scale), _diff_slope(byp.get((cell, t, "good_one"), []), scale)
             if col != "difference":
-                return e if col == cols[0] else g
+                return e if col == slope_cols[0] else g
             se = math.hypot(e["se"], g["se"])
             b = e["b"] - g["b"]
             p = math.erfc(abs(b / se) / math.sqrt(2)) if se and math.isfinite(se) and se > 0 else float("nan")
             return {"b": b, "se": se, "p": p, "n": e["n"] + g["n"]}
-        tab, found, q = matrix(cell_name(cell), "trait", traits, cols, get)
-        out.append(tab)
-        better = sum(1 for t in traits if math.isfinite(found[(t, "difference")]["b"]) and found[(t, "difference")]["b"] > 0)
-        hits = [f"{t} ({found[(t, cols[0])]['b']:+.2f} as deceiver vs {found[(t, cols[1])]['b']:+.2f} as honest)"
-                for t in traits if sig(found[(t, "difference")], q[(t, "difference")])]
-        f.append(f"{cell_name(cell)}: steering the deceiver pays more than steering an honest player for {better} of "
-                 f"{len(traits)} traits" + (f"; significantly for {'; '.join(hits)}" if hits else "; no difference significant")
-                 + ".")
-        take_hits += [f"{cell_name(cell)}: {h.split(' (')[0]}" for h in hits]
-        n_better.append((better, len(traits)))
-    if take_hits:
-        take = [f"<b>A persona's payoff depends on the role.</b> In hidden-role games the same vector helps a deceiver "
-                f"more than an honest player ({'; '.join(take_hits)}; section 22): a friendlier or more opportunistic spy "
-                "blends in."]
-    else:
-        take = ["<b>Personas tend to pay off more for deceivers.</b> In every hidden-role game, steering a deceiver beats "
-                "steering an honest player for most traits (" + ", ".join(f"{b} of {n}" for b, n in n_better)
-                + "; section 22), but no single trait's difference survives correction yet: a direction, not a result."]
-    return take, section(22, "Same persona, opposite role",
-                         "In hidden-role games, does a persona help the deceiving side and the honest side alike, or "
-                         "does the same trait pay off for one role and not the other?",
-                         "The steered agent's reward vs the same seat in the unsteered episode with the same seed (SD "
-                         "units), per unit c, when one deceiver is steered (evil_one) and when one honest player is "
-                         "(good_one); the difference with its SE. BH within each game's table.",
-                         "Difference > 0 = the trait pays off more for a deceiver than for an honest player. Same sign "
-                         "in both columns = the trait helps or hurts regardless of role.", f, "".join(out))
+        mats.append(matrix(cell_name(cell), "trait", traits, slope_cols, get)[0])
+    out.append("<details><summary>e. The steered agent's own reward per unit c, deceiver vs honest player (SD units)"
+               "</summary>" + "".join(mats) + "</details>")
+
+    # findings: what holds across games
+    f = [f"Unsteered, the deceivers win: {'; '.join(base_txt)}: a ceiling where they always win (steering can only "
+         "lower it), and few episodes. Tables b–d therefore compare steered runs with each other, not with this."]
+    broke = []
+    for cell in cells_:
+        for s in (-1, 1):
+            d = sm.get((cell, "evil_team", s))
+            if d and sig(d, q_of("sm", (cell, "evil_team", s))) and d["b"] < 0:
+                broke.append(f"{cell_name(cell)} pushed {'up' if s > 0 else 'down'} ({d['b']:+.0f} points)")
+    if broke:
+        f.append("<b>Steering the whole deceiving side hard costs it games</b>: strong vs mild steering lowers the "
+                 f"deceivers' win rate in {'; '.join(broke)}. Steering one member does not do this as clearly (table c).")
+    agree = []
+    for c in ("evil_team", "evil_one", "good_one", "all"):
+        ts = [t for t in traits if any(sig(ud[k], q_of("ud", k)) for k in ud if k[1] == c and k[2] == t)]
+        same = [t for t in ts if len({math.copysign(1, ud[(cell, c, t)]["b"]) for cell in cells_
+                                      if (cell, c, t) in ud and math.isfinite(ud[(cell, c, t)]["b"])}) == 1]
+        if ts:
+            agree.append(f"{c}: {len(same)} of {len(ts)} ({', '.join(same) or '–'})")
+    if agree:
+        f.append("<b>Across games</b>, of the traits whose up-vs-down difference is significant in some game, the "
+                 f"direction is the same in every game for: {'; '.join(agree)}.")
+    sig_ud = sorted(((k, d) for k, d in ud.items() if sig(d, q_of("ud", k))), key=lambda kd: -abs(kd[1]["b"]))
+    if sig_ud:
+        f.append("Largest up-vs-down differences: " + "; ".join(
+            f"{cell_name(k[0])} {k[1]} × {k[2]}: {d['b']:+.0f} points" for k, d in sig_ud[:8]) + ".")
+    n_team = sum(1 for k, d in hits if k[3] == "team − one deceiver")
+    n_role = sum(1 for k, d in hits if k[3] == "one deceiver − one honest")
+    f.append(f"<b>Carrier:</b> the whole side vs one deceiver differs significantly in {n_team} game × trait × "
+             f"direction cases, one deceiver vs one honest player in {n_role} (list d): who carries the persona matters "
+             + ("mostly through how many carry it." if n_team > n_role else "less than the trait itself."))
+    take = [f"<b>Hidden-role games: a whole deceiving side steered hard loses.</b> "
+            + (f"Strong rather than mild steering of every deceiver costs them games ({'; '.join(broke[:3])}); "
+               if broke else "")
+            + f"steering one deceiver or one honest player changes little, and which trait matters more than who carries "
+            f"it; the trait's direction agrees across games for {'; '.join(agree[:1]) or 'no trait yet'} (section 22)."]
+    return take, section(22, "Hidden-role games: who carries the persona, and what it does to who wins",
+                         "In Avalon, Mafia and Werewolf, does it matter whether the whole deceiving side carries the "
+                         "persona (evil_team), one deceiver (evil_one), one honest player (good_one) or everyone (all)? "
+                         "Does the same pattern hold across the games?",
+                         "Per episode, whether the deceiving side won (spies, mafia, werewolves; 'evil' is the game's "
+                         "name for that side, not the evil trait). <b>a</b>: win rate at each c per setting, pooled over "
+                         "the 8 traits, the prompt version of evil_team as squares and the unsteered rate at c = 0. "
+                         "<b>b</b>: win rate with the trait pushed up (all c &gt; 0) minus pushed down (all c &lt; 0), "
+                         "per trait. <b>c</b>: win rate at strong (|c| &gt; 1) minus mild (|c| ≤ 1) steering, per side. "
+                         "<b>d</b>: the same trait and direction with a different carrier. <b>e</b>: the steered agent's "
+                         "own reward slope as deceiver vs honest player. Tests: two proportions over episodes, "
+                         "Benjamini–Hochberg over b, c and d together.",
+                         "Positive = the deceivers win more. In b, a cell is a trait's net effect on who wins; read across "
+                         "a row to see whether it holds in every game. In c, negative on both sides = the side does "
+                         "worse the harder it is steered, whatever the direction (the curves in a bend down at both "
+                         "ends). Avalon (text) deceivers win every unsteered game, so effects there can only be losses.",
+                         f, "".join(out))
 
 
 def natural_section(rows, traits, steered, scale):
@@ -2480,7 +2942,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
     late_take = []
     for part in (over_episode_section(rows, traits), actions_section(rows, traits, cells),
                  dose_response_section(steered, traits, cells, scale, own), footprint_section(rows, traits),
-                 naming_section(rows, traits), prompt_vector_section(rows, traits), length_section(rows, traits),
+                 naming_section(rows, traits), prompt_vector_section(rows, traits, base, scale), length_section(rows, traits),
                  group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale)):
         late_take += part[0]
