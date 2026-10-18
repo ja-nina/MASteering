@@ -952,59 +952,119 @@ def settings_tables(cell, traits, own_all, co_all) -> str:
     return "<details open><summary>By setting (one, half, all, …)</summary>" + note + t_own + t_co + "</details>"
 
 
-def examples_section(logs_dir, traits, coefs, per_trait=2, chars=700):
+def first_images(run_dir, episode, agent_id):
+    """The images `agent_id` saw on its first turn of `episode`, redrawn: the run's config (run.json) rebuilt with
+    the episode's seed gives the same first state, so the same picture (the main sweep does not save images).
+    PNG data URIs; [] when the game cannot be rebuilt here."""
+    try:
+        import base64
+        import io
+
+        from testbed.config import RunConfig
+        from testbed.registry import build_game
+        from testbed.visual import fit, observe
+        cfg = RunConfig.from_dict(json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8")))
+        env, renderer, _ = build_game(family=cfg.game_family, game_id=cfg.game_id, num_players=cfg.players,
+                                      env_kwargs={"seed": cfg.episode_seed(episode), **cfg.env_kwargs})
+        env.reset()
+        obs = dict(env.pending()).get(agent_id)
+        if obs is None:
+            return []
+        _, images = observe(renderer, cfg.observation, obs, agent_id, getattr(env, "context", None))
+        out = []
+        for im in images:
+            buf = io.BytesIO()
+            fit(im, cfg.image_size).save(buf, format="PNG")
+            out.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
+        return out
+    except Exception:  # noqa: BLE001 - an example without its picture is still an example
+        return []
+
+
+def examples_section(logs_dirs, traits, coefs, per_trait=2, chars=700):
     """What steering looks like: the same seat's first turn of the same game (same seed, so the same prompt)
     unsteered, with the persona vector at the strongest - and + coefficient, the random direction and the
     persona prompt (+ / -). Conditions where every agent is steered (all, all_random, prompt_all), so the
-    first-turn agent is steered in each."""
-    logs = Path(logs_dir)
-    if not logs.is_dir() or not coefs:
+    first-turn agent is steered in each. Per trait: `per_trait` text games (a different game for each trait
+    where possible) and one game played from images, with the picture the agent saw."""
+    roots = [Path(d) for d in ([logs_dirs] if isinstance(logs_dirs, (str, Path)) else logs_dirs) if Path(d).is_dir()]
+    if not roots or not coefs:
         return ""
     lo, hi = min(coefs), max(coefs)
+    groups = sorted({p.name for r in roots for p in r.iterdir() if p.is_dir() and not p.name.startswith("_")})
+
+    def run_dirs(g, run):
+        return [r / g / run for r in roots if (r / g / run).is_dir()]
+
+    def episodes(g, run):
+        return {int(p.name.split("_")[1].split(".")[0]) for d in run_dirs(g, run) for p in d.glob("episode_*.summary.json")}
+
+    def first_turn(g, run, ep):
+        for d in run_dirs(g, run):
+            turns = _turns(d / f"episode_{ep}.jsonl")
+            if turns:
+                return turns[0], d
+        return None, None
+
+    def example(t, g, suffix):
+        runs = {"unsteered": f"{g}__none", f"vector c={lo:g}": f"{g}__all__{t}_x{lo:g}",
+                f"vector c={hi:g}": f"{g}__all__{t}_x{hi:g}", f"random c={hi:g}": f"{g}__all_random__{t}_x{hi:g}",
+                "prompt +": f"{g}__prompt_all__{t}_x1", "prompt −": f"{g}__prompt_all__{t}_x-1"}
+        runs = {k: v + suffix for k, v in runs.items()}
+        eps = None
+        for run in runs.values():
+            eps = episodes(g, run) if eps is None else eps & episodes(g, run)
+        if not eps:
+            return None
+        ep = min(eps)
+        first = {k: first_turn(g, run, ep) for k, run in runs.items()}
+        base, base_dir = first["unsteered"]
+        if not base or len(base.get("completion") or "") < 120:  # one-word moves say little about style
+            return None
+        cells = []
+        for k, (rec, _) in first.items():
+            if not rec:
+                cells.append(f"<td class=l><b>{k}</b><br><span class=muted>missing</span></td>")
+                continue
+            mon = rec.get("monitor") or {}
+            layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
+            score = mon.get(layer, {}).get(t) if layer else None
+            text = (rec.get("completion") or "").strip()
+            text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
+            cells.append(f"<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{text}<br>"
+                         f"<span class=muted>{t} readout: {fmt(score, 2)}</span></td>")
+        pics = ""
+        if suffix:
+            imgs = first_images(base_dir, ep, base.get("agent_id"))
+            pics = ("<div class=charts>" + "".join(
+                f"<div class=chart><img src='{u}' alt='first observation' style='max-width:100%'></div>" for u in imgs)
+                + "</div>") if imgs else "<p class=muted>(the picture could not be redrawn here)</p>"
+            pics = "<p class=muted>What the agent saw (same seed, so the same picture in every column):</p>" + pics
+        mode = " (played from images)" if suffix else ""
+        return (f"<h3>{t} — {html.escape(g)}{mode}, episode {ep}, {html.escape(str(base.get('agent_id')))}'s first "
+                f"answer</h3>{pics}<div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
+
     out = ["<h2 id=examples>What steering looks like: matched examples</h2><div class=box><b>What you see</b><span>"
            "For each trait, games where the same seat's <i>first</i> answer can be compared across conditions: same "
            "game, same seed, so the agent received exactly the same prompt; the only difference is the steering. "
            f"Columns: unsteered; persona vector at c = {lo:g} and {hi:g}; a random direction of the same norm at "
            f"c = {hi:g} (control); the persona prompt (+ / −). The number under each answer is that turn's readout "
-           "of the trait (raw projection, higher = more of the trait; compare within a row).</span>"
-           "<b>Why it matters</b><span>The tables below are averages over thousands of turns; these show what a "
-           "slope of the readout actually corresponds to in text, including where strong steering stops being "
-           "'more of the trait' and becomes caricature or broken output.</span></div>"]
-    for t in traits:
-        shown = 0
-        for group_dir in sorted(p for p in logs.iterdir() if p.is_dir() and not p.name.startswith("_")):
-            if shown >= per_trait:
-                break
-            g = group_dir.name
-            runs = {"unsteered": f"{g}__none", f"vector c={lo:g}": f"{g}__all__{t}_x{lo:g}",
-                    f"vector c={hi:g}": f"{g}__all__{t}_x{hi:g}", f"random c={hi:g}": f"{g}__all_random__{t}_x{hi:g}",
-                    "prompt +": f"{g}__prompt_all__{t}_x1", "prompt −": f"{g}__prompt_all__{t}_x-1"}
-            eps = None
-            for run in runs.values():
-                have = {int(p.name.split("_")[1].split(".")[0]) for p in (group_dir / run).glob("episode_*.summary.json")}
-                eps = have if eps is None else eps & have
-            if not eps:
-                continue
-            ep = min(eps)
-            first = {k: (_turns(group_dir / run / f"episode_{ep}.jsonl") or [None])[0] for k, run in runs.items()}
-            base = first["unsteered"]
-            if not base or len(base.get("completion") or "") < 120:  # one-word moves say little about style
-                continue
-            cells = []
-            for k, rec in first.items():
-                if not rec:
-                    cells.append(f"<td class=l><b>{k}</b><br><span class=muted>missing</span></td>")
-                    continue
-                mon = rec.get("monitor") or {}
-                layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
-                score = mon.get(layer, {}).get(t) if layer else None
-                text = (rec.get("completion") or "").strip()
-                text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
-                cells.append(f"<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{text}<br>"
-                             f"<span class=muted>{t} readout: {fmt(score, 2)}</span></td>")
-            out.append(f"<h3>{t} — {html.escape(g)}, episode {ep}, {html.escape(str(base.get('agent_id')))}'s first "
-                       f"answer</h3><div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
-            shown += 1
+           "of the trait (raw projection, higher = more of the trait; compare within a row). Each trait shows "
+           "different games where possible, and one game played from images with the picture the agent saw (redrawn "
+           "from the episode's seed).</span><b>Why it matters</b><span>The tables below are averages over thousands "
+           "of turns; these show what a slope of the readout actually corresponds to in text, including where strong "
+           "steering stops being 'more of the trait' and becomes caricature or broken output.</span></div>"]
+    for i, t in enumerate(traits):
+        order = groups[i * per_trait % max(len(groups), 1):] + groups[:i * per_trait % max(len(groups), 1)]
+        for suffix, wanted in (("", per_trait), ("__obs-image", 1)):
+            shown = 0
+            for g in order:
+                if shown >= wanted:
+                    break
+                ex = example(t, g, suffix)
+                if ex:
+                    out.append(ex)
+                    shown += 1
     return "".join(out)
 
 
@@ -3025,7 +3085,8 @@ def main(argv=None) -> int:
     p.add_argument("agents_csv", help="output of scripts/summarize_runs.py")
     p.add_argument("--out", required=True)
     p.add_argument("--sweep", help="the sweep file (model, generation settings) for the setup section")
-    p.add_argument("--logs", help="the sweep's log dir (<logging_dir>/<name>): adds matched example answers")
+    p.add_argument("--logs", nargs="+", help="the sweep's log dir(s) (<logging_dir>/<name>, and its fallback): adds "
+                   "matched example answers")
     args = p.parse_args(argv)
     rows = load(args.agents_csv)
     if not rows:
