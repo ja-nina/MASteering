@@ -2275,7 +2275,7 @@ def role_section(rows, traits, base, scale):
     charts, base_txt = [], []
     for cell in cells_:
         b0 = rate(by.get((cell, "none"), []))
-        base_txt.append(f"{cell_name(cell)} {b0[0]:.0f}% (n = {b0[2]})")
+        base_txt.append(f"{cell_name(cell)} {b0[0]:.0f}% (n = {b0[2]})" if b0[2] else f"{cell_name(cell)}: no unsteered episodes")
         series = {}
         for c in ROLE_SETTINGS:
             ws = by.get((cell, c), [])
@@ -2285,7 +2285,8 @@ def role_section(rows, traits, base, scale):
         pr = by.get((cell, "evil_team_prompt"), [])
         if pr:
             series["prompt"] = [(s, m, 1.96 * se) for s in (-1.0, 1.0) for m, se, _ in [rate(pr, side(s))]]
-        series["unsteered"] = [(0.0, b0[0], 1.96 * b0[1])]
+        if b0[2]:
+            series["unsteered"] = [(0.0, b0[0], 1.96 * b0[1])]
         charts.append(f"<div class=chart><h3>{html.escape(cell_name(cell))}</h3>"
                       f"{line_chart(series, cell_name(cell), 'deceivers win (%)', colours={**colour, 'unsteered': 'var(--rnd)'})}</div>")
     legend = ("<div class=legend>" + "".join(f'<span><i style="background:{colour[c]}"></i>{c}</span>' for c in ROLE_SETTINGS)
