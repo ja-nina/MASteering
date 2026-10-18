@@ -1398,7 +1398,7 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8, unit="per unit
     lo = min([d["b"] - ci(d) for _, _, d, _ in items] + [0])
     hi = max([d["b"] + ci(d) for _, _, d, _ in items] + [0])
     lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
-    lo, hi = span or (lo, hi)  # a shared axis for charts shown side by side
+    lo, hi = span if span and span[1] > span[0] else (lo, hi)  # a shared axis for charts shown side by side
     L, R, T = 120, 12, 6
     n_rows = sum(len(ss) for _, ss in groups)
     height = T + n_rows * row + len(groups) * gap + 34
