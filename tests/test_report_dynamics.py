@@ -48,3 +48,5 @@ def test_dynamics_actions_dose_response(tmp_path):
     assert "mean numeric choice" in s15 and "evil → mean numeric choice +" in s15
     assert "share &#x27;approve&#x27;" in s15 or "share 'approve'" in s15
     assert "∩ peaks at c ≈ +0." in s16
+    bends = s16[s16.index("Curves that really bend"):]
+    assert "<td class=l>g_2p</td><td class=l>evil</td><td class=l>one</td>" in bends[:bends.index("</table>")]
