@@ -7,8 +7,8 @@ out are asked again; the others keep executing theirs. An episode ends when the 
 ends it or after `max_steps` steps.
 
 Observation: the agent's own egocentric RGB view (Melting Pot's "RGB"), plus the whole map
-("WORLD.RGB", a debug observation) with `global_view: true`. Rewards are summed per agent; the
-final step returns the episode totals. Melting Pot draws its own randomness, so episodes are
+("WORLD.RGB", a debug observation) with `global_view: true`. Each step returns the rewards of the primitive
+steps it ran (like every game: the runner sums them into the episode score); info["totals"] has the running sum. Melting Pot draws its own randomness, so episodes are
 not paired across steering conditions the way the other games are.
 
 Reference: Agapiou et al. (2023), Melting Pot 2.0.
@@ -89,9 +89,8 @@ class MeltingPotAdapter:
                 x["last"][a] += r
             x["done"] = last or x["step"] >= self.max_steps
         self.context.round_index = x["step"]
-        rewards = dict(x["totals"]) if x["done"] else chunk
-        self.context.last_rewards = rewards
-        return StepResult(rewards=rewards, done=x["done"],
+        self.context.last_rewards = chunk
+        return StepResult(rewards=dict(chunk), done=x["done"],
                           info={"step": x["step"], "steps_run": steps, "chunk_rewards": chunk,
                                 "totals": dict(x["totals"])})
 

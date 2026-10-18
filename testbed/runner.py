@@ -57,6 +57,7 @@ class EpisodeRun:
         self.done = False
         self.waiting: Dict[str, dict] = {}     # agent_id -> state of its pending turn
         self.last_rewards: Dict[str, float] = {}
+        self.total_rewards: Dict[str, float] = {}  # every step's rewards summed: the episode's score
         self.last_info: Dict[str, Any] = {}
         self.eliminations: List[dict] = []
 
@@ -108,6 +109,8 @@ class EpisodeRun:
         actions = {aid: st["record"]["action"] for aid, st in self.waiting.items()}
         step = self.env.submit(actions)
         self.last_rewards, self.last_info = step.rewards, step.info
+        for aid, r in step.rewards.items():
+            self.total_rewards[aid] = self.total_rewards.get(aid, 0.0) + float(r)
         self._collect_eliminations(step.info)
         for aid, st in self.waiting.items():
             rec, res, steer = st["record"], st["record"]["result"], self.steers.get(aid)
@@ -155,7 +158,7 @@ class EpisodeRun:
                             self.eliminations.append({"player_id": pid, "turn": -1, "type": key})
                     break
         self.logger.close(summary={
-            "final_rewards": self.last_rewards, "final_info": self.last_info,
+            "total_rewards": self.total_rewards, "final_rewards": self.last_rewards, "final_info": self.last_info,
             "player_roles": self._roles(),
             "teams": self.env.teams() if hasattr(self.env, "teams") else {},
             "eliminations": self.eliminations, "turns": self.turn, "truncated": truncated,
@@ -227,5 +230,5 @@ def run_jobs(jobs: List[Job], generator: Generator, reader: Optional[Reader] = N
             if run.done:
                 active.remove(run)
                 counts["ok"] += 1
-                log(f"{run.job.run_id} episode {run.job.episode} done after {run.turn} turns: {run.last_rewards}")
+                log(f"{run.job.run_id} episode {run.job.episode} done after {run.turn} turns: {run.total_rewards}")
     return counts

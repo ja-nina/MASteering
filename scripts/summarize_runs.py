@@ -3,7 +3,10 @@
     python scripts/summarize_runs.py logs/main [fallback/main] --out results/main_agents.csv [--layer 16]
 
 Everything comes from the small episode summaries: rewards, roles, teams, who was steered how, and
-`agent_stats` (testbed/logging_/agent_stats.py). Episodes logged before summaries had them (or before they
+`agent_stats` (testbed/logging_/agent_stats.py). `reward` is the episode's score: the summary's `total_rewards`
+(every step's rewards summed); for episodes logged before summaries had it, the episode_N.rewards.json that
+scripts/backfill_rewards.py writes for the games that pay every step, else `final_rewards` (the last step's
+rewards: the score in games that pay once, at the end). `reward_from` says which: total | backfill | last_step. Episodes logged before summaries had them (or before they
 had phases and actions) get them once from their JSONL (every prompt of every turn: slow), written back into
 the summary, so the next run reads only summaries. Episodes are read in parallel (--jobs) and rows
 streamed to disk, so memory stays flat however large the sweep.
@@ -33,6 +36,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.backfill_rewards import PER_STEP_GAMES, side_path  # noqa: E402
 from testbed.logging_.agent_stats import stats_from_jsonl  # noqa: E402
 
 MAX_PART_BYTES = 90_000_000  # compressed size of one part of a .gz output
@@ -111,6 +115,16 @@ def read_summary(spath: Path) -> tuple:
     return summary, True
 
 
+def episode_rewards(summary: dict, spath: Path) -> tuple:
+    """({agent: episode score}, where it came from: total | backfill | last_step)."""
+    if "total_rewards" in summary:
+        return summary["total_rewards"], "total"
+    side = side_path(spath)
+    if side.exists():
+        return json.loads(side.read_text(encoding="utf-8"))["total_rewards"], "backfill"
+    return summary.get("final_rewards", {}), "last_step"
+
+
 def episode_rows(job) -> tuple:
     """(run.json, episode, summary path, layer, steered traits) -> (that episode's rows, whether its JSONL was read)."""
     run, ep, spath, layer, traits = job
@@ -121,8 +135,9 @@ def episode_rows(job) -> tuple:
     layers = sorted({lay for a in stats.values() for lay in a["monitor"]}, key=int)
     at = str(layer) if layer is not None else (layers[len(layers) // 2] if layers else None)
     none = {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": {}, "phases": [None] * 3, "actions": {}}
+    rewards, reward_from = episode_rewards(summary, Path(spath))
     rows = []
-    for aid in sorted(set(summary.get("final_rewards", {})) | set(stats)):
+    for aid in sorted(set(rewards) | set(stats)):
         a = stats.get(aid, none)
         steer = summary.get("steered", {}).get(aid)
         rows.append({
@@ -137,7 +152,7 @@ def episode_rows(job) -> tuple:
             "condition_random": bool(steering.get("random_control", False)),
             "steered": steer is not None, "steer_label": steer["label"] if steer else None,
             "role": summary.get("player_roles", {}).get(aid), "team": summary.get("teams", {}).get(aid),
-            "reward": summary.get("final_rewards", {}).get(aid),
+            "reward": rewards.get(aid), "reward_from": reward_from,
             "turns": a["turns"], "parse_fallbacks": a["fallbacks"],
             "answer_chars": a["chars"] / a["turns"] if a["turns"] else None,  # mean answer length
             "monitor_layer": at, "steer_layer": (run.get("steering_resolved") or [{}])[0].get("layer"),
@@ -189,11 +204,12 @@ def main(argv=None) -> None:
     # rows go to a temp file as they come (the columns are known only at the end), then into the CSV
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(args.out + ".rows.tmp")
-    fields, n_rows, n_jsonl = {}, 0, 0
+    fields, n_rows, n_jsonl, n_last = {}, 0, 0, 0
     with gzip.open(tmp, "wt", encoding="utf-8") as t, multiprocessing.Pool(args.jobs) as pool:
         for i, (rows, from_jsonl) in enumerate(pool.imap(episode_rows, jobs, chunksize=16), 1):
             n_jsonl += from_jsonl
             for r in rows:
+                n_last += r["game"] in PER_STEP_GAMES and r["reward_from"] == "last_step"
                 fields.update(dict.fromkeys(r))
                 t.write(json.dumps(r, default=str) + "\n")
             n_rows += len(rows)
@@ -203,6 +219,9 @@ def main(argv=None) -> None:
     with gzip.open(tmp, "rt", encoding="utf-8") as t:
         n_files = write_csv(args.out, list(fields), (json.loads(line) for line in t))
     tmp.unlink()
+    if n_last:
+        print(f"WARNING: {n_last} rows of games that pay every step ({', '.join(sorted(PER_STEP_GAMES))}) "
+              f"have only their last step's reward: run scripts/backfill_rewards.py on these log dirs first")
     print(f"{n_rows} agent-episode rows -> {args.out}" + (f" (+ {n_files - 1} more part(s))" if n_files > 1 else ""))
 
 

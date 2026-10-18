@@ -103,7 +103,7 @@ def test_meltingpot_plans_run_until_someone_needs_a_new_one():
     assert res.info["steps_run"] == 2 and res.info["totals"] == {"player_0": 3.0, "player_1": 2.0}
     while not res.done:
         res = env.submit({a: ["FORWARD"] * 4 for a, _ in env.pending()})
-    assert env.context.extra["step"] == 10 and res.rewards == res.info["totals"] and env.pending() == []
+    assert env.context.extra["step"] == 10 and res.rewards == res.info["chunk_rewards"] and env.pending() == []
     env.close()
 
 
@@ -157,7 +157,7 @@ def test_image_runs_send_images_and_save_them(tmp_path):
     rec = json.loads((configs[1].run_dir / "episode_0.jsonl").read_text().splitlines()[0])
     assert rec["images"] == 1  # not saved: just the count
     summary = json.loads((configs[1].run_dir / "episode_0.summary.json").read_text())
-    assert summary["final_rewards"] == summary["final_info"]["totals"]
+    assert summary["total_rewards"] == summary["final_info"]["totals"]
 
 
 def test_text_observation_is_rejected_for_meltingpot(tmp_path):

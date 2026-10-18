@@ -155,3 +155,16 @@ def test_summarize_runs_csv(tmp_path, store):
     assert len(rows) == 6
     assert all((r["steered"] == "True") == (r["team"] == "evil") for r in rows)
     assert rows[0]["condition_team"] == "evil" and "mon_evil" in rows[0]
+
+
+def test_summary_total_rewards_sum_every_step(tmp_path, store):
+    """Games that pay every round (harvest, beauty contest): the summary's total_rewards is the episode's score,
+    final_rewards only the last step's."""
+    configs = [_cfg(tmp_path, "hv", "harvest", 3, episodes=1), _cfg(tmp_path, "bc", "beauty_contest", 3, episodes=1)]
+    assert run_jobs(build_jobs(configs, store), FakeGenerator()) == {"ok": 2, "failed": 0}
+    hv, bc = (json.loads((c.run_dir / "episode_0.summary.json").read_text()) for c in configs)
+    assert hv["total_rewards"] == {a: float(t) for a, t in hv["final_info"]["totals"].items()}
+    summed = {}
+    for rec in _records(configs[1]):
+        summed[rec["agent_id"]] = summed.get(rec["agent_id"], 0.0) + rec["reward"]
+    assert bc["total_rewards"] == summed and bc["turns"] == 5
