@@ -583,6 +583,8 @@ th, td { border:1px solid var(--line); padding:3px 7px; text-align:right; } th {
 td.l, th.l { text-align:left; }
 .wrap { overflow-x:auto; }
 .charts { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px; }
+.charts.mini { grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:8px; }
+.charts.mini .chart h3 { font-size:13px; }
 .chart { background:var(--card); border-radius:8px; padding:8px; }
 .chart h3 { margin:0 0 2px; }
 svg text { fill:var(--muted); font-size:10px; }
@@ -622,9 +624,11 @@ def slope_cell(s, q=None):
     return f'<td{heat(s["b"], s["se"])} title="{tip}">{fmt(s["b"], 2)}<span class="sig">{stars(q if q is not None else s["p"])}</span></td>'
 
 
-def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None, notes=None):
-    """`notes`: {series: text} shown when hovering that series' line (e.g. its fitted slope)."""
-    """series: {name: [(x, mean, half_ci)]} -> SVG with axes, labels and a zero line."""
+def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None, notes=None,
+               span=None):
+    """series: {name: [(x, mean, half_ci)]} -> SVG with axes, labels and a zero line. `notes`: {series: text} shown
+    when hovering that series' line (e.g. its summary); `span`: (low, high) of the y axis, shared by charts shown
+    side by side."""
     pts = [p for s in series.values() for p in s if math.isfinite(p[1])]
     if not pts:
         return "<p class=muted>no data yet</p>"
@@ -632,6 +636,7 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     lo = min([p[1] - (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0])
     hi = max([p[1] + (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0])
     lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
+    lo, hi = span if span and span[1] > span[0] else (lo, hi)
     x0, x1 = min(xs), max(xs) if max(xs) > min(xs) else min(xs) + 1
     L, R, T, B = 44, 8, 8, 34
     sx = lambda x: L + (x - x0) / (x1 - x0) * (width - L - R)
@@ -1435,39 +1440,70 @@ def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8, unit="per unit
 SIDE_SETTINGS = SETTING_ORDER[:7]  # the vector settings: who carries the persona
 
 
-def setting_charts(checks, traits, cells) -> str:
-    """Per game: one chart per trait, the steered agents' reward change over c, one line per setting; above them the
-    mean change when pushed down (c < 0) and up (c > 0), one dot per trait x setting."""
+def curve_id(cell, t):
+    """Anchor of a game x trait row of section 16's individual curves."""
+    return "c16-" + "-".join(cell) + "-" + t
+
+
+OPEN_ON_LINK = ("<script>function openTarget(){var e=document.getElementById(decodeURIComponent(location.hash.slice(1)));"
+                "if(!e)return;for(var d=e.closest('details');d;d=d.parentElement.closest('details'))d.open=true;"
+                "e.scrollIntoView();}addEventListener('hashchange',openTarget);addEventListener('load',openTarget);"
+                "</script>")
+
+
+def _single_chart(title, pts, colour, span, note, caption):
+    """One small chart of one curve: [(c, mean, half CI)] with c = 0 as the unsteered reference."""
+    return (f"<div class=chart><h3>{html.escape(title)}</h3>"
+            + line_chart({"curve": pts + [(0.0, 0.0, float("nan"))]}, title, "reward change", width=240, height=170,
+                         colours={"curve": colour}, notes={"curve": note}, span=span)
+            + f"<div class=muted style='font-size:11px'>{caption}</div></div>")
+
+
+def setting_charts(checks, traits, cells, pooled, shapes) -> str:
+    """Per game: the mean change when pushed down (c < 0) and up (c > 0), one dot per trait x setting; then per
+    trait one row of separate charts: the curve pooled over the settings without a side (the one whose shape the
+    table above gives) and one chart per setting, on a shared y axis."""
     colour = {c: f"var(--s{i + 1})" for i, c in enumerate(SIDE_SETTINGS)}
-    note = lambda ch, st: (f"{st}: pushed down (c < 0) {ch[-1]['b']:+.2f}{stars(ch[-1]['q'])}, pushed up (c > 0) "
-                           f"{ch[1]['b']:+.2f}{stars(ch[1]['q'])}; differs from a straight line: q {fmt(ch['q_line'], 3)}"
-                           f"{' (the bend is real)' if ch['q_line'] < 0.05 else ' (the zigzag is noise)'}")
-    out = ["<h3>Per game and setting</h3><p class=muted>Each game (click to open): first the <b>mean reward change "
-           "when pushed down</b> (all c &lt; 0 together) <b>and when pushed up</b> (c &gt; 0), one dot per trait × "
-           "setting with its 95% CI (large dot = differs from 0 after Benjamini–Hochberg over all of them; hover for "
-           "the numbers); then one chart per trait, one line per setting (who is steered): the steered agents' mean "
-           "reward change at each c vs the same seats in the unsteered episode with the same seed, game units, 95% "
-           "CIs, c = 0 the unsteered reference. Hover a line for its summary; the list under each chart gives "
-           "down / up per setting, ~ marks a curve that really bends (not a straight line, beyond noise).</p>"]
+    ci = lambda pts: [(x, m, 1.96 * se) for x, (m, se, _) in pts.items()]
+    out = ["<h3>Per game: every curve on its own</h3><p class=muted>Each game (click to open; a cell of the shape "
+           "table above jumps here): first the <b>mean reward change when pushed down</b> (all c &lt; 0 together) "
+           "<b>and when pushed up</b> (c &gt; 0), one dot per trait × setting with its 95% CI (large dot = differs from "
+           "0 after Benjamini–Hochberg over all of them; hover for the numbers). Then one row per trait: "
+           "<b>pooled</b> = all settings without a side (one, half, all, both_one) together, the curve whose shape "
+           "the table gives; then one chart per setting (who is steered). Each: the steered agents' mean reward change "
+           "at each c vs the same seats in the unsteered episode with the same seed, game units, 95% CIs, c = 0 the "
+           "unsteered reference; the charts of a row share their y axis. Under each: down / up = the mean change over "
+           "c &lt; 0 / c &gt; 0 (stars: differs from 0 after BH); 'bends' = the curve departs from a straight line "
+           "beyond its noise (BH), otherwise its zigzag is noise.</p>", OPEN_ON_LINK]
     for cell in cells:
         here = [c for c in SIDE_SETTINGS if any((cell, t, c) in checks for t in traits)]
         if not here:
             continue
         legend = "".join(f'<span><i style="background:{colour[c]}"></i>{html.escape(c)}</span>' for c in here)
-        charts = []
+        rows_ = []
         for t in traits:
             sets = [c for c in here if (cell, t, c) in checks]
             if not sets:
                 continue
-            series = {c: [(x, m, 1.96 * se) for x, (m, se, _) in checks[(cell, t, c)]["pts"].items()]
-                      + [(0.0, 0.0, float("nan"))] for c in sets}
-            listed = " · ".join(
-                f'<span style="color:{colour[c]}">■</span> {html.escape(c)} {ch[-1]["b"]:+.2f}<span class=sig>'
-                f'{stars(ch[-1]["q"])}</span> / {ch[1]["b"]:+.2f}<span class=sig>{stars(ch[1]["q"])}</span>'
-                + (" ~" if ch["q_line"] < 0.05 else "") for c in sets for ch in [checks[(cell, t, c)]])
-            charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
-                          f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour, notes={c: note(checks[(cell, t, c)], c) for c in sets})}"
-                          f"<div class=muted style='font-size:12px'>down / up: {listed}</div></div>")
+            curves = [ci(checks[(cell, t, c)]["pts"]) for c in sets] + [ci(pooled.get((cell, t), {}))]
+            ext = [v for pts in curves for x, m, h in pts if math.isfinite(m)
+                   for v in (m - (h if math.isfinite(h) else 0), m + (h if math.isfinite(h) else 0))]
+            span = (min(ext + [0]), max(ext + [0])) if ext else None
+            charts = []
+            if pooled.get((cell, t)):
+                shape = shapes.get((cell, t)) or "flat"
+                charts.append(_single_chart("pooled", ci(pooled[(cell, t)]), "var(--pos)", span,
+                                            f"pooled over one, half, all, both_one: {shape}", f"shape: {html.escape(shape)}"))
+            for c in sets:
+                ch = checks[(cell, t, c)]
+                bends = ch["q_line"] == ch["q_line"] and ch["q_line"] < 0.05
+                summary = (f"down {ch[-1]['b']:+.2f}{stars(ch[-1]['q'])} / up {ch[1]['b']:+.2f}{stars(ch[1]['q'])}"
+                           + (" · bends" if bends else ""))
+                charts.append(_single_chart(c, ci(ch["pts"]), colour[c], span,
+                                            f"{c}: {summary}; vs a straight line q {fmt(ch['q_line'], 3)}", summary))
+            rows_.append(f"<h3 id='{curve_id(cell, t)}'>{html.escape(t)} <span class=muted>· "
+                         f"{html.escape(shapes.get((cell, t)) or 'flat')} (pooled)</span></h3>"
+                         f"<div class='charts mini'>{''.join(charts)}</div>")
         ext = [checks[(cell, t, c)][s] for t in traits for c in here if (cell, t, c) in checks for s in (-1, 1)]
         ext = [(d["b"] - 1.96 * d["se"], d["b"] + 1.96 * d["se"]) for d in ext if math.isfinite(d["b"]) and math.isfinite(d["se"])]
         span = (min([a for a, _ in ext] + [0]), max([b for _, b in ext] + [0])) if ext else None
@@ -1478,9 +1514,9 @@ def setting_charts(checks, traits, cells) -> str:
                            f"mean reward change, c {'<' if s < 0 else '>'} 0 (game units)", width=420,
                            unit=f"mean change at c {'<' if s < 0 else '>'} 0", span=span) + "</div>"
             for s, lab in ((-1, "down (c &lt; 0)"), (1, "up (c &gt; 0)")))
-        out.append(f"<details><summary>{html.escape(cell_name(cell))}: reward change per setting</summary>"
+        out.append(f"<details><summary>{html.escape(cell_name(cell))}: every curve</summary>"
                    f"<div class=legend>{legend}<span>bars: 95% CI</span></div>"
-                   f"<div class=charts>{sides}</div><div class=charts>{''.join(charts)}</div></details>")
+                   f"<div class=charts>{sides}</div>{''.join(rows_)}</details>")
     return "".join(out)
 
 
@@ -1543,7 +1579,15 @@ def _bend_table(checks):
                      + "".join(_value_td(pts[c][0], 1.96 * pts[c][1], scale=top, d=2) if c in pts else "<td>–</td>" for c in coefs)
                      + f"<td>{fmt(checks[k]['q_line'], 4)}</td></tr>")
     rows_.append("</table></div><p class=muted>Mean reward change of the steered agents at each c (game units); "
-                 "colour = sign, strength relative to the row's largest; hover for the 95% CI.</p>")
+                 "colour = sign, strength relative to the row's largest; hover for the 95% CI. The same curves as "
+                 "charts:</p><div class='charts mini'>")
+    colour = {c: f"var(--s{i + 1})" for i, c in enumerate(SIDE_SETTINGS)}
+    for k in bent:
+        pts = [(x, m, 1.96 * se) for x, (m, se, _) in checks[k]["pts"].items()]
+        rows_.append(_single_chart(f"{cell_name(k[0])} · {k[1]} · {k[2]}", pts, colour.get(k[2], "var(--pos)"), None,
+                                   f"q vs a straight line {fmt(checks[k]['q_line'], 4)}",
+                                   f"<a href='#{curve_id(k[0], k[1])}'>all settings of this game × trait</a>"))
+    rows_.append("</div>")
     return "".join(rows_)
 
 
@@ -1587,7 +1631,8 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
             b1, b2 = fits[k]
             tip = (f"linear {b1['b']:+.3f} (q {q1[k]:.3f}), quadratic {b2['b']:+.3f} (q {q2[k]:.3f}), n {b1['n']}"
                    if math.isfinite(b1["b"]) else "not enough data")
-            tds.append(f"<td title='{html.escape(tip)}'>{html.escape(shapes[k]) or '<span class=muted>flat</span>'}</td>")
+            tds.append(f"<td title='{html.escape(tip)}'><a href='#{curve_id(cell, t)}'>"
+                       f"{html.escape(shapes[k]) or '<span class=muted>flat</span>'}</a></td>")
         tab.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td>{''.join(tds)}</tr>")
     tab.append("</table></div>")
     per_game = ["<details><summary>Mean reward change at each coefficient, per game (game's own units)</summary>"]
@@ -1617,6 +1662,10 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
         f.append("Saturating: " + "; ".join(sat[:10]) + (f"; {len(sat) - 10} more" if len(sat) > 10 else "") + ".")
     hurt = [f"{cell_name(k[0])} × {k[1]}" for k, v in shapes.items() if v == "∩ stronger either way hurts"]
     checks = curve_checks(own_all, SIDE_SETTINGS)
+    pooled = {}  # (cell, trait) -> {c: (mean, SE, episodes)}: the curve the shape table describes, game units
+    for k, rs in _by([r for r in steered if r["coef"] is not None], lambda r: (r["cell"], r["trait"])).items():
+        pooled[k] = {c: _episode_mean([r["diff"] for r in v], [r["cluster"] for r in v])
+                     for c, v in sorted(_by(rs, lambda r: r["coef"]).items())}
     f_real, t_real = _shape_reality(checks, cmax)
     f += f_real
     take = t_real
@@ -1646,7 +1695,7 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
                    "zigzag by chance. 'Is the bend real?' tests each curve (game × trait × setting) against a straight "
                    "line and against a smooth bend, given each point's SE: only curves that fail the straight line "
                    "after correction really bend. 'Pushed down / up' summarises a curve without a slope: the mean "
-                   "change over all c &lt; 0 and over all c &gt; 0.", f, "".join(charts) + "".join(tab) + _bend_table(checks) + setting_charts(checks, traits, cells)
+                   "change over all c &lt; 0 and over all c &gt; 0.", f, "".join(charts) + "".join(tab) + _bend_table(checks) + setting_charts(checks, traits, cells, pooled, shapes)
                    + "".join(per_game))
 
 # ---------------------------------------------------------------- 17-24: more analyses of the same rows
