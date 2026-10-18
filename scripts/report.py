@@ -952,10 +952,11 @@ def settings_tables(cell, traits, own_all, co_all) -> str:
     return "<details open><summary>By setting (one, half, all, …)</summary>" + note + t_own + t_co + "</details>"
 
 
-def first_images(run_dir, episode, agent_id):
-    """The images `agent_id` saw on its first turn of `episode`, redrawn: the run's config (run.json) rebuilt with
-    the episode's seed gives the same first state, so the same picture (the main sweep does not save images).
-    PNG data URIs; [] when the game cannot be rebuilt here."""
+def turn_images(run_dir, episode, records, turn, agent_id):
+    """The images `agent_id` saw at `turn` of `episode`, redrawn (the main sweep does not save images): the run's
+    config (run.json) rebuilt with the episode's seed, then the logged actions of the earlier turns replayed. Shown
+    only if the replay is faithful: the redrawn turn's text prompt must equal the logged one. PNG data URIs; []
+    when the game cannot be rebuilt or replayed here."""
     try:
         import base64
         import io
@@ -967,10 +968,19 @@ def first_images(run_dir, episode, agent_id):
         env, renderer, _ = build_game(family=cfg.game_family, game_id=cfg.game_id, num_players=cfg.players,
                                       env_kwargs={"seed": cfg.episode_seed(episode), **cfg.env_kwargs})
         env.reset()
-        obs = dict(env.pending()).get(agent_id)
-        if obs is None:
+        try:
+            for t in sorted({r.get("turn", 0) for r in records if r.get("turn", 0) < turn}):
+                env.submit({r["agent_id"]: r["parsed_action"] for r in records if r.get("turn", 0) == t})
+            obs = dict(env.pending()).get(agent_id)
+            if obs is None:
+                return []
+            text, images = observe(renderer, cfg.observation, obs, agent_id, getattr(env, "context", None))
+        finally:
+            getattr(env, "close", lambda: None)()
+        rec = next(r for r in records if r.get("turn", 0) == turn and r["agent_id"] == agent_id)
+        logged = (rec.get("attempts") or [{}])[0].get("user_prompt", rec.get("user_prompt"))
+        if logged is not None and text != logged:
             return []
-        _, images = observe(renderer, cfg.observation, obs, agent_id, getattr(env, "context", None))
         out = []
         for im in images:
             buf = io.BytesIO()
@@ -981,12 +991,13 @@ def first_images(run_dir, episode, agent_id):
         return []
 
 
-def examples_section(logs_dirs, traits, coefs, per_trait=2, chars=700):
+def examples_section(logs_dirs, traits, coefs, per_trait=2, chars=700, later=4):
     """What steering looks like: the same seat's first turn of the same game (same seed, so the same prompt)
     unsteered, with the persona vector at the strongest - and + coefficient, the random direction and the
-    persona prompt (+ / -). Conditions where every agent is steered (all, all_random, prompt_all), so the
-    first-turn agent is steered in each. Per trait: `per_trait` text games (a different game for each trait
-    where possible) and one game played from images, with the picture the agent saw."""
+    persona prompt (+ / -); then the same seat's `later`-th answer, by which point each column's game has gone
+    its own way. Conditions where every agent is steered (all, all_random, prompt_all), so the seat is steered in
+    each. Per trait: `per_trait` text games (a different game for each trait where possible) and one game played
+    from images, with the pictures the agent saw."""
     roots = [Path(d) for d in ([logs_dirs] if isinstance(logs_dirs, (str, Path)) else logs_dirs) if Path(d).is_dir()]
     if not roots or not coefs:
         return ""
@@ -999,12 +1010,24 @@ def examples_section(logs_dirs, traits, coefs, per_trait=2, chars=700):
     def episodes(g, run):
         return {int(p.name.split("_")[1].split(".")[0]) for d in run_dirs(g, run) for p in d.glob("episode_*.summary.json")}
 
-    def first_turn(g, run, ep):
+    def all_turns(g, run, ep):
         for d in run_dirs(g, run):
             turns = _turns(d / f"episode_{ep}.jsonl")
             if turns:
-                return turns[0], d
-        return None, None
+                return turns, d
+        return [], None
+
+    def answer(rec, t):
+        mon = rec.get("monitor") or {}
+        layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
+        score = mon.get(layer, {}).get(t) if layer else None
+        text = (rec.get("completion") or "").strip()
+        text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
+        return f"{text}<br><span class=muted>{t} readout: {fmt(score, 2)}</span>"
+
+    def pictures(urls):
+        return "".join(f"<img src='{u}' alt='what the agent saw' style='max-width:100%;display:block;margin:4px 0'>"
+                       for u in urls) or "<span class=muted>(picture not redrawn)</span>"
 
     def example(t, g, suffix):
         runs = {"unsteered": f"{g}__none", f"vector c={lo:g}": f"{g}__all__{t}_x{lo:g}",
@@ -1017,43 +1040,51 @@ def examples_section(logs_dirs, traits, coefs, per_trait=2, chars=700):
         if not eps:
             return None
         ep = min(eps)
-        first = {k: first_turn(g, run, ep) for k, run in runs.items()}
-        base, base_dir = first["unsteered"]
+        logs = {k: all_turns(g, run, ep) for k, run in runs.items()}
+        base = (logs["unsteered"][0] or [None])[0]
         if not base or len(base.get("completion") or "") < 120:  # one-word moves say little about style
             return None
-        cells = []
-        for k, (rec, _) in first.items():
-            if not rec:
-                cells.append(f"<td class=l><b>{k}</b><br><span class=muted>missing</span></td>")
-                continue
-            mon = rec.get("monitor") or {}
-            layer = sorted(mon, key=int)[len(mon) // 2] if mon else None
-            score = mon.get(layer, {}).get(t) if layer else None
-            text = (rec.get("completion") or "").strip()
-            text = html.escape(text[:chars] + (" …" if len(text) > chars else "")).replace("\n", "<br>")
-            cells.append(f"<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{text}<br>"
-                         f"<span class=muted>{t} readout: {fmt(score, 2)}</span></td>")
+        seat = base.get("agent_id")
+        own = {k: [r for r in recs if r.get("agent_id") == seat] for k, (recs, _) in logs.items()}
+        top = ("<td class=l style='vertical-align:top;min-width:220px'><b>{k}</b><br>{body}</td>")
+        first = []
+        for k, (recs, _) in logs.items():
+            rec = recs[0] if recs else None
+            first.append(top.format(k=k, body=answer(rec, t) if rec else "<span class=muted>missing</span>"))
         pics = ""
         if suffix:
-            imgs = first_images(base_dir, ep, base.get("agent_id"))
-            pics = ("<div class=charts>" + "".join(
-                f"<div class=chart><img src='{u}' alt='first observation' style='max-width:100%'></div>" for u in imgs)
-                + "</div>") if imgs else "<p class=muted>(the picture could not be redrawn here)</p>"
-            pics = "<p class=muted>What the agent saw (same seed, so the same picture in every column):</p>" + pics
+            urls = turn_images(logs["unsteered"][1], ep, logs["unsteered"][0], base.get("turn", 0), seat)
+            pics = ("<p class=muted>What the agent saw (same seed, so the same picture in every column):</p>"
+                    + (f"<div style='max-width:360px'>{pictures(urls)}</div>" if urls else
+                       "<p class=muted>(the picture could not be redrawn here)</p>"))
+        n = min([len(v) for v in own.values()] + [later]) - 1  # the seat's n-th answer, in every column
+        rows = f"<tr>{''.join(first)}</tr>"
+        if n >= 1:
+            cells = []
+            for k, (recs, run_dir) in logs.items():
+                rec = own[k][n]
+                pic = pictures(turn_images(run_dir, ep, recs, rec.get("turn", 0), seat)) if suffix else ""
+                cells.append(top.format(k=f"{k} · turn {rec.get('turn', '?')}", body=pic + answer(rec, t)))
+            rows += (f"<tr><td class=l colspan={len(cells)}><span class=muted>Answer no. {n + 1} of the same seat: "
+                     "from here each column's game has gone its own way, so the prompts (and pictures) differ."
+                     "</span></td></tr><tr>" + "".join(cells) + "</tr>")
         mode = " (played from images)" if suffix else ""
-        return (f"<h3>{t} — {html.escape(g)}{mode}, episode {ep}, {html.escape(str(base.get('agent_id')))}'s first "
-                f"answer</h3>{pics}<div class=wrap><table><tr>{''.join(cells)}</tr></table></div>")
+        return (f"<h3>{t} — {html.escape(g)}{mode}, episode {ep}, {html.escape(str(seat))}'s first and a later "
+                f"answer</h3>{pics}<div class=wrap><table>{rows}</table></div>")
 
     out = ["<h2 id=examples>What steering looks like: matched examples</h2><div class=box><b>What you see</b><span>"
            "For each trait, games where the same seat's <i>first</i> answer can be compared across conditions: same "
            "game, same seed, so the agent received exactly the same prompt; the only difference is the steering. "
            f"Columns: unsteered; persona vector at c = {lo:g} and {hi:g}; a random direction of the same norm at "
-           f"c = {hi:g} (control); the persona prompt (+ / −). The number under each answer is that turn's readout "
-           "of the trait (raw projection, higher = more of the trait; compare within a row). Each trait shows "
-           "different games where possible, and one game played from images with the picture the agent saw (redrawn "
-           "from the episode's seed).</span><b>Why it matters</b><span>The tables below are averages over thousands "
-           "of turns; these show what a slope of the readout actually corresponds to in text, including where strong "
-           "steering stops being 'more of the trait' and becomes caricature or broken output.</span></div>"]
+           f"c = {hi:g} (control); the persona prompt (+ / −). Second row: the same seat {later} answers in (or its "
+           "last, if the game is shorter), when the games have diverged: does the persona hold, fade, or derail? "
+           "The number under each answer is that turn's readout of the trait (raw projection, higher = more of the "
+           "trait; compare within a row). Each trait shows different games where possible, and one game played from "
+           "images with the pictures the agent saw (redrawn from the episode's seed and the logged moves; shown only "
+           "when the redrawn prompt matches the logged one).</span><b>Why it matters</b><span>The tables below are "
+           "averages over thousands of turns; these show what a slope of the readout actually corresponds to in text, "
+           "including where strong steering stops being 'more of the trait' and becomes caricature or broken output."
+           "</span></div>"]
     for i, t in enumerate(traits):
         order = groups[i * per_trait % max(len(groups), 1):] + groups[:i * per_trait % max(len(groups), 1)]
         for suffix, wanted in (("", per_trait), ("__obs-image", 1)):

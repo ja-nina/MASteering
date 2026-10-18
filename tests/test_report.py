@@ -131,30 +131,44 @@ def test_examples_show_matched_first_answers(tmp_path):
     assert "how WONDERFUL" in page and "sarcastic readout: 1.80" in page
 
 
-def test_image_examples_redraw_the_first_picture(tmp_path):
-    """Image runs do not save their pictures: the example redraws the first one from the run's config and seed."""
+def test_image_examples_redraw_first_and_later_pictures(tmp_path):
+    """Image runs do not save their pictures: the example redraws them from the run's config and seed, replaying
+    the logged moves for a later turn, and only when the redrawn prompt matches the logged one."""
     import json
     from scripts.report import examples_section
     from testbed.config import RunConfig
     from testbed.registry import build_game
+    from testbed.visual import observe
     g = tmp_path / "tictactoe_2p"
     seed = RunConfig.from_dict({"run_id": "x", "model": "m", "game": {"family": "symbolic", "id": "tictactoe",
                                                                     "players": 2}}).episode_seed(0)
-    env, _, _ = build_game(family="symbolic", game_id="tictactoe", num_players=2, env_kwargs={"seed": seed})
+    env, renderer, _ = build_game(family="symbolic", game_id="tictactoe", num_players=2, env_kwargs={"seed": seed})
     env.reset()
-    first = env.pending()[0][0]  # who moves first in episode 0
+    records = []
+    for turn in range(4):  # a real game: the last legal cell each time (not the first, which a broken replay plays)
+        (aid, obs), = env.pending()
+        text, _ = observe(renderer, "image", obs, aid, env.context)
+        records.append({"turn": turn, "agent_id": aid, "parsed_action": list(obs["legal"][-1]),
+                        "completion": f"turn {turn}: I take the corner. " * 8, "monitor": {"16": {"evil": 0.5}},
+                        "attempts": [{"user_prompt": text}]})
+        env.submit({aid: obs["legal"][-1]})
     conds = ("none", "all__evil_x-2", "all__evil_x2", "all_random__evil_x2", "prompt_all__evil_x1", "prompt_all__evil_x-1")
     for cond in conds:
         d = g / f"tictactoe_2p__{cond}__obs-image"
         d.mkdir(parents=True)
         (d / "run.json").write_text(json.dumps({"run_id": d.name, "model": "m", "observation": "image", "image_size": 64,
                                                 "game": {"family": "symbolic", "id": "tictactoe", "players": 2}}))
-        (d / "episode_0.jsonl").write_text(json.dumps({"agent_id": first, "completion": f"{cond}: centre. " * 12,
-                                                       "monitor": {"16": {"evil": 0.5}}}) + "\n")
+        recs = records if cond != "all__evil_x2" else [  # one column whose log does not match its replay
+            {**r, "attempts": [{"user_prompt": "something else"}]} if r["turn"] == 2 else r for r in records]
+        (d / "episode_0.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         (d / "episode_0.summary.json").write_text("{}")
     page = examples_section(tmp_path, ["evil"], [-2, 2])
     assert "evil — tictactoe_2p (played from images), episode 0" in page
-    assert "<img src='data:image/png;base64," in page
+    later = page[page.index("Answer no. 2 of the same seat"):]
+    assert "unsteered · turn 2" in later and "turn 2: I take the corner" in later
+    assert later.count("<img src='data:image/png;base64,") == 5  # the mismatching column gets no picture
+    assert "(picture not redrawn)" in later
+    assert page.count("<img src='data:image/png;base64,") == 6  # + the first turn's, shared by every column
 
 
 def test_prompt_equivalent_coefficient():
