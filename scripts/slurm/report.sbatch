@@ -26,5 +26,6 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 "$PYTHON" scripts/backfill_rewards.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "config/sweeps/$SWEEP.yaml" --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
+"$PYTHON" scripts/condensed_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/condensed_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
 echo "$(date)  done: git add $OUT && git commit -m 'Report: $SWEEP' && git push"
