@@ -602,6 +602,8 @@ td.l, th.l { text-align:left; }
 .wrap { overflow-x:auto; }
 .charts { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px; }
 .charts.mini { grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:8px; }
+details.bysetting { margin:10px 0 4px; border-left:3px solid var(--line); padding-left:10px; }
+details.bysetting > summary { color:var(--muted); }
 .charts.mini .chart h3 { font-size:13px; }
 .chart { background:var(--card); border-radius:8px; padding:8px; }
 .chart h3 { margin:0 0 2px; }
@@ -836,13 +838,8 @@ def setup_section(rows, sweep, traits, cells):
            f"<b>Games</b><span>{len(cells)} (game × observation mode), {eps} episodes in this report. Image mode: the "
            f"game state is shown as a picture instead of text. Episode seeds depend only on the game and the "
            f"episode number, so every condition plays the same deals, roles and seats.</span>",
-           "<b>Monitor (readout)</b><span>A second, <i>unsteered</i> copy of the model reads each agent's prompt and "
-           "answer. Its hidden state after the monitor layer"
-           + (f" (block {', '.join(str(m) for m in mon_layer)})" if mon_layer else "")
-           + " is averaged over the answer's tokens and projected onto each trait's unit vector: how strongly the "
-           "model represents that trait in what the agent wrote. Because the reader is unsteered, it measures the "
-           "text, not the injected vector. Reported in SD units of the unsteered agents of the same game "
-           "(0 = typical unsteered agent, +1 = one standard deviation more of the trait).</span>",
+           "<b>Monitor (readout): how it works</b><span>"
+           + monitor_how(len({t for r in rows for t in r["mon"]}), mon_layer) + "</span>",
            "<b>Outcome</b><span>Each game's own reward for the agent (e.g. win/loss of its side in Avalon, Werewolf, "
            "Mafia; points or goods won in auctions, harvest, TextArena games). Compared <i>paired</i>: the same seat in "
            "the unsteered episode with the same seed (same deal, same role).</span>",
@@ -2739,6 +2736,248 @@ def risk_tempo_section(rows, traits, steered, scale):
                          "games end sooner (decisions faster, or an early loss).", f, "".join(tab))
 
 
+# ---------------------------------------------------------------- per-setting breakdowns under every section
+
+ALREADY_BY_SETTING = {"7": "rows = settings", "8": "rows = settings", "16": "per game: one chart per setting",
+                      "19": "vector / prompt / both, and table h for everyone and the deceiving side",
+                      "21": "one vs all", "22": "evil_team, evil_one, good_team, good_one, all, one"}
+
+
+def setting_table(title, sets, traits, get, read=""):
+    """A collapsible table: one row per setting, one column per trait. get(setting, trait) -> a slope dict (stars:
+    Benjamini-Hochberg over the table), a str, or None."""
+    found = {(c, t): get(c, t) for c in sets for t in traits}
+    keys = [k for k, v in found.items() if isinstance(v, dict) and math.isfinite(v.get("p", float("nan")))]
+    q = dict(zip(keys, bh([found[k]["p"] for k in keys])))
+    out = [f"<details class=bysetting><summary>By setting: {html.escape(title)}</summary><div class=wrap><table><tr>"
+           "<th class=l>setting</th>" + "".join(f"<th>{html.escape(t)}</th>" for t in traits) + "</tr>"]
+    for c in sets:
+        tds = []
+        for t in traits:
+            v = found[(c, t)]
+            tds.append(slope_cell(v, q.get((c, t))) if isinstance(v, dict) else
+                       f"<td>{v}</td>" if v else "<td class=muted>–</td>")
+        out.append(f"<tr><td class=l>{html.escape(c)}</td>{''.join(tds)}</tr>")
+    out.append("</table></div>" + (f"<p class=muted>{read}</p>" if read else "") + "</details>")
+    return "".join(out)
+
+
+def _auc(rs, t):
+    """Mean over episodes of P(a steered agent's readout is more extreme, in its push's direction, than an
+    unsteered co-player's): 0.5 = the monitor cannot tell them apart."""
+    vals = []
+    for cl, ep in _by([r for r in rs if t in r["mon"]], lambda r: r["cluster"]).items():
+        st, ot = [r for r in ep if r["steered"]], [r["mon"][t] for r in ep if not r["steered"]]
+        if st and ot and st[0]["coef"]:
+            sign = 1 if st[0]["coef"] > 0 else -1
+            vals.append(float(np.mean([1.0 if sign * (s["mon"][t] - o) > 0 else 0.5 if s["mon"][t] == o else 0.0
+                                       for s in st for o in ot])))
+    return f"{np.mean(vals):.2f}" if vals else None
+
+
+def setting_pages(rows, traits, base, scale):
+    """{section number: html}: each section's measure repeated per setting (who is steered, and how)."""
+    by_c = _by(rows, lambda r: r["condition"])
+    none = by_c.get("none", [])
+    sets = [c for c in SETTING_ORDER if c in by_c]
+    sub = lambda c: by_c[c] + none
+    steer = lambda r: r["steered"]
+    pr = _by(paired(rows, base, lambda r: r["condition"] != "none" and r["trait"] is not None), lambda r: r["condition"])
+    pages = {}
+
+    # 1. coverage
+    cov = ["<details class=bysetting><summary>By setting: episodes and clean runs</summary><div class=wrap><table><tr>"
+           "<th class=l>setting</th><th>episodes</th><th>cut off at the turn limit</th><th>unparseable answers</th>"
+           "</tr>"]
+    for c in ["none"] + sets:
+        rs = by_c.get(c, [])
+        eps = {r["cluster"]: r["truncated"] for r in rs}
+        cov.append(f"<tr><td class=l>{c}</td><td>{len(eps)}</td><td>{100 * sum(eps.values()) / max(len(eps), 1):.1f}%</td>"
+                   f"<td>{100 * sum(r['fallbacks'] for r in rs) / max(1, sum(r['turns'] for r in rs)):.1f}%</td></tr>")
+    pages["1"] = "".join(cov) + "</table></div></details>"
+    # 2. manipulation
+    pages["2"] = setting_table("readout of the steered trait, SD per unit c", sets, traits,
+                               lambda c, t: readout_slope(sub(c), t, steer),
+                               "Prompt settings: the sign of the instruction is the coefficient (±1).")
+
+    # 3. specificity: the strongest other trait each vector moves, relative to its own
+    def side(c, t):
+        own = readout_slope(sub(c), t, steer)
+        if not math.isfinite(own.get("b", float("nan"))) or not own["b"]:
+            return None
+        other = {u: readout_slope(sub(c), t, steer, readout=u)["b"] for u in traits if u != t}
+        other = {u: b for u, b in other.items() if math.isfinite(b)}
+        if not other:
+            return None
+        u = max(other, key=lambda k: abs(other[k]))
+        return f"{html.escape(u)} {other[u] / own['b']:+.0%}"
+    pages["3"] = setting_table("the other trait that moves most (its slope as % of the steered trait's)", sets,
+                               traits, side, "all_random: a random direction carries the trait's name only for its norm, "
+                               "so its 'own' slope is near 0 and the % is not meaningful there.")
+    # 4. detectability
+    pages["4"] = setting_table("AUC: steered agents vs their unsteered co-players (0.5 = invisible)", sets, traits,
+                               lambda c, t: _auc([r for r in by_c[c] if r["trait"] == t], t),
+                               "Settings where every agent is steered have no unsteered co-player to compare with (–).")
+    # 5. amplify vs suppress
+    def updown(c, t):
+        a = readout_slope(sub(c), t, lambda r: r["steered"] and r["coef"] > 0)
+        b = readout_slope(sub(c), t, lambda r: r["steered"] and r["coef"] < 0)
+        return f"{fmt(a['b'], 1)} / {fmt(b['b'], 1)}" if math.isfinite(a.get("b", float("nan"))) else None
+    pages["5"] = setting_table("readout slope pushing up / pushing down (SD per unit c)", sets, traits, updown)
+
+    # 6. prompt vs vector: the same carriers, given the vector (c = ±1) or the prompt
+    pairs = [("one agent", "one", "prompt_one"), ("everyone", "all", "prompt_all"),
+             ("deceiving side", "evil_team", "evil_team_prompt")]
+    pairs = [p for p in pairs if p[1] in by_c and p[2] in by_c]
+
+    def pv(c, t):
+        _, vec, pro = next(p for p in pairs if p[0] == c)
+        m = lambda rs: _episode_mean([math.copysign(1, r["coef"]) * r["mon"][t] for r in rs],
+                                     [r["cluster"] for r in rs])[0]
+        v = m([r for r in by_c[vec] if r["steered"] and r["trait"] == t and abs(r["coef"]) == 1 and t in r["mon"]])
+        p = m([r for r in by_c[pro] if r["steered"] and r["trait"] == t and t in r["mon"]])
+        return f"{fmt(v, 1)} / {fmt(p, 1)}" if math.isfinite(v) or math.isfinite(p) else None
+    if pairs:
+        pages["6"] = setting_table("readout the intended way: vector at c = ±1 / prompt (SD)", [p[0] for p in pairs],
+                                   traits, pv)
+    # 9, 10. own and co-players' reward
+    pages["9"] = setting_table("steered agents' reward, SD per unit c", sets, traits,
+                               lambda c, t: _diff_slope([r for r in pr.get(c, []) if r["steered"] and r["trait"] == t], scale))
+    pages["10"] = setting_table("unsteered co-players' reward, SD per unit c", sets, traits,
+                                lambda c, t: _diff_slope([r for r in pr.get(c, []) if not r["steered"] and r["trait"] == t],
+                                                         scale))
+    # 11. the deceiving side's reward, whoever is steered
+    rsets = [c for c in sets if any(r["team"] == "evil" for r in pr.get(c, []))]
+    pages["11"] = setting_table("the deceiving side's reward, SD per unit c (whoever is steered)", rsets, traits,
+                                lambda c, t: _diff_slope([r for r in pr.get(c, []) if r["team"] == "evil"
+                                                          and r["trait"] == t], scale))
+
+    # 11b. readout -> reward among the steered agents
+    def assoc(c, t):
+        rs = [r for r in pr.get(c, []) if r["steered"] and r["trait"] == t and t in r["mon"]]
+        return slope([r["mon"][t] for r in rs], [r["diff"] / scale.get(r["cell"], 1.0) for r in rs],
+                     [r["cluster"] for r in rs], [r["cell"] for r in rs]) if len(rs) > 20 else None
+    pages["11b"] = setting_table("reward change per +1 SD of readout (steered agents; correlational)", sets, traits, assoc)
+    # 12. image - text
+    pages["12"] = setting_table("readout slope with images minus with text (SD per unit c)", sets, traits,
+                                lambda c, t: obs_compare(sub(c), t, lambda s_, t_: readout_slope(s_, t_, steer))[0]["diff"])
+
+    # 13. unparseable answers
+    def broken(c, t):
+        rs = [r for r in by_c[c] if r["steered"] and r["trait"] == t and r["turns"]] + [r for r in none if r["turns"]]
+        return slope([r["coef"] if r["condition"] != "none" else 0.0 for r in rs],
+                     [100 * r["fallbacks"] / r["turns"] for r in rs], [r["cluster"] for r in rs], [r["cell"] for r in rs])
+    pages["13"] = setting_table("unparseable answers, percentage points per unit c", sets, traits, broken)
+    # 14. over the episode
+    pages["14"] = setting_table("late − early readout per unit c (opposite sign to section 2 = it fades)", sets, traits,
+                                lambda c, t: phase_slope(sub(c), t, steer,
+                                                         lambda r, u: r["phase"]["late"][u] - r["phase"]["early"][u]))
+
+    # 15. actions: the numeric choice, in SD of the game's unsteered agents
+    num0 = {cell: (float(np.mean(v)), float(np.std(v)) or 1.0) for cell, v in
+            _by([r for r in none if r["act_num"] is not None], lambda r: r["cell"]).items()
+            for v in [[r["act_num"] for r in v]] if len(v) > 1}
+
+    def numeric(c, t):
+        rs = [r for r in sub(c) if r["act_num"] is not None and r["cell"] in num0
+              and (r["condition"] == "none" or (r["steered"] and r["trait"] == t))]
+        if not any(r["condition"] != "none" for r in rs):
+            return None
+        return slope([r["coef"] if r["condition"] != "none" else 0.0 for r in rs],
+                     [(r["act_num"] - num0[r["cell"]][0]) / num0[r["cell"]][1] for r in rs],
+                     [r["cluster"] for r in rs], [r["cell"] for r in rs])
+    pages["15"] = setting_table("the agent's numeric choice (bid, guess, amount), SD per unit c, games that have one",
+                                sets, traits, numeric)
+
+    # 17. footprint: where the steered trait ranks among all monitored personas, at the strongest |c|
+    def rank(c, t):
+        rs = [r for r in by_c[c] if r["steered"] and r["trait"] == t and r["coef"]]
+        if not rs:
+            return None
+        cmax, out = max(abs(r["coef"]) for r in rs), []
+        for s in (1, -1):
+            fp = fingerprint([r for r in rs if r["coef"] == s * cmax])
+            if t in fp:
+                out.append(f"{'+' if s > 0 else '−'} {1 + sorted(fp, key=lambda u: -s * fp[u]).index(t)}")
+        return " · ".join(out) or None
+    pages["17"] = setting_table("rank of the steered trait among all monitored personas (1 = moves most)", sets,
+                                traits, rank)
+
+    # 18. naming: centroids learnt on one-agent steering (even episodes) name the trait in every setting
+    one = [r for r in rows if _single_vector(r) and r["mon"]]
+    if one:
+        mon = sorted({u for r in one for u in r["mon"]})
+        vec = lambda r: np.nan_to_num(np.array([r["mon"].get(u, 0.0) for u in mon]))
+        train = [r for r in one if r["episode"] % 2 == 0]
+        cls = sorted({(r["trait"], r["coef"] > 0) for r in train})
+        C = np.stack([np.mean([vec(r) for r in train if (r["trait"], r["coef"] > 0) == k], 0) for k in cls])
+
+        def named(c, t):
+            rs = [r for r in by_c[c] if r["steered"] and r["trait"] == t and r["mon"] and r["coef"]
+                  and not (c == "one" and r["episode"] % 2 == 0)]
+            if not rs:
+                return None
+            X = np.stack([vec(r) for r in rs])
+            pred = (-2 * X @ C.T + (C * C).sum(1)).argmin(1)
+            return f"{100 * np.mean([cls[j][0] == t for j in pred]):.0f}%"
+        pages["18"] = setting_table("named right by the monitor trained on one-agent steering (chance "
+                                    f"{100 / len(traits):.0f}%)", sets, traits, named)
+
+    # 20. length held fixed
+    def kept(c, t):
+        rs = [r for r in sub(c) if r["chars"] and t in r["mon"] and (r["condition"] == "none" or (r["steered"] and r["trait"] == t))]
+        if not any(r["condition"] != "none" for r in rs):
+            return None
+        x = [r["coef"] if r["condition"] != "none" else 0.0 for r in rs]
+        y, ll = [r["mon"][t] for r in rs], [math.log(max(r["chars"], 1.0)) for r in rs]
+        cl, fe = [r["cluster"] for r in rs], [r["cell"] for r in rs]
+        b0, b1 = slope(x, y, cl, fe)["b"], ols(y, list(zip(x, ll)), cl, fe)[0]["b"]
+        return f"{100 * b1 / b0:.0f}%" if b0 and math.isfinite(b0) and math.isfinite(b1) else None
+    pages["20"] = setting_table("share of the readout shift left with answer length held fixed", sets, traits, kept)
+
+    # 23. steered reward per SD of readout (compare with section 23's natural association)
+    def per_sd(c, t):
+        rew = _diff_slope([r for r in pr.get(c, []) if r["steered"] and r["trait"] == t], scale)["b"]
+        rd = readout_slope(sub(c), t, steer)["b"]
+        return f"{rew / rd:+.3f}" if rd and math.isfinite(rd) and math.isfinite(rew) else None
+    pages["23"] = setting_table("steered effect: reward (SD) per SD of readout", sets, traits, per_sd)
+
+    # 24. risk: spread of the reward change at mild and strong steering
+    def spread(c, t):
+        d = lambda keep: [r["diff"] / scale.get(r["cell"], 1.0) for r in pr.get(c, [])
+                          if r["steered"] and r["trait"] == t and r["coef"] and keep(abs(r["coef"]))
+                          and math.isfinite(r["diff"])]
+        lo_, hi_ = d(lambda a: a <= 0.5 or a == 1 and c.startswith("prompt")), d(lambda a: a >= 2)
+        return f"{np.std(lo_):.2f} → {np.std(hi_):.2f}" if len(lo_) > 5 and len(hi_) > 5 else None
+    pages["24"] = setting_table("SD of the steered agents' reward change: |c| = 0.5 → |c| = 2", sets, traits, spread)
+    for num, what in ALREADY_BY_SETTING.items():
+        pages[num] = f"<p class=muted>By setting: this section is already split by setting ({what}).</p>"
+    return pages
+
+
+def monitor_how(n_mon, layers) -> str:
+    """How the monitor (readout) works, step by step (html list)."""
+    at = f"block {', '.join(str(int(m)) for m in layers)}" if layers else "the monitor layer"
+    return ("<ol style='margin:0;padding-left:18px'>"
+            "<li><b>A second, unsteered copy of the model reads every turn.</b> The same model, on its own GPU, is "
+            "given the agent's exact prompt and answer (image turns with their images) as a prefill, as if it had "
+            "written them itself; it generates nothing new.</li>"
+            "<li><b>It records the hidden states</b> (the residual stream after each decoder block) of every token, "
+            "with vLLM-Hook.</li>"
+            "<li><b>Only the answer counts:</b> the prompt's tokens are dropped and the answer's hidden states "
+            "averaged, one vector per turn.</li>"
+            f"<li><b>Projected on each persona:</b> that vector's dot product with the unit-length PersVecFast vector "
+            f"of each of the {n_mon} monitored personas, one number per persona: how strongly the model represents "
+            "that persona in what the agent wrote.</li>"
+            f"<li><b>Per agent and episode:</b> the mean over its turns at {at} (and per third of its turns, for "
+            "section 14).</li>"
+            "<li><b>Scaled</b> to the unsteered agents of the same game: 0 = a typical unsteered agent, +1 = one "
+            "standard deviation more of the persona.</li></ol>"
+            "Because the reader is unsteered, it measures what the text conveys, not the injected vector, which is why "
+            "it can read prompted agents too. Its limits: the persona vectors overlap, so one number never means one "
+            "trait alone (sections 3, 17), and answer length and style leak into it (section 20).")
+
+
 def build(rows, sweep=None, logs_dir=None) -> str:
     rows = zscored(rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
@@ -3242,6 +3481,9 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale)):
         late_take += part[0]
         body.append(part[1])
+    pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
+    body = [b + pages.get(b[b.index("id=s") + 4:b.index(">", b.index("id=s"))], "") if "id=s" in b[:40] else b
+            for b in body]
     body.append(games_section(rows, traits, cells, man, eff, base, scale))
 
     # takeaways: what the sections add up to, written from their numbers
