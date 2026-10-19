@@ -15,8 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import multiprocessing
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -86,7 +86,11 @@ def _work(job):
     jsonl = spath.with_name(spath.name[:-len(".summary.json")] + ".jsonl")
     if not jsonl.exists():
         return False
-    counts = count_tokens(jsonl, lambda text: len(_TOKENIZER.encode(text, add_special_tokens=False)), per_image)
+    try:
+        counts = count_tokens(jsonl, lambda text: len(_TOKENIZER.encode(text, add_special_tokens=False)), per_image)
+    except Exception as e:  # noqa: BLE001 - a broken log stays uncounted, the others still count
+        print(f"{jsonl}: not counted ({type(e).__name__}: {e})", flush=True)
+        return False
     side = side_path(spath)
     tmp = side.with_name(side.name + ".tmp")
     tmp.write_text(json.dumps(counts), encoding="utf-8")
@@ -123,9 +127,11 @@ def main(argv=None) -> None:
                     print(f"{run_dir.name}: image size unknown ({type(e).__name__}: {e})")
                     per_run[run_dir] = (None, spec.hf_repo)
             jobs.append((str(spath), *per_run[run_dir]))
-    print(f"{len(jobs)} episodes to count")
-    with multiprocessing.Pool(args.jobs) as pool:
-        done = sum(pool.imap_unordered(_work, jobs, chunksize=64))
+    print(f"{len(jobs)} episodes to count", flush=True)
+    # not multiprocessing.Pool: it waits forever on a worker the kernel killed (out of memory); the executor
+    # raises BrokenProcessPool instead, and the files written so far are kept for the next run
+    with ProcessPoolExecutor(args.jobs) as pool:
+        done = sum(pool.map(_work, jobs, chunksize=64))
     print(f"wrote {done} token files")
 
 
