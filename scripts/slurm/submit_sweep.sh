@@ -5,6 +5,7 @@
 #        DRY_RUN=1 bash scripts/slurm/submit_sweep.sh ...   (print the arrays, submit nothing)
 #        ONLY='avalon|werewolf' bash scripts/slurm/submit_sweep.sh ...   (only game groups matching this regex)
 #        PART=1/2 bash scripts/slurm/submit_sweep.sh ...    (first half of the game groups; 2/2 = the rest)
+#        THROTTLE=10 bash scripts/slurm/submit_sweep.sh ... (at most 10 running tasks per array: --array=0-N%10)
 set -euo pipefail
 SWEEP="${1:?Usage: submit_sweep.sh <config/runs/NAME> [episodes per task] [sbatch args]}"
 PER_TASK="${2:-400}"; shift; shift || true
@@ -25,6 +26,6 @@ while read -r GROUP EPISODES; do
   EPISODES="${EPISODES//[!0-9]/}"  # drop a stray carriage return (Windows Python)
   TASKS=$(( (EPISODES + PER_TASK - 1) / PER_TASK ))
   if [ -n "${DRY_RUN:-}" ]; then JOB=dry-run; else
-    JOB=$(sbatch --parsable --array=0-$((TASKS - 1)) "$@" scripts/slurm/run_games.sbatch "$GROUP/" --num-shards "$TASKS"); fi
-  echo "$(basename "$GROUP"): $EPISODES episodes, $TASKS task(s): $JOB"
+    JOB=$(sbatch --parsable --array=0-$((TASKS - 1))${THROTTLE:+%$THROTTLE} "$@" scripts/slurm/run_games.sbatch "$GROUP/" --num-shards "$TASKS"); fi
+  echo "$(basename "$GROUP"): $EPISODES episodes, $TASKS task(s)${THROTTLE:+, at most $THROTTLE at once}: $JOB"
 done
