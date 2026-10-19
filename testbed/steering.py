@@ -40,6 +40,7 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
+from testbed.logging_.episode_logger import retry_io
 from testbed.util import read_json, save_pt
 
 RANDOM_CONTROL_SEED = 0  # as PersVecFast: the control at layer l uses seed RANDOM_CONTROL_SEED + l
@@ -79,13 +80,14 @@ class VectorStore:
         self.traits_dir = Path(os.path.expandvars(str(traits_dir))) if traits_dir else \
             self.dir.parents[3] / "data" / "persona_vectors"
         self._vectors: Dict[str, Dict[int, torch.Tensor]] = {}
+        self._summaries: Dict[str, dict] = {}
 
     def instruction(self, trait: str, positive: bool, roleplay: bool = False) -> str:
         """The trait's PersVecFast system-prompt instruction (the one its vector was extracted with)."""
         path = self.traits_dir / f"{slugify(trait)}.json"
-        if not path.exists():
+        if not retry_io(path.exists):
             raise FileNotFoundError(f"no trait definition {path}; set `traits_dir` to PersVecFast/data/persona_vectors")
-        definition = read_json(path)
+        definition = retry_io(read_json, path)
         if not positive:
             return definition["instruction"]["negative"]
         if roleplay:
@@ -94,23 +96,28 @@ class VectorStore:
         return definition["instruction"]["positive"]
 
     def traits(self) -> List[str]:
-        return sorted(p.stem for p in self.dir.glob("*.pt") if not p.stem.endswith("_raw"))
+        return sorted(p.stem for p in retry_io(lambda: list(self.dir.glob("*.pt"))) if not p.stem.endswith("_raw"))
 
     def vectors(self, trait: str) -> Dict[int, torch.Tensor]:
         slug = slugify(trait)
         if slug not in self._vectors:
             path = self.dir / f"{slug}.pt"
-            if not path.exists():
+            if not retry_io(path.exists):
                 raise FileNotFoundError(f"no persona vector {path}; known traits: {self.traits()}")
-            self._vectors[slug] = {int(l): v.float() for l, v in torch.load(path, map_location="cpu").items()}
+            loaded = retry_io(torch.load, path, map_location="cpu")
+            self._vectors[slug] = {int(l): v.float() for l, v in loaded.items()}
         return self._vectors[slug]
 
     def num_layers(self) -> int:
         return len(self.vectors(self.traits()[0]))
 
     def summary(self, trait: str) -> dict:
-        path = self.dir / f"{slugify(trait)}.json"
-        return read_json(path) if path.exists() else {}
+        # read once per trait: every run config asks again, and each read is a round trip to scratch, which drops out
+        slug = slugify(trait)
+        if slug not in self._summaries:
+            path = self.dir / f"{slug}.json"
+            self._summaries[slug] = retry_io(read_json, path) if retry_io(path.exists) else {}
+        return self._summaries[slug]
 
     def candidate_layers(self) -> List[int]:
         """The layers PersVecFast evaluated steering at (the same for every trait of a model)."""
@@ -139,7 +146,7 @@ class VectorStore:
         suffix = "_random" if random_ctrl else ""
         if len(slugs) == 1 and next(iter(slugs.values())) == 1.0:
             exported = self.dir / "vllm_hook" / f"{name}_L{layer}{suffix}.pt"
-            if exported.exists():
+            if retry_io(exported.exists):
                 return str(exported.resolve())
         path = self.cache_dir / f"{name}_L{layer}{suffix}.pt"
         if not path.exists():
