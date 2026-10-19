@@ -36,6 +36,7 @@ class TurnResult:
     token_ids: List[int] = field(default_factory=list)
     prompt: str = ""                              # templated prompt text (needed to re-read image turns)
     images: List = field(default_factory=list)
+    n_prompt_tokens: int = 0                      # tokens the model read: the prompt's text and its images
 
     @property
     def n_tokens(self) -> int:

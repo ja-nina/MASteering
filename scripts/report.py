@@ -82,6 +82,7 @@ def load(path) -> list:
             "steered": r.get("steered") == "True", "team": r.get("team") or None,
             "reward": num("reward"), "reward_from": r.get("reward_from") or None,
             "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
+            "tokens_in": num("tokens_in"), "tokens_out": num("tokens_out"),
             "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
             "players": num("players"), "episode_turns": num("episode_turns"),
             "monitor_layer": num("monitor_layer"), "steer_layer": num("steer_layer"),
@@ -1936,7 +1937,8 @@ def naming_section(rows, traits):
          f"{100 * float((pred8 == truth).mean()):.0f}% — the other personas add little."]
     take = [f"<b>Naming the persona is possible but unreliable.</b> From its readout alone, the injected trait is named "
             f"right for {100 * acc(absc > 0):.0f}% of steered agents (chance {100 * chance:.0f}%; "
-            f"{100 * by_c[min(by_c)]:.0f}% at |c| = {min(by_c):g}); {min(recall, key=recall.get)} is hardest "
+            f"{100 * by_c[min(by_c)]:.0f}% at |c| = {min(by_c):g}, {100 * by_c[max(by_c)]:.0f}% at |c| = "
+            f"{max(by_c):g}: strong personas are far easier to name); {min(recall, key=recall.get)} is hardest "
             f"({100 * min(recall.values()):.0f}%) and most mistakes are named {sink} (section 18)."]
     return take, section(18, "Naming the trait: can a monitor tell which persona was injected?",
                          "Section 4 shows a monitor can flag the steered agent. Can it also say <i>which</i> persona "
@@ -2513,6 +2515,16 @@ def role_section(rows, traits, base, scale):
                                       if (cell, c, t) in ud and math.isfinite(ud[(cell, c, t)]["b"])}) == 1]
         if ts:
             agree.append(f"{c}: {len(same)} of {len(ts)} ({', '.join(same) or '–'})")
+    flips = []  # the same trait, the whole deceiving side steered: significant in opposite directions in two games
+    for t in traits:
+        signs = {cell_name(cell): ud[(cell, "evil_team", t)]["b"] for cell in cells_ if (cell, "evil_team", t) in ud
+                 and sig(ud[(cell, "evil_team", t)], q_of("ud", (cell, "evil_team", t)))}
+        if signs and max(signs.values()) > 0 > min(signs.values()):
+            flips.append(f"{t} (" + ", ".join(f"{g} {v:+.0f}" for g, v in signs.items()) + " points)")
+    if flips:
+        f.append("<b>Flips between games:</b> with the whole deceiving side steered, pushing the trait up rather "
+                 f"than down helps the deceivers in one game and hurts them in another for {'; '.join(flips)}: a "
+                 "trait's effect on who wins depends on the game's rules, not only on the persona.")
     if agree:
         f.append("<b>Across games</b>, of the traits whose up-vs-down difference is significant in some game, the "
                  f"direction is the same in every game for: {'; '.join(agree)}.")
@@ -2552,7 +2564,9 @@ def role_section(rows, traits, base, scale):
                if broke else "")
             + f"one deceiver or one honest player steered rarely changes who wins ({n_role} of {t_role} carrier "
             f"comparisons differ); a trait's direction agrees across games for "
-            f"{'; '.join(agree[:1]) or 'no trait yet'} (section 22)."]
+            f"{'; '.join(agree[:1]) or 'no trait yet'}"
+            + (f"; it flips between games for {', '.join(x.split(' (')[0] for x in flips)}" if flips else "")
+            + " (section 22)."]
     return take, section(22, "Hidden-role games: who carries the persona, and what it does to who wins",
                          "In Avalon, Mafia and Werewolf, does it matter whether the whole deceiving side carries the "
                          "persona (evil_team), one deceiver (evil_one), the whole honest side (good_team), one honest "
@@ -2700,6 +2714,102 @@ def risk_tempo_section(rows, traits, steered, scale):
                          "episodes stopped at the turn limit at the strongest coefficient.",
                          "A rising SD = stronger steering makes the agent's results less predictable. Negative length = "
                          "games end sooner (decisions faster, or an early loss).", f, "".join(tab))
+
+
+# ---------------------------------------------------------------- text vs image
+
+def _tokens_total(rs):
+    """Tokens read by all agents of these rows, e.g. '3.2M' ('–' when not counted; '≥' when only some are)."""
+    have = [r["tokens_in"] for r in rs if r.get("tokens_in") is not None]
+    if not have:
+        return "–"
+    total = sum(have)
+    size = f"{total / 1e9:.2f}B" if total >= 1e9 else f"{total / 1e6:.1f}M" if total >= 1e6 else f"{total / 1e3:.0f}k"
+    return size if len(have) == len(rs) else f"≥ {size}"
+
+
+def per_turn(rs, key):
+    """Mean of an agent-episode total (e.g. tokens read) per turn, over the agents that have it."""
+    vals = [r[key] / r["turns"] for r in rs if r.get(key) is not None and r["turns"]]
+    return float(np.mean(vals)) if vals else float("nan")
+
+
+def mode_baselines(rows):
+    """{group: {"text": stats, "image": stats, "paired": [(cluster, image - text reward)]}} for the games played both
+    ways, from their unsteered agents: the same seeds give the same deals and seats in both modes, so each seat's
+    reward with images is paired with its reward with text."""
+    none = [r for r in rows if r["condition"] == "none"]
+    modes = defaultdict(set)
+    for r in rows:
+        modes[r["group"]].add(r["obs"])
+    out = {}
+    for g in sorted(k for k, m in modes.items() if {"text", "image"} <= m):
+        by = {m: [r for r in none if r["group"] == g and r["obs"] == m] for m in ("text", "image")}
+        if not by["text"] or not by["image"]:
+            continue
+        res = {}
+        for m, rs in by.items():
+            rw = [r["reward"] for r in rs if r["reward"] is not None]
+            res[m] = {"episodes": len({r["episode"] for r in rs}), "reward": float(np.mean(rw)) if rw else float("nan"),
+                      "win": 100 * float(np.mean([x > 0 for x in rw])) if rw else float("nan"),
+                      "binary": set(np.round(rw, 6)) <= {0.0, 1.0} or set(np.round(rw, 6)) <= {-1.0, 1.0},
+                      "unparseable": 100 * sum(r["fallbacks"] for r in rs) / max(1, sum(r["turns"] for r in rs)),
+                      "chars": float(np.mean([r["chars"] for r in rs if r["chars"]] or [float("nan")])),
+                      "tokens_in": per_turn(rs, "tokens_in"), "tokens_out": per_turn(rs, "tokens_out"),
+                      "length": float(np.mean([r["episode_turns"] for r in rs if r["episode_turns"]] or [float("nan")]))}
+        text = {(r["episode"], r["agent"]): r["reward"] for r in by["text"] if r["reward"] is not None}
+        res["paired"] = [((g, r["episode"]), r["reward"] - text[(r["episode"], r["agent"])]) for r in by["image"]
+                         if r["reward"] is not None and (r["episode"], r["agent"]) in text]
+        out[g] = res
+    return out
+
+
+def mode_curves(rows, steered, scale, traits):
+    """Per trait, over c, text vs image (games played both ways, persona vector, no side settings): the steered
+    agents' readout of the trait and their paired reward change (SD units). {trait: {"readout": series,
+    "reward": series}} with series {mode: [(c, mean, half CI)]}."""
+    groups = defaultdict(set)
+    for r in rows:
+        groups[r["group"]].add(r["obs"])
+    both = {g for g, m in groups.items() if {"text", "image"} <= m}
+    out = {}
+    for t in traits:
+        rd = [r for r in rows if is_vector(r, t) and r["team_cond"] is None and r["group"] in both and t in r["mon"]]
+        rw = [r for r in steered if r["trait"] == t and r["group"] in both and math.isfinite(r["diff"])]
+        out[t] = {kind: {m: [(c, *mean_ci([v(r) for r in rs], [r["cluster"] for r in rs])[:2])
+                             for c, rs in sorted(_by([r for r in src if r["obs"] == m and r["coef"]],
+                                                     lambda r: r["coef"]).items())] + [(0.0, 0.0, float("nan"))]
+                         for m in ("text", "image")}
+                  for kind, src, v in (("readout", rd, lambda r: r["mon"][t]),
+                                       ("reward", rw, lambda r: r["diff"] / scale.get(r["cell"], 1.0)))}
+    return out
+
+
+def modes_table(base):
+    """Unsteered play, text vs image, per game (html)."""
+    out = ["<h3>Without steering: how image play differs from text play</h3><div class=wrap><table><tr>"
+           "<th class=l>game</th><th>result: text</th><th>result: image</th><th>image − text (same seats, seeds)</th>"
+           "<th>unparseable: text / image</th><th>answer length: text / image</th>"
+           "<th>tokens read per turn: text / image</th><th>tokens generated per turn: text / image</th>"
+           "<th>turns per episode: text / image</th></tr>"]
+    show = lambda d: f"{d['win']:.0f}% wins" if d["binary"] else fmt(d["reward"], 2)
+    two = lambda a, b, d=0: f"{fmt(a, d)} / {fmt(b, d)}" if math.isfinite(a) or math.isfinite(b) else "–"
+    for g, d in base.items():
+        t, i = d["text"], d["image"]
+        m, half, n = mean_ci([x for _, x in d["paired"]], [k for k, _ in d["paired"]])
+        k = 100 if t["binary"] else 1
+        diff = (f"{k * m:+.{0 if t['binary'] else 2}f}{' points' if t['binary'] else ''} ± {k * half:.{0 if t['binary'] else 2}f}"
+                if math.isfinite(half) else "–")
+        out.append(f"<tr><td class=l>{html.escape(g)}</td><td>{show(t)} <span class=muted>(n={t['episodes']})</span></td>"
+                   f"<td>{show(i)} <span class=muted>(n={i['episodes']})</span></td><td>{diff}</td>"
+                   f"<td>{t['unparseable']:.1f}% / {i['unparseable']:.1f}%</td><td>{two(t['chars'], i['chars'])}</td>"
+                   f"<td>{two(t['tokens_in'], i['tokens_in'])}</td><td>{two(t['tokens_out'], i['tokens_out'])}</td>"
+                   f"<td>{two(t['length'], i['length'], 1)}</td></tr>")
+    out.append("</table></div><p class=muted>Unsteered agents only. Results are the game's own (win share, or the mean "
+               "score); image − text pairs each seat with itself in the same deal (95% CI). Tokens read: every "
+               "attempt's prompt, text and image tokens; '–' where the counts are not in the data yet "
+               "(scripts/backfill_tokens.py).</p>")
+    return "".join(out)
 
 
 # ---------------------------------------------------------------- per-setting breakdowns under every section
@@ -2954,14 +3064,17 @@ def build(rows, sweep=None, logs_dir=None) -> str:
 
     # 1. coverage
     tab = ["<div class=wrap><table><tr><th class=l>game</th><th>runs</th><th>episodes</th><th>unsteered episodes</th>"
-           "<th>cut off at the turn limit</th><th>unparseable answers</th></tr>"]
+           "<th>cut off at the turn limit</th><th>unparseable answers</th><th>tokens read per turn</th>"
+           "<th>tokens generated per turn</th><th>tokens read, all agents</th></tr>"]
     for cell in cells:
         cr = [r for r in rows if r["cell"] == cell]
         eps = {r["cluster"]: r["truncated"] for r in cr}
         turns, fb = sum(r["turns"] for r in cr), sum(r["fallbacks"] for r in cr)
         tab.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td><td>{len({r['run_id'] for r in cr})}</td>"
                    f"<td>{len(eps)}</td><td>{len({r['cluster'] for r in cr if r['condition'] == 'none'})}</td>"
-                   f"<td>{100 * sum(eps.values()) / max(len(eps), 1):.0f}%</td><td>{100 * fb / max(turns, 1):.1f}%</td></tr>")
+                   f"<td>{100 * sum(eps.values()) / max(len(eps), 1):.0f}%</td><td>{100 * fb / max(turns, 1):.1f}%</td>"
+                   f"<td>{fmt(per_turn(cr, 'tokens_in'), 0) or '–'}</td><td>{fmt(per_turn(cr, 'tokens_out'), 0) or '–'}</td>"
+                   f"<td>{_tokens_total(cr)}</td></tr>")
     tab.append("</table></div>")
     bad = [cell_name(c) for c in cells
            if sum(r["fallbacks"] for r in rows if r["cell"] == c) > 0.05 * max(1, sum(r["turns"] for r in rows if r["cell"] == c))]
@@ -2970,7 +3083,13 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                         "agent turns whose answer could not be parsed even after the retries (the agent then plays a "
                         "default move).", "Unsteered episodes are the reference for everything else: few of them make "
                         "all later numbers noisy. Unparseable answers above a few % point to a prompt/parser problem.",
-                        [f"{len({r['cluster'] for r in rows})} episodes over {len(cells)} games."]
+                        [f"{len({r['cluster'] for r in rows})} episodes over {len(cells)} games."
+                         + (f" The agents read {_tokens_total(rows)} tokens (prompt text and images, every attempt; "
+                            f"{fmt(per_turn(rows, 'tokens_in'), 0)} per turn) and generated "
+                            f"{_tokens_total([{**r, 'tokens_in': r['tokens_out']} for r in rows])}"
+                            "; the monitor reads each turn's prompt and answer once more."
+                            if any(r.get("tokens_in") is not None for r in rows) else
+                            " Token counts are not in this data yet (scripts/backfill_tokens.py adds them).")]
                         + ([f"More than 5% unparseable answers in: {', '.join(bad)}."] if bad else []), "".join(tab)))
 
     # 2. manipulation
@@ -3005,6 +3124,11 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                   + ("the effect is mostly specific to the trait direction." if max(ratio.values()) < 0.5 else
                      "part of the effect is generic 'disturbance', not the trait."))
     neg = sum(1 for k, s in pg_found.items() if sig(s, pg_q[k]) and s["b"] < 0)
+    pos = sum(1 for k, s in pg_found.items() if sig(s, pg_q[k]) and s["b"] > 0)
+    n_pg = sum(1 for s in pg_found.values() if s and math.isfinite(s.get("b", float("nan"))))
+    extra = [f"<b>The steering works in nearly every game.</b> The steered trait moves the intended way in {pos} of "
+             f"{n_pg} game × trait cells" + (f", the opposite way in {neg}" if neg else "") + " (section 2): the "
+             "language effect does not depend on which game is played."] if n_pg else []
     f2.append(f"Per game: {sum(1 for k, s in pg_found.items() if sig(s, pg_q[k]) and s['b'] > 0)} of "
               f"{sum(1 for s in pg_found.values() if s and math.isfinite(s.get('b', float('nan'))))} game×trait cells "
               f"move significantly in the steered direction" + (f", {neg} in the opposite direction." if neg else "."))
@@ -3183,6 +3307,10 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         len_0.append(c0[0])
     tab_d.append("</table></div>")
 
+    if auc_p:
+        extra.append(f"<b>A persona in the prompt is no harder to spot.</b> The monitor singles out a prompted agent "
+                     f"with mean AUC {np.mean(auc_p):.2f}, a vector-steered one (strongest c) with {np.mean(auc_v):.2f} "
+                     "(section 6): putting the persona in the system prompt does not hide it from an activation monitor.")
     f6 = []
     within = [(t, s) for t, s in sides if not ch[t][s]["eq"][1] and math.isfinite(ch[t][s]["eq"][0])]
     beyond = [f"{t} {sgn(s)}" for t, s in sides if ch[t][s]["eq"][1] == ">"]
@@ -3365,7 +3493,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         obs_rew[t], _ = obs_compare(steered, t, lambda sub, t: _diff_slope([r for r in sub if r["trait"] == t], scale))
     i12, i_found, i_q = matrix("Readout slope (SD per unit c)", "trait", traits, ["text", "image", "diff"],
                                lambda t, m: obs_read[t][m])
-    j12, _, _ = matrix("Steered agent's reward slope (SD per unit c)", "trait", traits, ["text", "image", "diff"],
+    j12, j_found, j_q = matrix("Steered agent's reward slope (SD per unit c)", "trait", traits, ["text", "image", "diff"],
                        lambda t, m: obs_rew[t][m])
     stronger_img = [t for t in traits if sig(i_found[(t, "diff")], i_q[(t, "diff")]) and i_found[(t, "diff")]["b"] > 0]
     weaker_img = [t for t in traits if sig(i_found[(t, "diff")], i_q[(t, "diff")]) and i_found[(t, "diff")]["b"] < 0]
@@ -3377,12 +3505,47 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         f12.append(f"Less with images for: {', '.join(weaker_img)}.")
     if stronger_img or weaker_img:
         key.append(f12[1])
+    mb = mode_baselines(rows)
+    if mb:  # unsteered play itself: does the picture change how agents do, break, talk, and what they read?
+        by_mode = {g: mean_ci([x for _, x in d["paired"]], [k for k, _ in d["paired"]]) for g, d in mb.items()}
+        diff_g = [g for g, (m, h, _) in by_mode.items() if math.isfinite(h) and abs(m) > h]
+        tin = [(d["text"]["tokens_in"], d["image"]["tokens_in"]) for d in mb.values()
+               if math.isfinite(d["text"]["tokens_in"]) and math.isfinite(d["image"]["tokens_in"])]
+        f12.append(f"<b>Without steering</b>, results differ between image and text play (95% CI of the paired "
+                   f"difference excludes 0) in {len(diff_g)} of {len(mb)} games"
+                   + (f" ({', '.join(diff_g)})" if diff_g else "") + "; unparseable answers are "
+                   + f"{np.mean([d['image']['unparseable'] for d in mb.values()]):.1f}% with images vs "
+                   + f"{np.mean([d['text']['unparseable'] for d in mb.values()]):.1f}% with text (mean over games)"
+                   + (f"; agents read {np.mean([i for _, i in tin]):.0f} tokens per turn with images vs "
+                      f"{np.mean([t for t, _ in tin]):.0f} with text" if tin else
+                      "; token counts are not in this data yet") + ".")
+    differ = [t for t in traits if sig(j_found[(t, "diff")], j_q[(t, "diff")])]
+    if any(math.isfinite(obs_rew[t]["diff"].get("b", float("nan"))) for t in traits):
+        f12.append("The steered agent's <b>result</b> responds differently to steering with images for "
+                   + (", ".join(f"{t} ({'more' if obs_rew[t]['diff']['b'] > 0 else 'less'} reward per unit c)"
+                                for t in differ) if differ else "no trait")
+                   + " (reward table, image − text).")
+    curves = mode_curves(rows, steered, scale, traits)
+    mc = {"text": "var(--s1)", "image": "var(--s2)"}
+    charts12 = ("<h3>Over the dose: text vs image</h3><div class=legend><span><i style='background:var(--s1)'></i>"
+                "text</span><span><i style='background:var(--s2)'></i>image</span><span>games played both ways, persona "
+                "vector (no side settings), bars: 95% CI</span></div><div class=charts>"
+                + "".join(f"<div class=chart><h3>{html.escape(t)}: language</h3>"
+                          f"{line_chart(curves[t]['readout'], t, f'{t} readout (SD)', colours=mc)}</div>"
+                          f"<div class=chart><h3>{html.escape(t)}: result</h3>"
+                          f"{line_chart(curves[t]['reward'], t, 'reward change (SD)', colours=mc)}</div>" for t in traits)
+                + "</div>")
     body.append(section(12, "Text vs image observations",
-                        "Does steering act differently when the agent sees the game as a picture instead of text?",
-                        "Only games played in both modes. The readout slope (section 2) and the steered agent's reward "
-                        "slope (section 9), separately for text and image runs; diff = image − text.",
-                        "A significant diff means the observation format changes how strongly the persona takes hold.",
-                        f12, i12 + j12))
+                        "Does seeing the game as a picture instead of text change how agents play at all, and does "
+                        "steering act differently then?",
+                        "Only games played in both modes. First the unsteered agents in each mode: their results (each "
+                        "seat paired with itself in the same deal, since both modes use the same seeds), unparseable "
+                        "answers, answer length, tokens read and generated per turn, game length. Then the steering "
+                        "effect: the readout slope (section 2) and the steered agent's reward slope (section 9) for "
+                        "text and image runs, diff = image − text; and both over the dose, text vs image.",
+                        "A significant diff means the observation format changes how strongly the persona takes hold "
+                        "(readout) or what it does to the agent's result (reward).",
+                        f12, (modes_table(mb) if mb else "") + i12 + j12 + charts12))
 
     # 13. coherence
     co = [r for r in rows if r["turns"] and (is_vector(r) or r["condition"] == "none")]
@@ -3432,6 +3595,22 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                 f"{cell_name(k[0])} × {k[1]} c = {k[2]:g}: {100 * v:.0f}% (unsteered {100 * base_fb[k[0]]:.0f}%)"
                 for k, v in fixed[:6]) + (f"; {len(fixed) - 6} more" if len(fixed) > 6 else "")
                 + ". Where a game's reward depends on parsing, part of a reward effect there can come from this.")
+    if fb_c and (broken or fixed):
+        extra.append(
+            "<b>Steering changes whether answers parse, in both directions.</b> "
+            + (f"It breaks the format (≥ 25 points more unparseable turns than unsteered) in {len(broken)} game × "
+               f"trait × c cells, worst {cell_name(broken[0][0][0])} × {broken[0][0][1]} at c = {broken[0][0][2]:g} "
+               f"({100 * broken[0][1]:.0f}% vs {100 * base_fb[broken[0][0][0]]:.0f}%)" if broken else "")
+            + ("; " if broken and fixed else "")
+            + (f"it fixes it (≥ 20 points fewer) in {len(fixed)}, e.g. {cell_name(fixed[0][0][0])} × {fixed[0][0][1]} "
+               f"at c = {fixed[0][0][2]:g} ({100 * fixed[0][1]:.0f}% vs {100 * base_fb[fixed[0][0][0]]:.0f}%)" if fixed
+               else "")
+            + ". Where a game's result depends on parsing, part of a reward effect is a format effect (section 13).")
+    if 0.0 in ln_c and ln_c and math.isfinite(ln_c[0.0][0]):
+        hi_x, lo_x = max(ln_c), min(ln_c)
+        extra.append(f"<b>Steering changes how much agents write.</b> Answers average {ln_c[0.0][0]:.0f} characters "
+                     f"unsteered, {ln_c[hi_x][0]:.0f} at c = {hi_x:g} and {ln_c[lo_x][0]:.0f} at c = {lo_x:g} (section 13; "
+                     "per persona and setting in section 20 and in the condensed report's recipe).")
     body.append(section(13, "Coherence cost: does steering break the agent?",
                         "Does strong steering make agents produce broken or unusually long/short answers?",
                         "Steered agents (persona vector, all traits) by coefficient, unsteered agents at 0: the share of "
@@ -3457,7 +3636,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                      ch, sides, beyond, corr, allm, small, entangled, readable, with_effect, through, hits, stronger_img,
                      weaker_img)
     at = len(take) - 1 if take and take[-1].startswith("<b>Read with care") else len(take)
-    take[at:at] = late_take  # sections 14-16, before the caveats
+    take[at:at] = late_take + extra  # sections 14-16, before the caveats
     take_html = ("<h2 id=takeaways>Takeaways</h2><div class=result><ol>" + "".join(f"<li>{t}</li>" for t in take)
                 + "</ol><span class=muted>What the sections add up to, written from their numbers; the evidence for "
                   "each point is in the sections below.</span></div>")

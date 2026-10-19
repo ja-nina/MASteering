@@ -103,7 +103,7 @@ class SteerEngine:
         for r, text, o in zip(sent, texts, self.llm.generate(prompts, params) if prompts else []):
             c = o.outputs[0]
             results[r.key] = TurnResult(r.key, c.text, c.finish_reason, list(o.prompt_token_ids),
-                                        list(c.token_ids), text, r.images)
+                                        list(c.token_ids), text, r.images, len(ids) + self._image_tokens(r.images))
         return [results[r.key] for r in requests]
 
 

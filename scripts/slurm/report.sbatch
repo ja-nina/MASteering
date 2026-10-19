@@ -24,6 +24,8 @@ OUT="results/$SWEEP"
 echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $OUT"
 # scores of older episodes of the games that pay every step (side files; done once, then skipped)
 "$PYTHON" scripts/backfill_rewards.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}"
+# token counts of older episodes (side files; done once, then skipped)
+"$PYTHON" scripts/backfill_tokens.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "config/sweeps/$SWEEP.yaml" --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
 "$PYTHON" scripts/condensed_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/condensed_report.html"

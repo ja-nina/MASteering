@@ -10,6 +10,8 @@ Per agent:
   actions                   what it chose, over its parsed turns (default moves after a failed parse excluded):
                             {"n": count, "numeric": mean of numeric choices (bids, guesses, amounts) or None,
                              "labels": {action label: count}} (labels: see action_label)
+  tokens_in, tokens_out     tokens the model read (prompt text and images) and generated, over every attempt of
+                            every turn (retries re-read the prompt); None when the log does not have them
 """
 from __future__ import annotations
 
@@ -54,9 +56,12 @@ class AgentStats:
         self._a: Dict[str, Dict[str, Any]] = {}
 
     def add(self, agent_id: str, *, parse_ok: bool = True, completion: str = "",
-            monitor: Optional[Dict[str, Dict[str, float]]] = None, action: Any = None) -> None:
+            monitor: Optional[Dict[str, Dict[str, float]]] = None, action: Any = None,
+            tokens_in: Optional[int] = None, tokens_out: Optional[int] = None) -> None:
         a = self._a.setdefault(agent_id, {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": [],
-                                          "labels": {}, "numbers": [], "n": 0})
+                                          "labels": {}, "numbers": [], "n": 0, "tokens_in": 0, "tokens_out": 0})
+        for k, v in (("tokens_in", tokens_in), ("tokens_out", tokens_out)):  # one unknown turn: unknown total
+            a[k] = None if v is None or a[k] is None else a[k] + v
         a["turns"] += 1
         a["fallbacks"] += not parse_ok
         a["chars"] += len(completion or "")
@@ -71,8 +76,13 @@ class AgentStats:
 
     def add_record(self, rec: Dict[str, Any]) -> None:
         """One JSONL record (episode_logger's format)."""
+        attempts = rec.get("attempts") or []
+        out = rec.get("tokens_out")
+        if "tokens_out" not in rec and "n_tokens" in rec:  # logged before tokens_out: the attempts' generated tokens
+            out = sum(a.get("n_tokens") or 0 for a in attempts) if attempts else rec["n_tokens"]
         self.add(rec["agent_id"], parse_ok=rec.get("parse_ok", True), completion=rec.get("completion") or "",
-                 monitor=rec.get("monitor"), action=rec.get("parsed_action"))
+                 monitor=rec.get("monitor"), action=rec.get("parsed_action"), tokens_in=rec.get("tokens_in"),
+                 tokens_out=out)
 
     def to_json(self) -> Dict[str, Dict[str, Any]]:
         out = {}
@@ -86,6 +96,7 @@ class AgentStats:
                 "phase_layer": mid, "phases": _phases([t[mid] for t in a["monitor"] if mid in t]) if mid else [None] * 3,
                 "actions": {"n": a["n"], "numeric": statistics.mean(a["numbers"]) if a["numbers"] else None,
                             "labels": labels},
+                "tokens_in": a["tokens_in"], "tokens_out": a["tokens_out"],
             }
         return out
 

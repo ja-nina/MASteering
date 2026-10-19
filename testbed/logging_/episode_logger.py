@@ -96,8 +96,10 @@ class EpisodeLogger:
                  info: Optional[Dict[str, Any]] = None, parse_ok: bool = True,
                  finish_reason: str = "stop", n_tokens: int = 0,
                  monitor: Optional[Dict[str, Dict[str, float]]] = None, images=(),
-                 attempts: Optional[list] = None, model_input: str = "") -> None:
-        self._stats.add(agent_id, parse_ok=parse_ok, completion=completion, monitor=monitor, action=parsed_action)
+                 attempts: Optional[list] = None, model_input: str = "", tokens_in: Optional[int] = None,
+                 tokens_out: Optional[int] = None) -> None:
+        self._stats.add(agent_id, parse_ok=parse_ok, completion=completion, monitor=monitor, action=parsed_action,
+                        tokens_in=tokens_in, tokens_out=tokens_out)
         image_log = self._save_images(turn, agent_id, images) if self.save_images else len(images)
         rec = {
             "run_id": self.run_id, "episode": self.episode, "game": game,
@@ -106,7 +108,7 @@ class EpisodeLogger:
             "parsed_action": parsed_action, "parse_retries": parse_retries, "parse_ok": parse_ok,
             "reward": reward, "steering": steering, "finish_reason": finish_reason,
             "n_tokens": n_tokens, "info": info or {}, "monitor": monitor or {}, "images": image_log,
-            "attempts": attempts or [], "model_input": model_input,
+            "attempts": attempts or [], "model_input": model_input, "tokens_in": tokens_in, "tokens_out": tokens_out,
         }
         self._fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
         retry_io(self._fh.flush)

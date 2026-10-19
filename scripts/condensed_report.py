@@ -229,42 +229,85 @@ def synergy(traits, by_trait, paired_by):
     return "".join(out)
 
 
-def text_vs_image(rows, traits, by):
-    """Games played from text and from pictures: at full strength, is the language effect stronger with images?"""
-    modes = defaultdict(set)
-    for r in rows:
-        modes[r["group"]].add(r["obs"])
-    both = sorted(g for g, m in modes.items() if {"text", "image"} <= m)
-    if not both:
+def text_vs_image(rows, traits, by, paired_by):
+    """Games played from text and from pictures: how unsteered play differs, and whether steering's effect on the
+    language and on the result is stronger or weaker with images, per setting."""
+    base = R.mode_baselines(rows)
+    if not base:
         return ""
-    tally, cases = defaultdict(int), defaultdict(list)
-    for g in both:
+    out = ["<h2 id=image>Text vs image: what changes when agents see the game as a picture?</h2>"
+           "<h3>Without steering</h3><p class=muted>The same deals and seats in both modes (same seeds): each seat's "
+           "result with images against its own result with text.</p><div class=wrap><table><tr><th class=l>game</th>"
+           "<th>result, text → image</th><th>broken answers, text → image</th><th>answers, text → image</th>"
+           "<th>tokens read per turn, text → image</th><th>turns per game, text → image</th></tr>"]
+    for g, d in base.items():
+        t, i = d["text"], d["image"]
+        m, level = judge([x for _, x in d["paired"]], [k for k, _ in d["paired"]])
+        res = (f"{t['win']:.0f}% → <b>{i['win']:.0f}%</b> wins" if t["binary"] else
+               f"{number(t['reward'])} → <b>{number(i['reward'])}</b>")
+        tok = (f"{t['tokens_in']:.0f} → {i['tokens_in']:.0f}" if math.isfinite(t["tokens_in"]) and
+               math.isfinite(i["tokens_in"]) else "<span class=muted>not counted yet</span>")
+        ratio = i["chars"] / t["chars"] if t["chars"] else float("nan")
+        out.append(f"<tr><td class=l>{html.escape(g)}</td><td>{res} {mark(level)}</td>"
+                   f"<td>{t['unparseable']:.0f}% → {i['unparseable']:.0f}%</td>"
+                   f"<td>{'about as long' if 0.8 <= ratio <= 1.25 else f'{ratio:.1f}× as long'}</td><td>{tok}</td>"
+                   f"<td>{t['length']:.0f} → {i['length']:.0f}</td></tr>")
+    out.append("</table></div>")
+
+    # steering, text vs image: at full strength, per game x persona x setting, language and result
+    tally = {k: defaultdict(int) for k in ("language", "result")}
+    for g in base:
         for t in traits:
             for c in SETTINGS:
                 for coef in (-1.0, 1.0) if "prompt" in c else (-2.0, 2.0):
-                    sides = [[r for r in by.get(((g, m), t, c), []) if r["steered"] and r["coef"] == coef
-                              and t in r["mon"]] for m in ("text", "image")]
-                    if not sides[0] or not sides[1]:
-                        continue
-                    (mt, st, _), (mi, si, _) = (R._episode_mean([math.copysign(1, coef) * r["mon"][t] for r in x],
-                                                                [r["cluster"] for r in x]) for x in sides)
-                    se = math.hypot(st, si)
-                    if not (math.isfinite(se) and se > 0):
-                        continue
-                    z = (mi - mt) / se
-                    kind = "stronger with images" if z > 2.58 else "weaker with images" if z < -2.58 else "about the same"
-                    tally[kind] += 1
-                    if kind != "about the same":
-                        strength = f"{'+' if coef > 0 else '−'} instruction" if "prompt" in c else f"c = {coef:+g}"
-                        cases[kind].append(f"{g} · {t} · {SETTING_WORDS.get(c, c)} · {strength}")
-    total = sum(tally.values())
-    return ("<h2 id=image>Text vs image: does seeing the game as a picture change the effect?</h2>"
-            f"<p>Games played both ways: {', '.join(both)}. Over every persona × setting at full strength (the vector "
-            f"at c = ±2, the prompt ±), the language moves the intended way <b>more with images</b> in "
-            f"{tally['stronger with images']} of {total} cases, <b>less</b> in {tally['weaker with images']}, about the "
-            "same in the rest. The per-game charts below show text and image side by side.</p>" + "".join(
-                f"<details><summary>{k} ({len(v)})</summary><ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in v[:40])
-                + "</ul></details>" for k, v in cases.items()))
+                    lang = [[r for r in by.get(((g, m), t, c), []) if r["steered"] and r["coef"] == coef
+                             and t in r["mon"]] for m in ("text", "image")]
+                    res = [[r for r in paired_by.get(((g, m), t, c), []) if r["steered"] and r["coef"] == coef
+                            and math.isfinite(r["diff"])] for m in ("text", "image")]
+                    for kind, sides, val, cl in (
+                            ("language", lang, lambda r: math.copysign(1, coef) * r["mon"][t], lambda r: r["cluster"]),
+                            ("result", res, lambda r: r["diff"], lambda r: (r["cell"], r["episode"]))):
+                        if not sides[0] or not sides[1]:
+                            continue
+                        (mt, st, _), (mi, si, _) = (R._episode_mean([val(r) for r in x], [cl(r) for r in x])
+                                                    for x in sides)
+                        se = math.hypot(st, si)
+                        if math.isfinite(se) and se > 0:
+                            z = (mi - mt) / se
+                            word = ("larger with images" if z > 2.58 else "smaller with images" if z < -2.58
+                                    else "about the same") if kind == "result" else (
+                                "stronger with images" if z > 2.58 else "weaker with images" if z < -2.58
+                                else "about the same")
+                            tally[kind][(c, word)] += 1
+    out.append("<h3>With steering: is the effect stronger with images?</h3><p class=muted>Per setting, over every "
+               "game played both ways × persona × direction at full strength (the vector at c = ±2, the prompt ±): "
+               "how often the language moves further the intended way with images than with text (or less), and how "
+               "often the result changes more (higher) or less with images. 'Tentative or solid' differences only.</p>"
+               "<div class=wrap><table><tr><th class=l>setting</th><th>language: stronger with images</th>"
+               "<th>weaker</th><th>about the same</th><th>result: higher with images</th><th>lower</th>"
+               "<th>about the same</th></tr>")
+    for c in SETTINGS:
+        L = [tally["language"][(c, w)] for w in ("stronger with images", "weaker with images", "about the same")]
+        Rr = [tally["result"][(c, w)] for w in ("larger with images", "smaller with images", "about the same")]
+        if sum(L) or sum(Rr):
+            out.append(f"<tr><td class=l>{html.escape(SETTING_WORDS[c])}</td>"
+                       + "".join(f"<td>{n}</td>" for n in L + Rr) + "</tr>")
+    out.append("</table></div>")
+
+    # language over c, text vs image, per persona: games played both ways, the vector settings without a side
+    mc = {"text": "var(--s1)", "image": "var(--s2)"}
+    charts = []
+    for t in traits:
+        series = {m: curve([r for g in base for c in ("one", "half", "all") for r in by.get(((g, m), t, c), [])
+                            if r["steered"]], lambda r: r["mon"].get(t)) for m in ("text", "image")}
+        charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                      + R.line_chart(series, t, f"{t} in language", colours=mc) + "</div>")
+    out.append("<h3>The persona in the language over c, text vs image</h3><div class=legend><span><i style='background:"
+               "var(--s1)'></i>text</span><span><i style='background:var(--s2)'></i>image</span><span>one agent, half "
+               "or every agent with the vector, the games played both ways; 0 = like unsteered agents; bars: 95% CI"
+               "</span></div><div class=charts>" + "".join(charts) + "</div><p class=muted>Per game and setting, text "
+               "and image results side by side: in the per-game charts below.</p>")
+    return "".join(out)
 
 
 def language_vs_action(rows, cells):
@@ -458,7 +501,8 @@ def build(rows, logs=None) -> str:
     parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>"
              + "".join(f"<li>{h}</li>" for h in headline(by, paired_by)) + "</ul></div>",
              recipe(rows, traits, by_trait, paired_by, cells), synergy(traits, by_trait, paired_by),
-             text_vs_image(rows, traits, by), language_vs_action(rows, cells), roles(rows, traits),
+             text_vs_image(rows, traits, by, paired_by), language_vs_action(rows, cells),
+             roles(rows, traits),
              gallery(rows, logs), R.examples_section(logs, traits, coefs) if logs else "",
              per_game(traits, by, paired_by, win_games(rows))]
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "

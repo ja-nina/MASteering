@@ -125,6 +125,21 @@ def episode_rewards(summary: dict, spath: Path) -> tuple:
     return summary.get("final_rewards", {}), "last_step"
 
 
+def episode_tokens(stats: dict, spath: Path) -> dict:
+    """{agent: (tokens read, tokens generated)}: from the summary's agent_stats, else from the episode_N.tokens.json
+    that scripts/backfill_tokens.py writes for episodes logged before the counts; (None, None) when neither has it."""
+    side = spath.with_name(spath.name[:-len(".summary.json")] + ".tokens.json")
+    backfill = json.loads(side.read_text(encoding="utf-8")) if side.exists() else {}
+    out = {}
+    for aid, a in stats.items():
+        if a.get("tokens_in") is not None:
+            out[aid] = (a["tokens_in"], a.get("tokens_out"))
+        else:
+            b = backfill.get(aid) or {}
+            out[aid] = (b.get("in"), b.get("out", a.get("tokens_out")))
+    return out
+
+
 def episode_rows(job) -> tuple:
     """(run.json, episode, summary path, layer, steered traits) -> (that episode's rows, whether its JSONL was read)."""
     run, ep, spath, layer, traits = job
@@ -136,6 +151,7 @@ def episode_rows(job) -> tuple:
     at = str(layer) if layer is not None else (layers[len(layers) // 2] if layers else None)
     none = {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": {}, "phases": [None] * 3, "actions": {}}
     rewards, reward_from = episode_rewards(summary, Path(spath))
+    tokens = episode_tokens(stats, Path(spath))
     rows = []
     for aid in sorted(set(rewards) | set(stats)):
         a = stats.get(aid, none)
@@ -155,6 +171,7 @@ def episode_rows(job) -> tuple:
             "reward": rewards.get(aid), "reward_from": reward_from,
             "turns": a["turns"], "parse_fallbacks": a["fallbacks"],
             "answer_chars": a["chars"] / a["turns"] if a["turns"] else None,  # mean answer length
+            "tokens_in": tokens.get(aid, (None, None))[0], "tokens_out": tokens.get(aid, (None, None))[1],
             "monitor_layer": at, "steer_layer": (run.get("steering_resolved") or [{}])[0].get("layer"),
             "episode_turns": summary.get("turns"), "truncated": summary.get("truncated"),
             **{f"mon_{t}": v for t, v in sorted(a["monitor"].get(at, {}).items())},

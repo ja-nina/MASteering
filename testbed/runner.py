@@ -91,6 +91,7 @@ class EpisodeRun:
             parsed = self.parser.parse(res.text, st["raw_obs"], aid, self._context())
             st["attempts"].append({"attempt": st["attempt"], "user_prompt": st["user"], "completion": res.text,
                                    "finish_reason": res.finish_reason, "n_tokens": res.n_tokens,
+                                   "n_prompt_tokens": res.n_prompt_tokens,
                                    "parse_error": None if isinstance(parsed, ParsedAction) else parsed.feedback})
             if isinstance(parsed, ParsedAction) or st["attempt"] >= self.job.max_parse_retries:
                 action = parsed.value if isinstance(parsed, ParsedAction) else self.job.fallback_action
@@ -120,7 +121,9 @@ class EpisodeRun:
                 parse_retries=st["attempt"], parse_ok=rec["parse_ok"], reward=step.rewards.get(aid, 0.0),
                 steering=steer.to_log() if steer else None, info=step.info,
                 finish_reason=res.finish_reason, n_tokens=res.n_tokens, monitor=rec["monitor"],
-                images=st["images"], attempts=st["attempts"], model_input=res.prompt)
+                images=st["images"], attempts=st["attempts"], model_input=res.prompt,
+                tokens_in=sum(a["n_prompt_tokens"] for a in st["attempts"]),  # every attempt: retries re-read
+                tokens_out=sum(a["n_tokens"] for a in st["attempts"]))
         self.waiting = {}
         self.turn += 1
         if step.done or self.turn >= self.job.max_turns:
