@@ -1609,6 +1609,15 @@ def setting_charts(checks, traits, cells, pooled, shapes) -> str:
     return "".join(out)
 
 
+def _per_point(checks):
+    """'~N episodes per point' (or a range) over the per-setting curves' points, for the texts that explain noise."""
+    ns = sorted(n for ch in checks.values() for _, _, n in ch["pts"].values() if n)
+    if not ns:
+        return "few episodes per point"
+    lo, hi = ns[len(ns) // 10], ns[-1 - len(ns) // 10]  # 10th-90th percentile: a stray short run does not set it
+    return f"~{lo} episodes per point" if lo == hi else f"{lo}–{hi} episodes per point"
+
+
 def _shape_reality(checks, cmax):
     """Findings and a takeaway for section 16: is the zigzag of the per-setting curves real, and which way of
     pushing matters."""
@@ -1632,7 +1641,7 @@ def _shape_reality(checks, cmax):
     f = [f"<b>Is the bend real?</b> Of {n} curves (game × trait × setting), {anyeff} differ from 0 on at least one side; "
          f"{len(bent)} of {tested} depart from a straight line beyond what the per-point noise allows "
          f"({raw} at uncorrected p &lt; 0.05, ≈ {round(0.05 * tested)} expected by chance), {len(wiggly)} from a smooth "
-         "bend. The zigzag in most per-setting lines is sampling noise (~10 episodes per point), not a shape.",
+         f"bend. The zigzag in most per-setting lines is sampling noise ({_per_point(checks)}), not a shape.",
          "<b>Which way of pushing matters</b> (mean change over all c &lt; 0 and over all c &gt; 0 vs 0, SEs clustered by "
          "seed, BH over all sides): "
          + "; ".join(f"{k}: {v}" for k, v in sorted(pats.items(), key=lambda kv: -kv[1])) + "."]
@@ -1642,7 +1651,7 @@ def _shape_reality(checks, cmax):
                  "stronger steering gives more of the same, not the opposite.")
     one_sided = sum(v for k, v in pats.items() if k.startswith("only"))
     take = [f"<b>Per setting, the zigzag is noise.</b> Only {len(bent)} of {tested} game × trait × setting reward curves "
-            "depart from a straight line beyond what ~10 episodes per point allow; the bends in the pooled game × trait "
+            f"depart from a straight line beyond what {_per_point(checks)} allow; the bends in the pooled game × trait "
             "curves below need all settings together to show. Where a setting moves the reward, it is mostly "
             f"<b>one-sided</b>: {one_sided} curves change only when pushed one way, "
             f"{pats.get('opposite ways (monotone)', 0)} in opposite ways for the two directions, "
@@ -1780,7 +1789,7 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
                    "against the same unsteered games, so a lucky or unlucky baseline shifts the whole curve up or down: the "
                    "fit has an intercept, so the <i>shape</i> (rising, bending) is robust to that, the level is not — with few unsteered episodes, trust shapes more "
                    "than levels. Hover a table cell for the fitted coefficients. Shapes need data "
-                   "at ≥ 4 coefficients. <b>Jagged lines are not a shape</b>: with ~10 episodes per point, the means "
+                   f"at ≥ 4 coefficients. <b>Jagged lines are not a shape</b>: with {_per_point(checks)}, the means "
                    "zigzag by chance. 'Is the bend real?' tests each curve (game × trait × setting) against a straight "
                    "line and against a smooth bend, given each point's SE: only curves that fail the straight line "
                    "after correction really bend. 'Pushed down / up' summarises a curve without a slope: the mean "
