@@ -3,12 +3,13 @@
     python scripts/condensed_report.py results/main/agents.csv.gz \\
         --logs <logging_dir>/main [fallback/main] --out results/main/condensed_report.html
 
-The same agent rows as scripts/report.py, but no slopes, standard deviations or q-values: language effects in
-words ("much more sarcastic", "no clear change"), outcomes in the game's own terms (win rate, points), each with
-a confidence marker. Contents: how to read it and how the monitor works; headline findings; a recipe table (how
-to get each persona, at what cost, where it changes outcomes); prompt, vector and both, and whether they are
-synergistic; text vs image; language vs action per game; hidden roles by who carries the persona; a gallery of
-answers steering breaks or fixes; matched examples; and per game and steering vector, every setting.
+The same agent rows as scripts/report.py, but no slopes, standard deviations or q-values: everything is drawn as
+line plots over the steering strength c, one line per setting (how many and which players are steered), or said
+in words ("much more sarcastic", "no clear change") with a confidence marker; results in the game's own terms
+(wins, points). Contents: how to read it and how the monitor works; headline findings; a recipe table; prompt,
+vector and both, and whether they are synergistic; text vs image; language vs action; hidden roles by who
+carries the persona; a gallery of answers steering breaks or fixes; matched examples; per game and steering
+vector, every setting.
 """
 from __future__ import annotations
 
@@ -31,7 +32,11 @@ SETTING_WORDS = {
     "both_one": "one agent, vector + prompt", "good_one": "one honest player, vector",
     "evil_one": "one deceiver, vector", "evil_team": "every deceiver, vector", "good_team": "every honest player, vector",
     "all_random": "every agent, random direction (control)", "prompt_one": "one agent, prompt",
-    "prompt_all": "every agent, prompt", "evil_team_prompt": "every deceiver, prompt"}
+    "prompt_all": "every agent, prompt", "evil_team_prompt": "every deceiver, prompt", "unsteered": "unsteered"}
+# a prompt setting shares its vector counterpart's colour (drawn as squares); the random control is dashed grey
+COLOUR = {**{c: f"var(--s{i + 1})" for i, c in enumerate(R.SIDE_SETTINGS)}, "all_random": "var(--rnd)",
+          "prompt_one": "var(--s1)", "prompt_all": "var(--s3)", "evil_team_prompt": "var(--s7)",
+          "unsteered": "currentColor"}
 MARK = {3: "●●●", 2: "●●○", 1: "●○○", 0: "○○○"}
 MARK_TIP = {3: "solid", 2: "tentative", 1: "no clear change", 0: "too little data"}
 
@@ -60,8 +65,8 @@ def mark(level):
     return f"<span class=mk title='{MARK_TIP[level]}'>{MARK[level]}</span>"
 
 
-def words(m, level, trait, sign=1):
-    """A language effect (readout in SD of unsteered agents, hidden) in words."""
+def words(m, level, trait):
+    """A language effect (readout in SD of unsteered agents, not shown) in words."""
     if level == 0:
         return f"<span class=muted>too little data</span> {mark(0)}"
     if level == 1:
@@ -70,192 +75,204 @@ def words(m, level, trait, sign=1):
     return f"{size}{'more' if m > 0 else 'less'} {html.escape(trait)} {mark(level)}"
 
 
-class Units:
-    """How a game's reward reads: a win rate (0/1 or -1/1 rewards) or a score in the game's units."""
-
-    def __init__(self, rows):
-        vals = defaultdict(set)
-        for r in rows:
-            if r["reward"] is not None:
-                vals[r["cell"]].add(round(r["reward"], 6))
-        self.win = {c: v <= {0.0, 1.0} or v <= {-1.0, 1.0} for c, v in vals.items()}
-
-    def show(self, cell, rewards):
-        rewards = [x for x in rewards if x is not None and math.isfinite(x)]
-        if not rewards:
-            return "–"
-        if self.win.get(cell):
-            return f"{100 * np.mean([x > 0 for x in rewards]):.0f}% wins"
-        return number(float(np.mean(rewards)))
-
-
-def outcome(rs, units, cell):
-    """'unsteered → steered' for paired rows of one game (the unsteered value is the same seats' in the unsteered
-    episodes with the same seeds), with the marker of the paired change."""
-    rs = [r for r in rs if r["diff"] is not None and math.isfinite(r["diff"])]
-    if not rs:
-        return "<span class=muted>–</span>"
-    m, level = judge([r["diff"] for r in rs], [(r["cell"], r["episode"]) for r in rs])
-    before, after = units.show(cell, [r["reward"] - r["diff"] for r in rs]), units.show(cell, [r["reward"] for r in rs])
-    arrow = "" if level < 2 else (" ▲" if m > 0 else " ▼")
-    return f"{before} → <b>{after}</b>{arrow} {mark(level)}"
-
-
-def language(rs, t, sign):
-    """The readout of trait t of the agents rs (already pushed one way), in words."""
+def language(rs, t):
+    """(words, mean, level) for the readout of trait t of the steered agents rs."""
     rs = [r for r in rs if t in r["mon"] and math.isfinite(r["mon"][t])]
     m, level = judge([r["mon"][t] for r in rs], [r["cluster"] for r in rs])
     return words(m, level, t), m, level
 
 
+def result_level(rs):
+    """(mean paired change, level) of the steered agents' result; clusters = seeds (one unsteered game each)."""
+    rs = [r for r in rs if math.isfinite(r["diff"])]
+    return judge([r["diff"] for r in rs], [(r["cell"], r["episode"]) for r in rs])
+
+
+def win_games(rows):
+    """Game cells whose reward is a win or a loss (0/1 or -1/1): their results read as wins."""
+    vals = defaultdict(set)
+    for r in rows:
+        if r["reward"] is not None:
+            vals[r["cell"]].add(round(r["reward"], 6))
+    return {c for c, v in vals.items() if v <= {0.0, 1.0} or v <= {-1.0, 1.0}}
+
+
+def curve(rs, value, cluster=lambda r: r["cluster"]):
+    """[(c, mean, half 95% CI)] of value(r) per steering coefficient, plus the unsteered point (0, 0)."""
+    pts = [(c, *R.mean_ci([value(r) for r in v], [cluster(r) for r in v])[:2])
+           for c, v in sorted(R._by([r for r in rs if r["coef"]], lambda r: r["coef"]).items())]
+    return pts + [(0.0, 0.0, float("nan"))]
+
+
+def charts_row(panels, ylab):
+    """Line charts on one shared y axis: panels = [(title, {setting: points})]."""
+    ext = [v for _, series in panels for pts in series.values() for _, m, h in pts if math.isfinite(m)
+           for v in (m - (h if math.isfinite(h) else 0), m + (h if math.isfinite(h) else 0))]
+    span = (min(ext + [0]), max(ext + [0])) if ext else None
+    return "".join(f"<div class=chart><h3>{html.escape(title)}</h3>"
+                   + R.line_chart(series, title, ylab, colours=COLOUR, span=span,
+                                  notes={c: SETTING_WORDS.get(c, c) for c in series}) + "</div>"
+                   for title, series in panels if series)
+
+
+def legend(sets):
+    return ("<div class=legend>" + "".join(
+        f"<span><i style='background:{COLOUR.get(c, 'currentColor')}" + (";height:7px;width:7px" if "prompt" in c else "")
+        + f"'></i>{html.escape(SETTING_WORDS.get(c, c))}</span>" for c in sets)
+        + "<span>squares: the prompt (the opposite instruction at c = −1, the instruction at +1); dashed: random "
+          "direction; bars: 95% CI; c = 0: unsteered</span></div>")
+
+
 # ---------------------------------------------------------------- the parts
 
 def headline(by, paired_by):
-    """Plain findings, each with a marker, computed from the same pieces the tables use."""
-    out = []
-    lang, outc, n_lang, n_out = 0, 0, 0, 0
+    """Plain findings at full strength (c = ±2), with markers."""
+    lang = n_lang = outc = n_out = 0
     for (cell, t, c), rs in by.items():
         if c != "one":
             continue
         for s in (1, -1):
-            side = [r for r in rs if r["steered"] and r["coef"] * s > 0]
-            if side:
-                _, m, level = language(side, t, s)
+            st = [r for r in rs if r["steered"] and r["coef"] == 2 * s]
+            if st:
+                _, m, level = language(st, t)
                 n_lang += 1
                 lang += level >= 2 and m * s > 0
-            pr = [r for r in paired_by.get((cell, t, c), []) if r["steered"] and r["coef"] * s > 0]
+            pr = [r for r in paired_by.get((cell, t, c), []) if r["steered"] and r["coef"] == 2 * s]
             if pr:
-                _, level = judge([r["diff"] for r in pr if math.isfinite(r["diff"])],
-                                 [(r["cell"], r["episode"]) for r in pr if math.isfinite(r["diff"])])
                 n_out += 1
-                outc += level >= 2
-    out.append(f"<b>Steering changes what agents say almost everywhere, what they win far less often.</b> With one "
-               f"agent steered, its language moves the intended way in {lang} of {n_lang} game × trait × direction "
-               f"cases; its result in the game changes clearly in {outc} of {n_out}. {mark(3)}")
-    return out
+                outc += result_level(pr)[1] >= 2
+    return [f"<b>Steering changes what agents say almost everywhere, what they win far less often.</b> One agent "
+            f"steered at full strength (c = ±2): its language moves the intended way in {lang} of {n_lang} game × "
+            f"persona × direction cases; its result in the game changes clearly in {outc} of {n_out}. {mark(3)}"]
 
 
-def recipe(rows, traits, by_trait, paired_by, cells, units):
+def recipe(rows, traits, by_trait, paired_by, cells):
     """Per persona and direction: which way of giving it moves the language most, the mildest vector strength that
-    works, what it costs, and in which games it changes the outcome."""
+    works, what it costs, and in which games it changes the agent's result at full strength."""
     none = [r for r in rows if r["condition"] == "none"]
     fb0 = 100 * sum(r["fallbacks"] for r in none) / max(1, sum(r["turns"] for r in none))
     len0 = {c: np.mean([r["chars"] for r in rs if r["chars"]]) for c, rs in R._by(none, lambda r: r["cell"]).items()}
-    head = ("<h2 id=recipe>Recipe: how to give an agent a persona, and what it costs</h2><p class=muted>One agent "
-            "steered. 'Strongest' compares the vector at full strength (c = ±2), the prompt and both together by how "
-            "far the agent's language moves; 'mildest vector that works' is the smallest strength with a clear "
-            f"effect; broken answers: turns the game could not parse (unsteered: {fb0:.1f}%); outcome: games where "
-            "the agent's own result changes clearly (any strength), ▲ better ▼ worse.</p>"
-            "<div class=wrap><table><tr><th class=l>persona</th><th>strongest way</th><th>mildest vector that works"
-            "</th><th>broken answers (strongest way)</th><th>answers become</th><th class=l>changes the agent's result "
-            "in</th></tr>")
-    rows_ = [head]
+    out = ["<h2 id=recipe>Recipe: how to give an agent a persona, and what it costs</h2><p class=muted>One agent "
+           "steered. 'Strongest way' compares the vector at full strength (c = ±2), the prompt and both together by how "
+           "far the agent's language moves; 'mildest vector that works': the smallest strength with a clear effect; "
+           f"broken answers: turns the game could not parse (unsteered: {fb0:.1f}%); results: games where the agent's "
+           "own result changes clearly with the vector at full strength.</p><div class=wrap><table><tr><th class=l>"
+           "persona</th><th>strongest way</th><th>mildest vector that works</th><th>broken answers (strongest way)</th>"
+           "<th>answers become</th><th class=l>result better in</th><th class=l>result worse in</th></tr>"]
     for t in traits:
         for s in (1, -1):
-            goal = f"{'more' if s > 0 else 'less'} {t}"
             arms = {"vector": [r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == 2 * s],
                     "prompt": [r for r in by_trait.get(("prompt_one", t), []) if r["steered"] and r["coef"] * s > 0],
                     "both": [r for r in by_trait.get(("both_one", t), []) if r["steered"] and r["coef"] == 2 * s]}
-            score = {a: language(rs, t, s) for a, rs in arms.items() if rs}
+            score = {a: language(rs, t) for a, rs in arms.items() if rs}
             if not score:
                 continue
             best = max(score, key=lambda a: s * score[a][1] if score[a][2] >= 2 else -1e9)
             mild = next((c for c in (0.5, 1, 1.5, 2) if (lambda v: v[2] >= 2 and v[1] * s > 0)(
-                language([r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == c * s], t, s))),
-                None)
+                language([r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == c * s], t))), None)
             rs = arms[best]
             fb = 100 * sum(r["fallbacks"] for r in rs) / max(1, sum(r["turns"] for r in rs))
             ratio = np.mean([r["chars"] / len0[r["cell"]] for r in rs if r["chars"] and len0.get(r["cell"])] or [1])
             shape = ("about as long" if 0.8 <= ratio <= 1.25 else f"{ratio:.1f}× longer" if ratio > 1
                      else f"{1 / ratio:.1f}× shorter")
-            hits = []
+            better, worse = [], []
             for cell in cells:
-                pr = [r for r in paired_by.get((cell, t, "one"), []) if r["steered"] and r["coef"] * s > 0
-                      and math.isfinite(r["diff"])]
+                pr = [r for r in paired_by.get((cell, t, "one"), []) if r["steered"] and r["coef"] == 2 * s]
                 if pr:
-                    m, level = judge([r["diff"] for r in pr], [(r["cell"], r["episode"]) for r in pr])
+                    m, level = result_level(pr)
                     if level >= 2:
-                        hits.append(f"{html.escape(R.cell_name(cell))} {'▲' if m > 0 else '▼'}{mark(level)}")
-            rows_.append(f"<tr><td class=l>{goal}</td><td>{best} {score[best][0]}</td>"
-                         f"<td>{f'c = {mild * s:+g}' if mild else 'none clearly'}</td>"
-                         f"<td>{fb:.1f}%{' ⚠' if fb > fb0 + 5 else ''}</td><td>{shape}</td>"
-                         f"<td class=l>{', '.join(hits) or '<span class=muted>none clearly</span>'}</td></tr>")
-    return "".join(rows_) + "</table></div>"
+                        (better if m > 0 else worse).append(f"{html.escape(R.cell_name(cell))} {mark(level)}")
+            none_ = "<span class=muted>none clearly</span>"
+            out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td><td>{best}: {score[best][0]}</td>"
+                       f"<td>{f'c = {mild * s:+g}' if mild else 'none clearly'}</td>"
+                       f"<td>{fb:.1f}%{' ⚠' if fb > fb0 + 5 else ''}</td><td>{shape}</td>"
+                       f"<td class=l>{', '.join(better) or none_}</td><td class=l>{', '.join(worse) or none_}</td></tr>")
+    return "".join(out) + "</table></div>"
 
 
-def synergy(rows, traits, by_trait, paired_by, cells):
-    """Prompt, vector, both at c = ±1 (the prompt has no strength): the language and the result, and whether the
-    combination is more than the sum of the two (synergy), the sum (they add), or less (they overlap)."""
+def synergy(traits, by_trait, paired_by):
+    """Prompt, vector, both at c = ±1 (the prompt has no strength): the language, and whether the combination is
+    more than the sum of the two (synergy), the sum (they add), or less (they overlap), for language and result."""
     out = ["<h2 id=synergy>Prompt, vector, or both: do they reinforce each other?</h2><p class=muted>One agent, "
-           "c = ±1 for the vector (the prompt has no strength). Each is compared with the same unsteered games, so if "
+           "the vector at c = ±1 (the prompt has no strength). Each is compared with the same unsteered games, so if "
            "the two simply add, 'both' = vector + prompt. Verdict: <b>more than the sum</b> (synergy), <b>adds up</b>, "
            "or <b>less than the sum</b> (they overlap or compete; on the language this can also be a ceiling).</p>"
            "<div class=wrap><table><tr><th class=l>persona</th><th>vector</th><th>prompt</th><th>both</th>"
            "<th>language: together</th><th>result: together</th></tr>"]
     pick = lambda cond, t, s, c=None: [r for r in by_trait.get((cond, t), []) if r["steered"] and r["coef"] * s > 0
                                        and (c is None or abs(r["coef"]) == c)]
-    verdicts = defaultdict(int)
+    verdict = lambda z: "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up"
+    count = defaultdict(int)
     for t in traits:
         for s in (1, -1):
             v, p, b = pick("one", t, s, 1), pick("prompt_one", t, s), pick("both_one", t, s, 1)
             if not (v and p and b):
                 continue
-            lv, lp, lb = (language(x, t, s) for x in (v, p, b))
-            parts = [R._episode_mean([s * r["mon"][t] for r in x if t in r["mon"]], [r["cluster"] for r in x if t in r["mon"]])
-                     for x in (b, v, p)]
-            d = parts[0][0] - parts[1][0] - parts[2][0]
+            parts = [R._episode_mean([s * r["mon"][t] for r in x if t in r["mon"]],
+                                     [r["cluster"] for r in x if t in r["mon"]]) for x in (b, v, p)]
             se = math.sqrt(sum(x[1] ** 2 for x in parts))
-            z = d / se if se > 0 else 0
-            lang = ("more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up")
-            verdicts[lang] += 1
+            lang = verdict((parts[0][0] - parts[1][0] - parts[2][0]) / se if se > 0 else 0)
+            count[lang] += 1
             rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"] and r["coef"] * s > 0
                                        and (c is None or abs(r["coef"]) == c) and math.isfinite(r["diff"])]
-            sc = lambda x: R._episode_mean([r["diff"] / SCALE.get(r["cell"], 1.0) for r in x],
-                                           [(r["cell"], r["episode"]) for r in x])
-            ob, ov, op = sc(rp("both_one", 1)), sc(rp("one", 1)), sc(rp("prompt_one"))
-            dz = (ob[0] - ov[0] - op[0]) / math.sqrt(ob[1] ** 2 + ov[1] ** 2 + op[1] ** 2) \
-                if all(math.isfinite(x[1]) and x[1] > 0 for x in (ob, ov, op)) else 0
-            res = "more than the sum" if dz > 2.58 else "less than the sum" if dz < -2.58 else "adds up"
-            out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td><td>{lv[0]}</td><td>{lp[0]}</td>"
-                       f"<td>{lb[0]}</td><td><b>{lang}</b></td><td>{res}</td></tr>")
+            sc = [R._episode_mean([r["diff"] / SCALE.get(r["cell"], 1.0) for r in x],
+                                  [(r["cell"], r["episode"]) for r in x]) for x in (rp("both_one", 1), rp("one", 1),
+                                                                                    rp("prompt_one"))]
+            se_r = math.sqrt(sum(x[1] ** 2 for x in sc)) if all(math.isfinite(x[1]) for x in sc) else 0
+            res = verdict((sc[0][0] - sc[1][0] - sc[2][0]) / se_r if se_r > 0 else 0)
+            out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td>"
+                       + "".join(f"<td>{language(x, t)[0]}</td>" for x in (v, p, b))
+                       + f"<td><b>{lang}</b></td><td>{res}</td></tr>")
     out.append("</table></div><p>Overall, on the language: "
-               + ", ".join(f"{k} in {v}" for k, v in sorted(verdicts.items(), key=lambda kv: -kv[1]))
+               + ", ".join(f"{k} in {v}" for k, v in sorted(count.items(), key=lambda kv: -kv[1]))
                + " of the persona × direction cases.</p>")
     return "".join(out)
 
 
-def text_vs_image(rows, traits, by, paired_by, units):
-    groups = defaultdict(set)
+def text_vs_image(rows, traits, by):
+    """Games played from text and from pictures: at full strength, is the language effect stronger with images?"""
+    modes = defaultdict(set)
     for r in rows:
-        groups[r["group"]].add(r["obs"])
-    both = sorted(g for g, m in groups.items() if {"text", "image"} <= m)
+        modes[r["group"]].add(r["obs"])
+    both = sorted(g for g, m in modes.items() if {"text", "image"} <= m)
     if not both:
         return ""
-    out = ["<h2 id=image>Text vs image: does seeing the game as a picture change the effect?</h2><p class=muted>One "
-           "agent with the vector, pushed toward (▲) or away from (▼) the persona, any strength: its language and its "
-           "result in the same game played from text and from pictures.</p>"]
+    tally, cases = defaultdict(int), defaultdict(list)
     for g in both:
-        out.append(f"<details><summary>{html.escape(g)}</summary><div class=wrap><table><tr><th class=l>persona</th>"
-                   "<th>language, text</th><th>language, image</th><th>result, text</th><th>result, image</th></tr>")
         for t in traits:
-            for s in (1, -1):
-                cells_ = {m: (g, m) for m in ("text", "image")}
-                lg = {m: language([r for r in by.get((c, t, "one"), []) if r["steered"] and r["coef"] * s > 0], t, s)[0]
-                      for m, c in cells_.items()}
-                oc = {m: outcome([r for r in paired_by.get((c, t, "one"), []) if r["steered"] and r["coef"] * s > 0],
-                                 units, c) for m, c in cells_.items()}
-                out.append(f"<tr><td class=l>{'▲' if s > 0 else '▼'} {t}</td><td>{lg['text']}</td><td>{lg['image']}</td>"
-                           f"<td>{oc['text']}</td><td>{oc['image']}</td></tr>")
-        out.append("</table></div></details>")
-    return "".join(out)
+            for c in SETTINGS:
+                for coef in (-1.0, 1.0) if "prompt" in c else (-2.0, 2.0):
+                    sides = [[r for r in by.get(((g, m), t, c), []) if r["steered"] and r["coef"] == coef
+                              and t in r["mon"]] for m in ("text", "image")]
+                    if not sides[0] or not sides[1]:
+                        continue
+                    (mt, st, _), (mi, si, _) = (R._episode_mean([math.copysign(1, coef) * r["mon"][t] for r in x],
+                                                                [r["cluster"] for r in x]) for x in sides)
+                    se = math.hypot(st, si)
+                    if not (math.isfinite(se) and se > 0):
+                        continue
+                    z = (mi - mt) / se
+                    kind = "stronger with images" if z > 2.58 else "weaker with images" if z < -2.58 else "about the same"
+                    tally[kind] += 1
+                    if kind != "about the same":
+                        strength = f"{'+' if coef > 0 else '−'} instruction" if "prompt" in c else f"c = {coef:+g}"
+                        cases[kind].append(f"{g} · {t} · {SETTING_WORDS.get(c, c)} · {strength}")
+    total = sum(tally.values())
+    return ("<h2 id=image>Text vs image: does seeing the game as a picture change the effect?</h2>"
+            f"<p>Games played both ways: {', '.join(both)}. Over every persona × setting at full strength (the vector "
+            f"at c = ±2, the prompt ±), the language moves the intended way <b>more with images</b> in "
+            f"{tally['stronger with images']} of {total} cases, <b>less</b> in {tally['weaker with images']}, about the "
+            "same in the rest. The per-game charts below show text and image side by side.</p>" + "".join(
+                f"<details><summary>{k} ({len(v)})</summary><ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in v[:40])
+                + "</ul></details>" for k, v in cases.items()))
 
 
-def language_vs_action(rows, traits, cells):
-    """Per game: the biggest clear changes in what steered agents choose, next to whether their language moved."""
+def language_vs_action(rows, cells):
+    """Per game: the clearest changes in what steered agents choose, by setting and strength."""
     out = ["<h2 id=actions>Language vs action: does the persona show in the moves?</h2><p class=muted>Per game: the "
-           "choices that change most clearly when one agent, half or all get the vector at full strength (c = ±2): "
+           "choices that change most clearly with the persona at full strength (the vector at c = ±2, the prompt ±): "
            "the share of an action type, or the mean of a numeric choice (bid, guess, amount), against unsteered "
-           "agents of the same game.</p>"]
+           "agents of the same game. Each line says who is steered.</p>"]
     for cell in cells:
         cr = [r for r in rows if r["cell"] == cell and r["act_n"]]
         base = [r for r in cr if r["condition"] == "none"]
@@ -266,42 +283,38 @@ def language_vs_action(rows, traits, cells):
             for lab, k in r["act_labels"].items():
                 total[lab] += k
         n = sum(total.values()) or 1
-        labs = [lab for lab, k in total.items() if k / n >= 0.05 and lab not in ("text", "move", "number")]
-        num = sum(r["act_num"] is not None for r in base) >= len(base) / 2
-        if num:
+        measures = [(f"'{lab}'", lambda r, lab=lab: 100 * r["act_labels"].get(lab, 0) / r["act_n"], "%")
+                    for lab, k in total.items() if k / n >= 0.05 and lab not in ("text", "move", "number")]
+        if sum(r["act_num"] is not None for r in base) >= len(base) / 2:
             q1, q3 = np.percentile([r["act_num"] for r in cr if r["act_num"] is not None], [25, 75])
             ok = lambda v: v is not None and q1 - 3 * (q3 - q1) <= v <= q3 + 3 * (q3 - q1)
+            measures.append(("the numeric choice", lambda r: r["act_num"] if ok(r["act_num"]) else None, ""))
+        steered = R._by([r for r in cr if r["steered"] and r["condition"] in SETTINGS and not r["random"]
+                         and (abs(r["coef"] or 0) == 2 or r["via"] == "prompt")],
+                        lambda r: (r["trait"], r["condition"], r["coef"]))
         found = []
-        for t in traits:
-            for s in (1, -1):
-                st = [r for r in cr if r["steered"] and r["trait"] == t and r["coef"] == 2 * s
-                      and r["condition"] in ("one", "half", "all")]
-                if not st:
+        for (t, c, coef), st in steered.items():
+            for name, val, unit in measures:
+                b0 = [val(r) for r in base if val(r) is not None]
+                sv = [(val(r), r["cluster"]) for r in st if val(r) is not None]
+                if len(b0) < 3 or len(sv) < 5:
                     continue
-                measures = [(f"'{lab}'", lambda r, lab=lab: 100 * r["act_labels"].get(lab, 0) / r["act_n"], "%")
-                            for lab in labs]
-                if num:
-                    measures.append(("the numeric choice", lambda r: r["act_num"] if ok(r["act_num"]) else None, ""))
-                for name, val, unit in measures:
-                    b0 = [val(r) for r in base if val(r) is not None]
-                    sv = [(val(r), r["cluster"]) for r in st if val(r) is not None]
-                    if len(b0) < 3 or len(sv) < 5:
-                        continue
-                    m0 = float(np.mean(b0))
-                    m, level = judge([v - m0 for v, _ in sv], [c for _, c in sv])
-                    if level >= 2:
-                        sd0 = float(np.std(b0)) or 1.0
-                        found.append((abs(m) / sd0, f"{t} {'▲' if s > 0 else '▼'}: {name} {number(m0 + m, unit)} "
-                                                    f"(unsteered {number(m0, unit)}) {mark(level)}"))
+                m0 = float(np.mean(b0))
+                m, level = judge([v - m0 for v, _ in sv], [k for _, k in sv])
+                if level >= 2:
+                    strength = f"{'+' if coef > 0 else '−'} instruction" if "prompt" in c else f"c = {coef:+g}"
+                    found.append((abs(m) / (float(np.std(b0)) or 1.0),
+                                  f"{t}, {SETTING_WORDS.get(c, c)}, {strength}: {name} {number(m0 + m, unit)} "
+                                  f"(unsteered {number(m0, unit)}) {mark(level)}"))
         if found:
             found.sort(key=lambda x: -x[0])
             out.append(f"<details><summary>{html.escape(R.cell_name(cell))}: {len(found)} clear changes in the moves"
-                       f"</summary><ul>" + "".join(f"<li>{f}</li>" for _, f in found[:10]) + "</ul></details>")
+                       f"</summary><ul>" + "".join(f"<li>{f}</li>" for _, f in found[:15]) + "</ul></details>")
     return "".join(out)
 
 
 def roles(rows, traits):
-    """Hidden-role games: the deceivers' win rate when the persona is carried by each kind of carrier."""
+    """Hidden-role games: the deceivers' win rate over c, one line per carrier."""
     wins = R.deceiver_wins(rows)
     cells = sorted({w["cell"] for w in wins})
     if not cells:
@@ -310,29 +323,20 @@ def roles(rows, traits):
     sets = [c for c in ("evil_team", "evil_one", "good_team", "good_one", "all", "one", "evil_team_prompt")
             if any(k[1] == c for k in by)]
     out = ["<h2 id=roles>Hidden roles: who carries the persona, and who wins</h2><p class=muted>The deceiving side's "
-           "win rate (spies, mafia, werewolves) with the trait pushed up (▲, any c &gt; 0) and down (▼), per carrier; "
-           "the unsteered rate in the header. Marker: the up-vs-down difference.</p>"]
+           "win rate (spies, mafia, werewolves) over the steering strength, one line per carrier; the unsteered rate "
+           "at c = 0. Hover a line or a point.</p>", legend(sets + ["unsteered"])]
     for cell in cells:
         b0 = [w["won"] for w in wins if w["cell"] == cell and w["condition"] == "none"]
-        out.append(f"<details><summary>{html.escape(R.cell_name(cell))}: deceivers win "
-                   f"{np.mean(b0):.0f}% unsteered (n = {len(b0)})</summary><div class=wrap><table><tr><th class=l>persona"
-                   "</th>" + "".join(f"<th>{html.escape(SETTING_WORDS.get(c, c))}</th>" for c in sets) + "</tr>")
+        base = R.mean_ci(b0, list(range(len(b0))))
+        panels = []
         for t in traits:
-            tds = []
-            for c in sets:
-                ws = by.get((cell, c, t), [])
-                up, dn = [w for w in ws if (w["coef"] or 0) > 0], [w for w in ws if (w["coef"] or 0) < 0]
-                if not up or not dn:
-                    tds.append("<td class=muted>–</td>")
-                    continue
-                a, b = R._episode_mean([w["won"] for w in up], [w["cluster"] for w in up]), \
-                    R._episode_mean([w["won"] for w in dn], [w["cluster"] for w in dn])
-                se = math.hypot(a[1], b[1])
-                z = abs(a[0] - b[0]) / se if se > 0 else 0
-                level = 3 if z >= 3.29 else 2 if z >= 2.58 else 1
-                tds.append(f"<td>▲ {a[0]:.0f}% · ▼ {b[0]:.0f}% {mark(level)}</td>")
-            out.append(f"<tr><td class=l>{t}</td>{''.join(tds)}</tr>")
-        out.append("</table></div></details>")
+            series = {c: curve(by[(cell, c, t)], lambda w: w["won"])[:-1] for c in sets if by.get((cell, c, t))}
+            if b0:
+                series["unsteered"] = [(0.0, base[0], base[1])]
+            panels.append((t, series))
+        out.append(f"<details><summary>{html.escape(R.cell_name(cell))}: deceivers win "
+                   f"{np.mean(b0) if b0 else float('nan'):.0f}% unsteered (n = {len(b0)})</summary><div class=charts>"
+                   + charts_row(panels, "deceivers win (%)") + "</div></details>")
     return "".join(out)
 
 
@@ -364,50 +368,53 @@ def gallery(rows, logs, k=6, chars=500):
         for key in keys[:k]:
             cell, t, c, via = key
             r = max(cells[key], key=lambda r: (r["fallbacks"] if not want_ok else -r["fallbacks"]) / r["turns"])
-            items.append(f"<li><b>{html.escape(R.cell_name(cell))}</b>, {t} {via} at c = {c:+g}: "
+            items.append(f"<li><b>{html.escape(R.cell_name(cell))}</b>, {t} {via}, c = {c:+g}: "
                          f"{100 * rate[key]:.0f}% of turns unparseable (unsteered {100 * rate0[cell]:.0f}%)"
                          + answer(r, want_ok) + "</li>")
         return "<ul>" + "".join(items) + "</ul>" if items else "<p class=muted>none</p>"
     note = "" if roots else "<p class=muted>(answers appear when the report is built with --logs)</p>"
     return ("<h2 id=gallery>Failure gallery: where steering breaks or fixes the answers</h2><p class=muted>A turn the "
             "game cannot parse even after the retries makes the agent play a default move, so in these games part "
-            "of any outcome change is a format effect.</p>" + note
+            "of any result change is a format effect.</p>" + note
             + f"<h3>Breaks: steered answers the game could not parse</h3>{show(broken, False)}"
             + f"<h3>Fixes: steering makes answers parse where unsteered ones often do not</h3>{show(fixed, True)}")
 
 
-def per_game(rows, traits, cells, by, paired_by, units):
-    """Per game and steering vector: every setting, its language and its result, pushed up and down."""
-    out = ["<h2 id=games>Per game and steering vector: every setting</h2><p class=muted>Click a game. Per persona: "
-           "one row per setting (who is steered, and how). Pushed ▲ toward / ▼ away from the persona, any strength "
-           "(the prompt: its instruction or the opposite). Language: the steered agents' language. Result: the "
-           "steered agents' result, against the same seats in the unsteered games with the same seeds.</p>"]
-    for cell in cells:
+def per_game(traits, by, paired_by, wins):
+    """Per game and steering vector: language and result over c, one line per setting; text and image side by side."""
+    out = ["<h2 id=games>Per game and steering vector: every setting</h2><p class=muted>Click a game. Per persona, "
+           "line plots over the steering strength c, one line per setting (who is steered, and how): the steered "
+           "agents' <b>language</b> (the persona in what they write; 0 = like unsteered agents) and their "
+           "<b>result</b> (change against the same seats in the unsteered games with the same seeds: in percentage "
+           "points of wins, or in the game's score). Charts of one kind share their axis; text and image side by "
+           "side where the game was played both ways. Hover a line for the setting, a point for its value.</p>"]
+    groups = defaultdict(list)
+    for cell in sorted({k[0] for k in by}):
+        groups[cell[0]].append(cell)
+    for g, gcells in sorted(groups.items()):
+        gcells.sort(key=lambda c: c[1] != "text")  # text first, then image
+        sets = [c for c in SETTINGS if any((cell, t, c) in by for cell in gcells for t in traits)]
         blocks = []
         for t in traits:
-            trs = []
-            for c in SETTINGS:
-                rs = [r for r in by.get((cell, t, c), []) if r["steered"]]
-                if not rs:
-                    continue
-                pr = [r for r in paired_by.get((cell, t, c), []) if r["steered"]]
-                cols = []
-                for s in (1, -1):
-                    cols.append(language([r for r in rs if r["coef"] * s > 0], t, s)[0])
-                for s in (1, -1):
-                    cols.append(outcome([r for r in pr if r["coef"] * s > 0], units, cell))
-                trs.append(f"<tr><td class=l>{html.escape(SETTING_WORDS.get(c, c))}</td>"
-                           + "".join(f"<td>{x}</td>" for x in cols) + "</tr>")
-            if trs:
-                blocks.append(f"<h3>{html.escape(t)}</h3><div class=wrap><table><tr><th class=l>setting</th>"
-                              "<th>language ▲</th><th>language ▼</th><th>result ▲</th><th>result ▼</th></tr>"
-                              + "".join(trs) + "</table></div>")
-        if blocks:
-            out.append(f"<details><summary>{html.escape(R.cell_name(cell))}</summary>{''.join(blocks)}</details>")
+            lang, res = [], []
+            for cell in gcells:
+                mode = "" if len(gcells) == 1 else f" ({cell[1]})"
+                lang.append((f"language{mode}", {c: curve([r for r in by[(cell, t, c)] if r["steered"]],
+                                                          lambda r: r["mon"].get(t)) for c in sets if (cell, t, c) in by}))
+                k = 100.0 if cell in wins else 1.0
+                res.append((f"result{mode}", {c: curve([r for r in paired_by.get((cell, t, c), []) if r["steered"]
+                                                        and math.isfinite(r["diff"])], lambda r: k * r["diff"],
+                                                       lambda r: (r["cell"], r["episode"]))
+                                              for c in sets if paired_by.get((cell, t, c))}))
+            unit = "change in wins (points)" if all(cell in wins for cell in gcells) else "change in score"
+            blocks.append(f"<h3>{html.escape(t)}</h3><div class='charts four'>{charts_row(lang, f'{t} in language')}"
+                          f"{charts_row(res, unit)}</div>")
+        out.append(f"<details><summary>{html.escape(g)}</summary>{legend(sets)}{''.join(blocks)}</details>")
     return "".join(out)
 
 
 CSS_EXTRA = """
+.charts.four { grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); }
 .mk { font-size:11px; letter-spacing:-1px; color:var(--pos); white-space:nowrap; }
 .quote { margin:4px 0 10px; padding:6px 10px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); }
 """
@@ -420,7 +427,6 @@ def build(rows, logs=None) -> str:
     traits = sorted({r["trait"] for r in rows if r["trait"]})
     cells = sorted({r["cell"] for r in rows})
     base = R.baselines(rows)
-    units = Units(rows)
     by = R._by([r for r in rows if r["trait"]], lambda r: (r["cell"], r["trait"], r["condition"]))
     by_trait = R._by([r for r in rows if r["trait"]], lambda r: (r["condition"], r["trait"]))
     pr = R.paired(rows, base, lambda r: r["condition"] != "none" and r["trait"] is not None)
@@ -432,10 +438,12 @@ def build(rows, logs=None) -> str:
     intro = ("<div class=box><b>What this is</b><span>Persona-vector steering of LLM agents in multi-agent games, in "
              f"plain terms: {eps} episodes over {len(cells)} games (game × text or image), {len(traits)} personas. "
              "The full report (report.html) has the statistics behind every line.</span><b>How to read it</b><span>"
-             f"Markers: {MARK[3]} solid (p &lt; .001), {MARK[2]} tentative (p &lt; .01; with this many comparisons some "
-             f"are chance), {MARK[1]} no clear change, {MARK[0]} too little data. ▲ / ▼ = pushed toward / away from the "
-             "persona; results are the game's own: win rate, or the score in the game's units, always against the "
-             "same seats in unsteered games with the same seeds.</span><b>How the monitor reads language</b><span>"
+             "Charts: the steering strength c on the x axis (negative = pushed away from the persona, 0 = unsteered), "
+             "one line per setting. Words: markers "
+             f"{MARK[3]} solid (p &lt; .001), {MARK[2]} tentative (p &lt; .01; with this many comparisons some are "
+             f"chance), {MARK[1]} no clear change, {MARK[0]} too little data. Results are the game's own (wins, or the "
+             "score in the game's units), always against the same seats in unsteered games with the same seeds."
+             "</span><b>How the monitor reads language</b><span>"
              + R.monitor_how(len({t for r in rows for t in r["mon"]}),
                              sorted({r["monitor_layer"] for r in rows if r.get("monitor_layer") is not None}))
              + "</span></div>")
@@ -446,14 +454,13 @@ def build(rows, logs=None) -> str:
            "<a href=#synergy>prompt, vector, both</a> · <a href=#image>text vs image</a> · <a href=#actions>language vs "
            "action</a> · <a href=#roles>hidden roles</a> · <a href=#gallery>failure gallery</a> · "
            "<a href=#examples>examples</a> · <a href=#games>per game</a></p>")
-    heads = headline(by, paired_by)
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
-    parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>{''.join(f'<li>{h}</li>' for h in heads)}</ul></div>",
-             recipe(rows, traits, by_trait, paired_by, cells, units), synergy(rows, traits, by_trait, paired_by, cells),
-             text_vs_image(rows, traits, by, paired_by, units), language_vs_action(rows, traits, cells),
-             roles(rows, traits), gallery(rows, logs),
-             R.examples_section(logs, traits, coefs) if logs else "",
-             per_game(rows, traits, cells, by, paired_by, units)]
+    parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>"
+             + "".join(f"<li>{h}</li>" for h in headline(by, paired_by)) + "</ul></div>",
+             recipe(rows, traits, by_trait, paired_by, cells), synergy(traits, by_trait, paired_by),
+             text_vs_image(rows, traits, by), language_vs_action(rows, cells), roles(rows, traits),
+             gallery(rows, logs), R.examples_section(logs, traits, coefs) if logs else "",
+             per_game(traits, by, paired_by, win_games(rows))]
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
             f"initial-scale=1'><title>Steering, condensed</title><style>{R.CSS}{CSS_EXTRA}</style></head><body>"
             f"<h1>Steering, condensed</h1>{intro}{warn}{toc}{''.join(parts)}</body></html>")

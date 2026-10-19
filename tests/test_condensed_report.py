@@ -18,5 +18,5 @@ def test_condensed_report_in_plain_terms(tmp_path):
         assert part in page
     assert "much more evil" in page and "●●●" in page  # the planted readout effect, in words
     games = page[page.index("id=games"):]
-    assert "one agent, vector" in games and " → <b>" in games  # unsteered → steered result
-    assert "SD per unit c" not in page and "q=" not in page
+    assert "one agent, vector" in games and games.count("<svg") >= 2  # line plots over c, a line per setting
+    assert "SD per unit c" not in page and "q=" not in page and "▲" not in page and "▼" not in page

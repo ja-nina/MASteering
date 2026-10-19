@@ -676,8 +676,9 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     for name, s in series.items():
         s = sorted(p for p in s if math.isfinite(p[1]))
         c = colours.get(name, "currentColor")
-        dash = ' stroke-dasharray="4 3"' if name == "random" else ""
-        if len(s) > 1 and name != "prompt":
+        square = "prompt" in name  # prompts have no strength: points at ±1, no line
+        dash = ' stroke-dasharray="4 3"' if "random" in name else ""
+        if len(s) > 1 and not square:
             pts_ = " ".join(f"{sx(x):.1f},{sy(m):.1f}" for x, m, _ in s)
             parts.append(f'<polyline fill="none" stroke="{c}" stroke-width="1.8"{dash} points="{pts_}"/>')
             if notes and name in notes:  # a wide invisible copy: an easy hover target with the line's note
@@ -688,9 +689,9 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
                 parts.append(f'<line x1="{sx(x):.1f}" x2="{sx(x):.1f}" y1="{sy(m - h):.1f}" y2="{sy(m + h):.1f}" '
                              f'stroke="{c}" stroke-opacity=".6"/>')
             shape = (f'<rect x="{sx(x) - 3.5:.1f}" y="{sy(m) - 3.5:.1f}" width="7" height="7" fill="{c}">'
-                     if name == "prompt" else f'<circle cx="{sx(x):.1f}" cy="{sy(m):.1f}" r="2.8" fill="{c}">')
+                     if square else f'<circle cx="{sx(x):.1f}" cy="{sy(m):.1f}" r="2.8" fill="{c}">')
             parts.append(shape + f'<title>{name}, c={x:g}: {m:.2f} ± {h:.2f}</title>'
-                         + ("</rect>" if name == "prompt" else "</circle>"))
+                         + ("</rect>" if square else "</circle>"))
     parts.append("</svg>")
     return "".join(parts)
 
@@ -1525,50 +1526,6 @@ def side_pattern(ch):
     return ("only pushing down " if dn else "only pushing up ") + ("helps" if (dn or up) > 0 else "hurts")
 
 
-def forest_chart(groups, colour, xlabel, width=560, row=9, gap=8, unit="per unit c", span=None):
-    """Slopes as dots with 95% CIs: groups = [(label, [(series, slope dict, q)])], one row per series, rows grouped
-    under their label; hover a dot for its numbers."""
-    items = [(g, s, d, q) for g, ss in groups for s, d, q in ss if math.isfinite(d.get("b", float("nan")))]
-    if not items:
-        return "<p class=muted>no data yet</p>"
-    ci = lambda d: 1.96 * d["se"] if math.isfinite(d.get("se", float("nan"))) else 0.0
-    lo = min([d["b"] - ci(d) for _, _, d, _ in items] + [0])
-    hi = max([d["b"] + ci(d) for _, _, d, _ in items] + [0])
-    lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
-    lo, hi = span if span and span[1] > span[0] else (lo, hi)  # a shared axis for charts shown side by side
-    L, R, T = 120, 12, 6
-    n_rows = sum(len(ss) for _, ss in groups)
-    height = T + n_rows * row + len(groups) * gap + 34
-    sx = lambda v: L + (v - lo) / (hi - lo) * (width - L - R)
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" style="max-width:{width}px" role="img" '
-             f'aria-label="{html.escape(xlabel)}">',
-             f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - 30}" stroke="currentColor" '
-             f'stroke-opacity=".35" stroke-dasharray="2 2"/>']
-    y = T
-    for g, ss in groups:
-        y += gap
-        parts.append(f'<text x="4" y="{y + row * len(ss) / 2 + 3:.1f}" font-weight="600">{html.escape(g)}</text>')
-        for s, d, q in ss:
-            yc = y + row / 2
-            if math.isfinite(d.get("b", float("nan"))):
-                c, h = colour.get(s, "currentColor"), ci(d)
-                faint = "" if sig(d, q) else ' fill-opacity=".45"'
-                tip = (f"{g} · {s}: {d['b']:+.3f} {unit} ± {h:.3f} (95% CI), n={d.get('n')}, "
-                       f"episodes={d.get('clusters', '?')}, p={fmt(d.get('p'), 4)}, q={fmt(q, 4)}")
-                parts.append(f'<g><title>{html.escape(tip)}</title>'
-                             f'<rect x="{L}" y="{y:.1f}" width="{width - L - R}" height="{row}" fill="transparent"/>'
-                             f'<line x1="{sx(d["b"] - h):.1f}" x2="{sx(d["b"] + h):.1f}" y1="{yc:.1f}" y2="{yc:.1f}" '
-                             f'stroke="{c}" stroke-width="2" stroke-opacity=".7"/>'
-                             f'<circle cx="{sx(d["b"]):.1f}" cy="{yc:.1f}" r="{4.5 if sig(d, q) else 3}" fill="{c}"'
-                             f'{faint}/></g>')
-            y += row
-    for v in (lo, 0, hi):
-        parts.append(f'<text x="{sx(v):.1f}" y="{height - 18}" text-anchor="middle">{v:.2g}</text>')
-    parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
-    parts.append("</svg>")
-    return "".join(parts)
-
-
 SIDE_SETTINGS = SETTING_ORDER[:8]  # the vector settings: who carries the persona
 
 
@@ -1598,9 +1555,8 @@ def setting_charts(checks, traits, cells, pooled, shapes) -> str:
     colour = {c: f"var(--s{i + 1})" for i, c in enumerate(SIDE_SETTINGS)}
     ci = lambda pts: [(x, m, 1.96 * se) for x, (m, se, _) in pts.items()]
     out = ["<h3>Per game: every curve on its own</h3><p class=muted>Each game (click to open; a cell of the shape "
-           "table above jumps here): first the <b>mean reward change when pushed down</b> (all c &lt; 0 together) "
-           "<b>and when pushed up</b> (c &gt; 0), one dot per trait × setting with its 95% CI (large dot = differs from "
-           "0 after Benjamini–Hochberg over all of them; hover for the numbers). Then one row per trait: "
+           "table above jumps here): first one chart per trait with every setting as a line (hover a line for its "
+           "pushed-down and pushed-up means). Then one row per trait: "
            "<b>pooled</b> = all settings without a side (one, half, all, both_one) together, the curve whose shape "
            "the table gives; then one chart per setting (who is steered). Each: the steered agents' mean reward change "
            "at each c vs the same seats in the unsteered episode with the same seed, game units, 95% CIs, c = 0 the "
@@ -1636,19 +1592,20 @@ def setting_charts(checks, traits, cells, pooled, shapes) -> str:
             rows_.append(f"<h3 id='{curve_id(cell, t)}'>{html.escape(t)} <span class=muted>· "
                          f"{html.escape(shapes.get((cell, t)) or 'flat')} (pooled)</span></h3>"
                          f"<div class='charts mini'>{''.join(charts)}</div>")
-        ext = [checks[(cell, t, c)][s] for t in traits for c in here if (cell, t, c) in checks for s in (-1, 1)]
-        ext = [(d["b"] - 1.96 * d["se"], d["b"] + 1.96 * d["se"]) for d in ext if math.isfinite(d["b"]) and math.isfinite(d["se"])]
-        span = (min([a for a, _ in ext] + [0]), max([b for _, b in ext] + [0])) if ext else None
-        sides = "".join(
-            f"<div class=chart><h3>Pushed {lab}</h3>"
-            + forest_chart([(t, [(c, checks[(cell, t, c)][s], checks[(cell, t, c)][s]["q"]) for c in here
-                                 if (cell, t, c) in checks]) for t in traits], colour,
-                           f"mean reward change, c {'<' if s < 0 else '>'} 0 (game units)", width=420,
-                           unit=f"mean change at c {'<' if s < 0 else '>'} 0", span=span) + "</div>"
-            for s, lab in ((-1, "down (c &lt; 0)"), (1, "up (c &gt; 0)")))
+        overview = []  # one chart per trait, every setting a line: the game at a glance
+        for t in traits:
+            sets = [c for c in here if (cell, t, c) in checks]
+            if sets:
+                series = {c: [(x, m, 1.96 * se) for x, (m, se, _) in checks[(cell, t, c)]["pts"].items()]
+                          + [(0.0, 0.0, float("nan"))] for c in sets}
+                note = {c: f"{c}: pushed down {checks[(cell, t, c)][-1]['b']:+.2f}, up {checks[(cell, t, c)][1]['b']:+.2f}"
+                           + (" · bends" if checks[(cell, t, c)]["q_line"] < 0.05 else "") for c in sets}
+                overview.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                                f"{line_chart(series, f'{cell_name(cell)} {t}', 'reward change', colours=colour, notes=note)}"
+                                f"</div>")
         out.append(f"<details><summary>{html.escape(cell_name(cell))}: every curve</summary>"
                    f"<div class=legend>{legend}<span>bars: 95% CI</span></div>"
-                   f"<div class=charts>{sides}</div>{''.join(rows_)}</details>")
+                   f"<h3>All settings per trait</h3><div class=charts>{''.join(overview)}</div>{''.join(rows_)}</details>")
     return "".join(out)
 
 
