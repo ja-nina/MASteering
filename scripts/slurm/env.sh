@@ -49,6 +49,7 @@ TMP_WATCH_SECONDS="${TMP_WATCH_SECONDS:-10}"
 # named like SLURM's own logs: tmp-<job>.log, or tmp-<array job>_<task>.log for an array task
 TMP_LOG="slurm-logs/tmp-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$$}}${SLURM_ARRAY_TASK_ID:+_$SLURM_ARRAY_TASK_ID}.log"
 watch_tmp() {
+  set +e +o pipefail  # du cannot read other users' files: that must not end the watcher (it inherits set -e)
   while true; do
     {
       # df counts deleted-but-open files and unreadable dirs that du cannot see: the gap between them
@@ -67,5 +68,7 @@ if [ "$TMP_WATCH_SECONDS" -gt 0 ]; then
   WATCH_PID=$!
   echo "/tmp usage every ${TMP_WATCH_SECONDS}s -> $TMP_LOG"
 fi
-trap '[ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null; rm -rf "$MIA_APERTURE_DIR" "$TESTBED_MIA_DIR"' EXIT
+# the cleanup must not fail: under set -e a failing command here (kill of a watcher that already ended) becomes the
+# job's exit code, and a task that finished cleanly shows up as FAILED in sacct
+trap '{ [ -z "$WATCH_PID" ] || kill "$WATCH_PID" 2>/dev/null || true; rm -rf "$MIA_APERTURE_DIR" "$TESTBED_MIA_DIR"; } || true' EXIT
 trap 'exit 143' TERM INT  # scancel / time limit: still run the cleanup above (files in /dev/shm hold RAM)
