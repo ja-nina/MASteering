@@ -101,6 +101,23 @@ def grid_board(rows: int, cols: int, cell: int, cells, labels: bool = True, head
     return img
 
 
+def _number(v) -> str:
+    """A bar's value label; an integer too large for a float (an agent can answer with hundreds of digits) in
+    scientific notation instead of crashing the render."""
+    try:
+        return f"{v:g}"
+    except OverflowError:
+        digits = str(abs(int(v)))
+        return f"{'-' if v < 0 else ''}{digits[0]}.{digits[1:3]}e+{len(digits) - 1}"
+
+
+def _ratio(v, vmax) -> float:
+    try:
+        return v / vmax
+    except OverflowError:  # a huge negative against a small maximum: far below the axis (clipped there)
+        return -1e9 if v < 0 else 1e9
+
+
 def bar_chart(values: List[Optional[float]], labels: List[str], header: str, width: int = 480,
               height: int = 300, colors: Optional[List[tuple]] = None, marks: Optional[List[str]] = None,
               hline: Optional[float] = None):
@@ -116,9 +133,9 @@ def bar_chart(values: List[Optional[float]], labels: List[str], header: str, wid
     for i, v in enumerate(values):
         x0, x1 = left + i * slot + slot * 0.15, left + (i + 1) * slot - slot * 0.15
         if v is not None:
-            y = min(bottom - (bottom - top) * v / vmax, height - 18)  # a negative value hangs below the axis
+            y = min(bottom - (bottom - top) * _ratio(v, vmax), height - 18)  # a negative value hangs below the axis
             draw.rectangle([x0, min(y, bottom), x1, max(y, bottom)], fill=(colors[i] if colors else BLUE))
-            text_center(draw, ((x0 + x1) / 2, y - 9), f"{v:g}", 13)
+            text_center(draw, ((x0 + x1) / 2, y - 9), _number(v), 13)
             if marks and marks[i]:
                 text_center(draw, ((x0 + x1) / 2, y - 24), marks[i], 13, RED)
         text_center(draw, ((x0 + x1) / 2, bottom + 12), labels[i], 13)

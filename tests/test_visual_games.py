@@ -39,6 +39,20 @@ def test_every_mode_renders(game, players, kwargs):
     assert "image" in visual and visual != text
 
 
+@pytest.mark.parametrize("players,kwargs", [(3, {}), (6, {}), (5, {"hide_group_size": True})])
+def test_gbs_renders_an_answer_too_large_for_a_float(players, kwargs):
+    """A steered agent can answer GBS with hundreds of digits: the group-sum chart must still draw (it crashed with
+    OverflowError and the episode was lost)."""
+    env, renderer, _ = build_game(family="symbolic", game_id="gbs", num_players=players, env_kwargs=kwargs)
+    env.reset()
+    ids = [a for a, _ in env.pending()]
+    env.submit({a: (10 ** 400 if i == 0 else 5) for i, a in enumerate(ids)})
+    env.submit({a: (-10 ** 400 if i == 0 else 5) for i, a in enumerate(ids)})
+    for aid, obs in env.pending():
+        _, images = observe(renderer, "image", obs, aid, env.context)
+        assert images and all(isinstance(im, Image.Image) for im in images)
+
+
 def test_image_text_leaves_out_what_the_image_shows():
     env, renderer, _ = build_game(family="symbolic", game_id="hanabi", num_players=3, env_kwargs={})
     env.reset()
