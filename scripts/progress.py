@@ -122,27 +122,32 @@ def config_totals(configs: Path) -> dict:
 LOGGING_DIR = re.compile(r"^logging_dir: *(.+?) *$", re.M)
 
 
+RUN_ID = re.compile(r"^run_id: *(.+?) *$", re.M)
+
+
 def disk_done(group: Path) -> int:
-    """Finished episodes of one game group: summary files in its logging_dir and in the fallback dir."""
+    """Finished episodes of one game group's configs: summary files in its logging_dir and in the fallback dir.
+    Only these configs' runs and episodes count: another sweep logging into the same dirs (focus into main's)
+    has runs and episodes of its own there."""
+    wanted = {}  # run_id -> episodes
+    for f in group.glob("*.yaml"):
+        text = f.read_text()
+        wanted[RUN_ID.search(text).group(1).strip("'\"")] = int(EPISODES.search(text).group(1))
     first = next(group.glob("*.yaml"), None)
     m = LOGGING_DIR.search(first.read_text()) if first else None
     if not m:
         return 0
     primary = Path(m.group(1).strip("'\""))
-    fallback = Path(os.environ.get("MA_FALLBACK_LOG_DIR") or "/BS/ForNet/nobackup/MASteer/logs") \
-        / primary.parent.name / primary.name
+    fallback = Path(os.environ.get("MA_FALLBACK_LOG_DIR") or "/BS/ForNet/nobackup/MASteer/logs")         / primary.parent.name / primary.name
     done = set()
     for root in (primary, fallback):
-        try:
-            runs = [e for e in os.scandir(root) if e.is_dir() and not e.name.startswith("_")]
-        except OSError:
-            continue
-        for run in runs:
+        for run, episodes in wanted.items():
             try:
-                done.update((run.name, f.name) for f in os.scandir(run.path)
-                            if f.name.startswith("episode_") and f.name.endswith(".summary.json"))
+                names = [f.name for f in os.scandir(root / run)]
             except OSError:
-                pass
+                continue
+            done.update((run, n) for n in names if n.startswith("episode_") and n.endswith(".summary.json")
+                        and int(n.split("_")[1].split(".")[0]) < episodes)
     return len(done)
 
 
