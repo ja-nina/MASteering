@@ -1,7 +1,7 @@
-"""The condensed report: what steering does, in plain terms, per game and steering vector.
+"""The steering mini report: what steering does, in plain terms, per game and steering vector.
 
-    python scripts/condensed_report.py results/main/agents.csv.gz \\
-        --logs <logging_dir>/main [fallback/main] --out results/main/condensed_report.html
+    python scripts/steering_mini_report.py results/main/agents.csv.gz \\
+        --logs <logging_dir>/main [fallback/main] --out results/main/steering_mini_report.html
 
 The same agent rows as scripts/report.py, but no slopes, standard deviations or q-values: everything is drawn as
 line plots over the steering strength c, one line per setting (how many and which players are steered), or said
@@ -586,9 +586,8 @@ def build(rows, logs=None) -> str:
     for r in pr:  # pooled over games, for the synergy table
         paired_by.setdefault(("*", r["trait"], r["condition"]), []).append(r)
     last = R.last_step_only(rows)
-    eps = len({r["cluster"] for r in rows})
     intro = ("<div class=box><b>What this is</b><span>Persona-vector steering of LLM agents in multi-agent games, in "
-             f"plain terms: {eps} episodes over {len(cells)} games (game × text or image), {len(traits)} personas. "
+             f"plain terms: {len(cells)} games (game × text or image), {len(traits)} personas. "
              "The full report (report.html) has the statistics behind every line.</span><b>How to read it</b><span>"
              "Charts: the steering strength c on the x axis (negative = pushed away from the persona, 0 = unsteered), "
              "one line per setting. Words: markers "
@@ -629,8 +628,8 @@ def build(rows, logs=None) -> str:
                 + html.escape(", ".join(games)) + "</p>" + rest)
     parts = [with_games(x) for x in parts]
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
-            f"initial-scale=1'><title>Steering, condensed</title><style>{R.CSS}{CSS_EXTRA}</style></head><body>"
-            f"<h1>Steering, condensed</h1>{intro}{warn}{toc}{''.join(parts)}</body></html>")
+            f"initial-scale=1'><title>Steering mini report</title><style>{R.CSS}{CSS_EXTRA}</style></head><body>"
+            f"<h1>Steering mini report</h1>{intro}{warn}{toc}{''.join(parts)}</body></html>")
 
 
 def main(argv=None) -> int:
@@ -645,7 +644,7 @@ def main(argv=None) -> int:
         return 1
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(build(rows, logs=args.logs), encoding="utf-8")
-    print(f"condensed report over {len(rows)} agent-episodes -> {args.out}")
+    print(f"steering mini report over {len(rows)} agent-episodes -> {args.out}")
     return 0
 
 

@@ -4196,7 +4196,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         hi_x, lo_x = max(ln_c), min(ln_c)
         extra.append(f"<b>Steering changes how much agents write.</b> Answers average {ln_c[0.0][0]:.0f} characters "
                      f"unsteered, {ln_c[hi_x][0]:.0f} at c = {hi_x:g} and {ln_c[lo_x][0]:.0f} at c = {lo_x:g} (section 13; "
-                     "per persona and setting in section 20 and in the condensed report's recipe).")
+                     "per persona and setting in section 20 and in the steering mini report's recipe).")
     body.append(section(13, "Coherence cost: does steering break the agent?",
                         "Does strong steering make agents produce broken or unusually long/short answers?",
                         "Steered agents (persona vector, all traits) by coefficient, unsteered agents at 0: the share of "

@@ -30,6 +30,6 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
     || echo "token backfill incomplete: rerun to count the rest"
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
 "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "config/sweeps/$SWEEP.yaml" --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
-"$PYTHON" scripts/condensed_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/condensed_report.html"
+"$PYTHON" scripts/steering_mini_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/steering_mini_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
 echo "$(date)  done: git add $OUT && git commit -m 'Report: $SWEEP' && git push"
