@@ -21,6 +21,10 @@ engine:
   max_images: 2
   steer:   {gpus: "0", memory: 0.85}
   monitor: {gpus: "1", memory: 0.75}
+# per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
+models:
+  qwen3.8-27b:   # tensor_parallel_size 2: each engine on 2 GPUs, 4 per job (sbatch --gres=gpu:4: a40 8-GPU nodes, a100, h100)
+    engine: {steer: {gpus: "0,1"}, monitor: {gpus: "2,3"}}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]

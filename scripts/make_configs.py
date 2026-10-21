@@ -28,14 +28,26 @@ RUN_KEYS = ("model", "vectors_dir", "traits_dir", "episodes", "max_tokens", "max
             "monitor", "engine", "logging_dir", "image_size", "save_images")
 
 
+def _merged(base: dict, over: dict) -> dict:
+    """base with over's keys replaced, nested dicts merged key by key."""
+    return {**base, **{k: _merged(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+                       for k, v in over.items()}}
+
+
 def load_sweep(path, model=None) -> dict:
     """The sweep file, with `model` swapped for another PersVecFast model key if given; a different
-    model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own."""
+    model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own.
+    The sweep's `models: {<key>: {...}}` overrides run settings for that model only (e.g. `engine` for a
+    model that needs 2 GPUs per engine); other models' configs do not change."""
     sweep = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if model and model != sweep["model"]:
         sweep = {**sweep, "model": model, "name": f"{sweep['name']}_{model}",
                  **({"log_name": f"{sweep['log_name']}_{model}"} if sweep.get("log_name") else {})}
-    return sweep
+    over = (sweep.get("models") or {}).get(sweep["model"]) or {}
+    unknown = set(over) - set(RUN_KEYS)
+    if unknown:
+        raise ValueError(f"models.{sweep['model']}: only run settings can be overridden, not {sorted(unknown)}")
+    return _merged(sweep, over)
 
 
 def expand(sweep: dict) -> dict:
