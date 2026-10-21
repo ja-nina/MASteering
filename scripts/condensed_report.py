@@ -208,15 +208,18 @@ def synergy(traits, by_trait, paired_by, modes_games, per_game):
     """Prompt, vector, both at c = ±1 (the prompt has no strength): the language, and whether the combination is
     more than the sum of the two (synergy), the sum (they add), or less (they overlap), for language and result;
     over all games, per observation mode on the games played both ways, and game by game (`per_game`: report.py's
-    synergy_cells). The pooled language verdict uses the raw readout: in SD units, games whose answers barely vary
-    unsteered would dominate it."""
+    synergy_cells). The pooled language verdict pools the games' own synergies (raw readout, comparable across games)
+    with a random-effects model: the games differ in how prompt and vector combine, and a pool that ignored that would
+    call nearly every case more or less than the sum."""
     out = ["<h2 id=synergy>Prompt, vector, or both: do they reinforce each other?</h2><p class=muted>One agent, "
            "the vector at c = ±1 (the prompt has no strength). Each is compared with the same unsteered games, so if "
            "the two simply add, 'both' = vector + prompt. Verdict: <b>more than the sum</b> (synergy), <b>adds up</b>, "
            "or <b>less than the sum</b> (they overlap or compete; on the language this can also be a ceiling). "
            "'All games' pools every game; 'text' and 'image' use only the games played both ways, so the two "
            "compare the same games. 'Games' counts the verdict game by game (more / adds up / less): pooling "
-           "averages over games, so a reinforcement in one game and an overlap in another can cancel out.</p>"
+           "averages over games, so a reinforcement in one game and an overlap in another can cancel out. The pooled "
+           "language verdicts allow for the games differing (random effects over the per-game results), so they say "
+           "'more' or 'less' only where that holds across games.</p>"
            "<div class=wrap><table><tr><th class=l rowspan=2>persona</th><th rowspan=2>vector</th><th rowspan=2>prompt"
            "</th><th rowspan=2>both</th><th colspan=4>language: together</th><th colspan=4>result: together</th></tr>"
            "<tr>" + ("<th>pooled over all games</th><th>text, games played both ways</th><th>image, games played "
@@ -234,8 +237,12 @@ def synergy(traits, by_trait, paired_by, modes_games, per_game):
             lang, res = [], []
             for m in (None, "text", "image"):
                 arms = [pick(c, t, s, at, m) for c, at in (("both_one", 1), ("one", 1), ("prompt_one", None))]
-                lang.append(_together([R._episode_mean([s * r["mon_raw"][t] for r in x if t in r["mon_raw"]],
-                                                       [r["cluster"] for r in x if t in r["mon_raw"]]) for x in arms]))
+                mu, se, _ = R.random_effects([v_ for (cell, t_, s_, k_), v_ in per_game.items()
+                                              if (t_, s_, k_) == (t, s, "readout_raw")
+                                              and (m is None or (cell[1] == m and cell[0] in modes_games))])
+                z = mu / se if math.isfinite(se) and se > 0 else float("nan")
+                lang.append("<span class=muted>too little data</span>" if not math.isfinite(z) else
+                            "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up")
                 rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"]
                                            and r["coef"] * s > 0 and (c is None or abs(r["coef"]) == c)
                                            and math.isfinite(r["diff"])
@@ -402,7 +409,8 @@ def text_vs_image(rows, traits, by, paired_by):
                                                           for r in by.get(((g, m), t, c), [])})))
     avg = lambda c, m: float(np.mean(gain[(c, m)])) if gain[(c, m)] else float("nan")
     words_ = {"one": "the vector", "prompt_one": "the prompt", "both_one": "both together"}
-    trend = [f"{words_[c]} moves it {'further' if avg(c, 'image') > avg(c, 'text') else 'less far'} with images"
+    trend = [f"{words_[c]} {'move' if c == 'both_one' else 'moves'} it "
+             f"{'further' if avg(c, 'image') > avg(c, 'text') else 'less far'} with images"
              for c in words_ if math.isfinite(avg(c, "text")) and math.isfinite(avg(c, "image"))]
     if trend:
         rows_.append(f"<p>Where the effect is clear, {'; '.join(trend)} (the intended way, on average over personas).</p>")

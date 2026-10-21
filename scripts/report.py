@@ -2161,7 +2161,7 @@ def prompt_vector_section(rows, traits, base, scale):
     unparse = lambda r: 100 * r["fallbacks"] / r["turns"] if r["turns"] else None
     cond_of = {"vector": "one", "prompt": "prompt_one", "both": "both_one"}
     at = lambda a: None if a == "prompt" else 1.0  # the prompt has no strength: compared with |c| = 1
-    g19 = games_note({r["cell"] for r in one})
+    g19 = games_note({r["cell"] for r in one}, "Games")
 
     # a. over the dose: readout and reward for vector and both, the prompt as squares at ±1
     charts = {"readout": [], "reward": []}
@@ -2433,7 +2433,17 @@ def synergy_cells(rows, traits, base, scale):
     pick = lambda r: r["steered"] and r["condition"] in conds and not r["random"]
     key = lambda r: (r["cell"], ARM_OF[r["condition"]], r["trait"])
     arm, rew = _by([r for r in rows if pick(r)], key), _by(paired(rows, base, pick), key)
-    value = {"readout": lambda t: lambda r: r["mon"].get(t), "readout_raw": lambda t: lambda r: r["mon_raw"].get(t),
+    # the raw readout as a change against the game's unsteered agents: uncentred, the unsteered level would not cancel
+    # in both − (vector + prompt) and would stand in for a synergy
+    level = defaultdict(list)
+    for r in rows:
+        if r["condition"] == "none":
+            for t, v in r.get("mon_raw", {}).items():
+                level[(r["cell"], t)].append(v)
+    level = {k: float(np.mean(v)) for k, v in level.items()}
+    raw = lambda t: lambda r: (r["mon_raw"][t] - level[(r["cell"], t)]
+                               if t in r.get("mon_raw", {}) and (r["cell"], t) in level else None)
+    value = {"readout": lambda t: lambda r: r["mon"].get(t), "readout_raw": raw,
              "reward": lambda t: lambda r: r["diff"] / scale.get(r["cell"], 1.0)}
     out = {}
     for cell in sorted({k[0] for k in arm}):
@@ -2453,6 +2463,20 @@ def synergy_cells(rows, traits, base, scale):
                                                    "clusters": sum(n for _, _, n in parts),
                                                    "p": math.erfc(abs(d / se) / math.sqrt(2))}
     return out
+
+
+def random_effects(estimates):
+    """DerSimonian–Laird pool of per-game estimates [{"b", "se"}]: (mean, SE, tau²). The SE includes how much the
+    games differ (tau²), so a pooled verdict is not overconfident when the games disagree."""
+    v = [(e["b"], e["se"]) for e in estimates if math.isfinite(e["b"]) and math.isfinite(e["se"]) and e["se"] > 0]
+    if len(v) < 2:
+        return (v[0][0], v[0][1], 0.0) if v else (float("nan"), float("nan"), float("nan"))
+    y, w = np.array([b for b, _ in v]), np.array([1 / se ** 2 for _, se in v])
+    mu = float((w * y).sum() / w.sum())
+    q = float((w * (y - mu) ** 2).sum())
+    tau2 = max(0.0, (q - (len(v) - 1)) / (w.sum() - (w ** 2).sum() / w.sum()))
+    ws = 1 / (1 / w + tau2)
+    return float((ws * y).sum() / ws.sum()), float(math.sqrt(1 / ws.sum())), tau2
 
 
 def heterogeneity(syn, kind):
