@@ -214,7 +214,8 @@ def _visible_gpus(gpus: Optional[str]):
 
 
 def _open_llm(spec: ModelSpec, kind: str, mia_config: dict, work_dir: Path, gpus, memory, max_model_len,
-              max_images: int = 0, tensor_parallel_size: Optional[int] = None):
+              max_images: int = 0, tensor_parallel_size: Optional[int] = None,
+              max_num_batched_tokens: Optional[int] = None):
     from mia import MiaLLM
 
     config_file = work_dir / f"{spec.key}_{kind}.json"
@@ -229,7 +230,10 @@ def _open_llm(spec: ModelSpec, kind: str, mia_config: dict, work_dir: Path, gpus
                       max_num_seqs=spec.max_num_seqs, gpu_memory_utilization=memory,
                       generation_config="vllm",                 # never read the model's generation_config.json
                       enable_prefix_caching=(kind == "steer"),  # a cached prefix would not be re-captured
-                      **({"limit_mm_per_prompt": {"image": max_images}} if max_images else {}))
+                      **({"limit_mm_per_prompt": {"image": max_images}} if max_images else {}),
+                      # tokens per forward pass (long prompts are prefilled in chunks): bounds the warm-up's peak
+                      # activation memory, which for the capture engine does not shrink with tensor parallelism
+                      **({"max_num_batched_tokens": int(max_num_batched_tokens)} if max_num_batched_tokens else {}))
 
 
 def _shutdown(llm) -> None:
@@ -248,7 +252,7 @@ def _pixels_per_token(spec: ModelSpec) -> int:
 def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int]]):
     """Yield (SteerEngine, CaptureEngine | None). engine_cfg: {max_model_len, sampling, max_images,
     steer: {gpus, memory}, monitor: {gpus, memory}, tensor_parallel_size (default: the model's),
-    steer/monitor may set their own tensor_parallel_size; aperture_gib (capture buffer, default env.sh's MIA_APERTURE_GPU_BYTES), capture_tokens (default CAPTURE_TOKENS)};
+    steer/monitor may set their own tensor_parallel_size and max_num_batched_tokens; aperture_gib (capture buffer, default env.sh's MIA_APERTURE_GPU_BYTES), capture_tokens (default CAPTURE_TOKENS)};
     no monitor engine when monitor_layers is None. aperture_gib and capture_tokens only size buffers and batches:
     the captured activations are the same."""
     from transformers import AutoTokenizer
@@ -272,7 +276,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
     with ExitStack() as stack:
         llm = _open_llm(spec, "steer", steer_config, work_dir, steer_cfg.get("gpus"),
                         steer_cfg.get("memory", 0.5 if shared else 0.85), max_model_len, max_images,
-                        steer_cfg.get("tensor_parallel_size") or tp)
+                        steer_cfg.get("tensor_parallel_size") or tp, steer_cfg.get("max_num_batched_tokens"))
         stack.callback(_shutdown, llm)
         steer = SteerEngine(llm, spec, AutoTokenizer.from_pretrained(spec.hf_repo), str(zero_vector),
                             dict(engine_cfg.get("sampling") or {}), max_model_len, _pixels_per_token(spec))
@@ -284,7 +288,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
                 os.environ["MIA_APERTURE_GPU_BYTES"] = str(int(float(engine_cfg["aperture_gib"]) * 2 ** 30))
             cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
                                 mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images,
-                                mon_cfg.get("tensor_parallel_size") or tp)
+                                mon_cfg.get("tensor_parallel_size") or tp, mon_cfg.get("max_num_batched_tokens"))
             stack.callback(_shutdown, cap_llm)
             capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden,
                                     int(engine_cfg.get("capture_tokens") or CAPTURE_TOKENS))
