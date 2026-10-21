@@ -213,17 +213,18 @@ def _visible_gpus(gpus: Optional[str]):
 
 
 def _open_llm(spec: ModelSpec, kind: str, mia_config: dict, work_dir: Path, gpus, memory, max_model_len,
-              max_images: int = 0):
+              max_images: int = 0, tensor_parallel_size: Optional[int] = None):
     from mia import MiaLLM
 
     config_file = work_dir / f"{spec.key}_{kind}.json"
     write_json(config_file, mia_config)
     worker, analyzer = {"steer": ("steer", None), "capture": ("capture_hs", "hidden_states")}[kind]
-    log(f"loading {spec.hf_repo} ({kind} engine, gpus={gpus or 'all'}, memory={memory})")
+    tp = tensor_parallel_size or spec.tensor_parallel_size
+    log(f"loading {spec.hf_repo} ({kind} engine, gpus={gpus or 'all'}, tensor_parallel_size={tp}, memory={memory})")
     with _visible_gpus(gpus):
         return MiaLLM(model=spec.hf_repo, worker_name=worker, analyzer_name=analyzer, config_file=str(config_file),
                       hook_dir=str(work_dir / f"mia_{kind}"),
-                      tensor_parallel_size=spec.tensor_parallel_size, max_model_len=max_model_len,
+                      tensor_parallel_size=tp, max_model_len=max_model_len,
                       max_num_seqs=spec.max_num_seqs, gpu_memory_utilization=memory,
                       generation_config="vllm",                 # never read the model's generation_config.json
                       enable_prefix_caching=(kind == "steer"),  # a cached prefix would not be re-captured
@@ -245,7 +246,8 @@ def _pixels_per_token(spec: ModelSpec) -> int:
 @contextmanager
 def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int]]):
     """Yield (SteerEngine, CaptureEngine | None). engine_cfg: {max_model_len, sampling, max_images,
-    steer: {gpus, memory}, monitor: {gpus, memory}}; no monitor engine when monitor_layers is None."""
+    steer: {gpus, memory}, monitor: {gpus, memory}, tensor_parallel_size (default: the model's)}; no monitor
+    engine when monitor_layers is None."""
     from transformers import AutoTokenizer
 
     spec = MODELS[model]
@@ -254,6 +256,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
     shared = monitor_layers is not None and steer_cfg.get("gpus") == mon_cfg.get("gpus")
     max_model_len = engine_cfg.get("max_model_len") or spec.max_model_len
     max_images = int(engine_cfg.get("max_images", 0))
+    tp = engine_cfg.get("tensor_parallel_size")
 
     hidden = model_shape(spec)[1]
     zero_vector = work_dir / f"zero_{spec.key}.pt"
@@ -265,7 +268,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
         check_free_space(os.environ["MIA_APERTURE_DIR"], float(os.environ.get("PVF_MIN_TMP_GB", 20)))
     with ExitStack() as stack:
         llm = _open_llm(spec, "steer", steer_config, work_dir, steer_cfg.get("gpus"),
-                        steer_cfg.get("memory", 0.5 if shared else 0.85), max_model_len, max_images)
+                        steer_cfg.get("memory", 0.5 if shared else 0.85), max_model_len, max_images, tp)
         stack.callback(_shutdown, llm)
         steer = SteerEngine(llm, spec, AutoTokenizer.from_pretrained(spec.hf_repo), str(zero_vector),
                             dict(engine_cfg.get("sampling") or {}), max_model_len, _pixels_per_token(spec))
@@ -274,7 +277,7 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
             # capture layers are 1-based: i = output of decoder block i-1
             cap_config = {"hidden_states": {"layers": [l + 1 for l in monitor_layers], "mode": "all_tokens"}}
             cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
-                                mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images)
+                                mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images, tp)
             stack.callback(_shutdown, cap_llm)
             capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden)
         try:

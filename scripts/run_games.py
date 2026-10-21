@@ -36,6 +36,9 @@ def main(argv=None, open_engines=None) -> int:
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--episodes", type=int, help="override every config's episode count (smoke tests)")
     p.add_argument("--concurrent", type=int, help="override engine.concurrent_episodes")
+    p.add_argument("--tp", type=int, help="GPUs per engine (tensor parallel), overriding the model's: steer on GPUs "
+                   "0..tp-1, monitor on the next tp; e.g. --tp 1 runs a 27B copy per 80 GB GPU (a100/h100, 2 GPUs)")
+    p.add_argument("--memory", type=float, help="override both engines' gpu_memory_utilization")
     args = p.parse_args(argv)
     from dotenv import load_dotenv
     load_dotenv()  # OPENROUTER_API_KEY for TextArena juries
@@ -64,6 +67,14 @@ def main(argv=None, open_engines=None) -> int:
     concurrent = args.concurrent or engine_cfg.get("concurrent_episodes", 32)
     visual = any(c.observation != "text" for c in configs)
     engine_cfg = {**engine_cfg, "max_images": engine_cfg.get("max_images", 2) if visual else 0}
+    if args.tp:  # a different GPU layout only: the configs (and so the logs and results) stay the same
+        engine_cfg = {**engine_cfg, "tensor_parallel_size": args.tp,
+                      "steer": {**(engine_cfg.get("steer") or {}), "gpus": ",".join(map(str, range(args.tp)))},
+                      "monitor": {**(engine_cfg.get("monitor") or {}),
+                                  "gpus": ",".join(map(str, range(args.tp, 2 * args.tp)))}}
+    if args.memory:
+        engine_cfg = {**engine_cfg, **{k: {**(engine_cfg.get(k) or {}), "memory": args.memory}
+                                       for k in ("steer", "monitor")}}
     with open_engines(model, engine_cfg, layers) as (generator, reader):
         counts = run_jobs(jobs, generator, reader, monitor, concurrent=concurrent)
     log(f"done: {counts['ok']} episode(s) ok, {counts['failed']} failed")
