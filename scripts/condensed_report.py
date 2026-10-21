@@ -190,42 +190,62 @@ def recipe(rows, traits, by_trait, paired_by, cells):
     return "".join(out) + "</table></div>"
 
 
-def synergy(traits, by_trait, paired_by):
+def _together(parts):
+    """Verdict on both − (vector + prompt) from the three (mean, SE, n): more than the sum, adds up, less."""
+    se = math.sqrt(sum(x[1] ** 2 for x in parts)) if all(math.isfinite(x[1]) for x in parts) else 0
+    z = (parts[0][0] - parts[1][0] - parts[2][0]) / se if se > 0 else float("nan")
+    return ("<span class=muted>too little data</span>" if not math.isfinite(z) else
+            "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up")
+
+
+def synergy(traits, by_trait, paired_by, modes_games):
     """Prompt, vector, both at c = ±1 (the prompt has no strength): the language, and whether the combination is
-    more than the sum of the two (synergy), the sum (they add), or less (they overlap), for language and result."""
+    more than the sum of the two (synergy), the sum (they add), or less (they overlap), for language and result;
+    over all games, and per observation mode on the games played both ways."""
     out = ["<h2 id=synergy>Prompt, vector, or both: do they reinforce each other?</h2><p class=muted>One agent, "
            "the vector at c = ±1 (the prompt has no strength). Each is compared with the same unsteered games, so if "
            "the two simply add, 'both' = vector + prompt. Verdict: <b>more than the sum</b> (synergy), <b>adds up</b>, "
-           "or <b>less than the sum</b> (they overlap or compete; on the language this can also be a ceiling).</p>"
-           "<div class=wrap><table><tr><th class=l>persona</th><th>vector</th><th>prompt</th><th>both</th>"
-           "<th>language: together</th><th>result: together</th></tr>"]
-    pick = lambda cond, t, s, c=None: [r for r in by_trait.get((cond, t), []) if r["steered"] and r["coef"] * s > 0
-                                       and (c is None or abs(r["coef"]) == c)]
-    verdict = lambda z: "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up"
-    count = defaultdict(int)
+           "or <b>less than the sum</b> (they overlap or compete; on the language this can also be a ceiling). "
+           "'All games' pools every game; 'text' and 'image' use only the games played both ways, so the two "
+           "compare the same games.</p>"
+           "<div class=wrap><table><tr><th class=l rowspan=2>persona</th><th rowspan=2>vector</th><th rowspan=2>prompt"
+           "</th><th rowspan=2>both</th><th colspan=3>language: together</th><th colspan=3>result: together</th></tr>"
+           "<tr><th>all games</th><th>text</th><th>image</th><th>all games</th><th>text</th><th>image</th></tr>"]
+    pick = lambda cond, t, s, c=None, m=None: [
+        r for r in by_trait.get((cond, t), []) if r["steered"] and r["coef"] * s > 0
+        and (c is None or abs(r["coef"]) == c) and (m is None or (r["obs"] == m and r["group"] in modes_games))]
+    count = defaultdict(lambda: defaultdict(int))
     for t in traits:
         for s in (1, -1):
             v, p, b = pick("one", t, s, 1), pick("prompt_one", t, s), pick("both_one", t, s, 1)
             if not (v and p and b):
                 continue
-            parts = [R._episode_mean([s * r["mon"][t] for r in x if t in r["mon"]],
-                                     [r["cluster"] for r in x if t in r["mon"]]) for x in (b, v, p)]
-            se = math.sqrt(sum(x[1] ** 2 for x in parts))
-            lang = verdict((parts[0][0] - parts[1][0] - parts[2][0]) / se if se > 0 else 0)
-            count[lang] += 1
-            rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"] and r["coef"] * s > 0
-                                       and (c is None or abs(r["coef"]) == c) and math.isfinite(r["diff"])]
-            sc = [R._episode_mean([r["diff"] / SCALE.get(r["cell"], 1.0) for r in x],
-                                  [(r["cell"], r["episode"]) for r in x]) for x in (rp("both_one", 1), rp("one", 1),
-                                                                                    rp("prompt_one"))]
-            se_r = math.sqrt(sum(x[1] ** 2 for x in sc)) if all(math.isfinite(x[1]) for x in sc) else 0
-            res = verdict((sc[0][0] - sc[1][0] - sc[2][0]) / se_r if se_r > 0 else 0)
+            lang, res = [], []
+            for m in (None, "text", "image"):
+                arms = [pick(c, t, s, at, m) for c, at in (("both_one", 1), ("one", 1), ("prompt_one", None))]
+                lang.append(_together([R._episode_mean([s * r["mon"][t] for r in x if t in r["mon"]],
+                                                       [r["cluster"] for r in x if t in r["mon"]]) for x in arms]))
+                rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"]
+                                           and r["coef"] * s > 0 and (c is None or abs(r["coef"]) == c)
+                                           and math.isfinite(r["diff"])
+                                           and (m is None or (r["obs"] == m and r["group"] in modes_games))]
+                res.append(_together([R._episode_mean([r["diff"] / SCALE.get(r["cell"], 1.0) for r in x],
+                                                      [(r["cell"], r["episode"]) for r in x])
+                                      for x in (rp("both_one", 1), rp("one", 1), rp("prompt_one"))]))
+                count[("language", m)][lang[-1]] += 1
+                count[("result", m)][res[-1]] += 1
             out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td>"
                        + "".join(f"<td>{language(x, t)[0]}</td>" for x in (v, p, b))
-                       + f"<td><b>{lang}</b></td><td>{res}</td></tr>")
-    out.append("</table></div><p>Overall, on the language: "
-               + ", ".join(f"{k} in {v}" for k, v in sorted(count.items(), key=lambda kv: -kv[1]))
-               + " of the persona × direction cases.</p>")
+                       + "".join(f"<td><b>{x}</b></td>" for x in lang) + "".join(f"<td>{x}</td>" for x in res) + "</tr>")
+    tally = lambda kind, m: ", ".join(f"{k} in {n}" for k, n in sorted(count[(kind, m)].items(), key=lambda kv: -kv[1])
+                                      if "too little" not in k)
+    out.append("</table></div><p>Overall, on the language: " + tally("language", None)
+               + " of the persona × direction cases"
+               + (f" (with text: {tally('language', 'text')}; with images: {tally('language', 'image')})"
+                  if modes_games else "")
+               + ". On the result: " + tally("result", None)
+               + (f" (with text: {tally('result', 'text')}; with images: {tally('result', 'image')})"
+                  if modes_games else "") + ".</p>")
     return "".join(out)
 
 
@@ -305,8 +325,53 @@ def text_vs_image(rows, traits, by, paired_by):
     out.append("<h3>The persona in the language over c, text vs image</h3><div class=legend><span><i style='background:"
                "var(--s1)'></i>text</span><span><i style='background:var(--s2)'></i>image</span><span>one agent, half "
                "or every agent with the vector, the games played both ways; 0 = like unsteered agents; bars: 95% CI"
-               "</span></div><div class=charts>" + "".join(charts) + "</div><p class=muted>Per game and setting, text "
-               "and image results side by side: in the per-game charts below.</p>")
+               "</span></div><div class=charts>" + "".join(charts) + "</div>")
+
+    # the result over c, text vs image, with the straight line through it: how fast the result changes with c
+    charts = []
+    for t in traits:
+        series, fits = {}, {}
+        for m in ("text", "image"):
+            rs = [r for g in base for c in ("one", "half", "all") for r in paired_by.get(((g, m), t, c), [])
+                  if r["steered"] and math.isfinite(r["diff"])]
+            val = lambda r: r["diff"] / SCALE.get(r["cell"], 1.0)
+            series[m] = curve(rs, val, lambda r: (r["cell"], r["episode"]))
+            fits[m] = R._line_fit([r["coef"] for r in rs], [val(r) for r in rs])
+        charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
+                      + R.line_chart(series, t, "result change (SD of the game)", colours=mc, fits=fits) + "</div>")
+    out.append("<h3>The result over c, text vs image</h3><div class=legend><span><i style='background:var(--s1)'></i>"
+               "text</span><span><i style='background:var(--s2)'></i>image</span><span>the steered agents' result against "
+               "the same seats unsteered, in units of each game's unsteered spread so games can be pooled; dashed: the "
+               "straight line through the points (its steepness = how fast the result changes with c; hover it)</span>"
+               "</div><div class=charts>" + "".join(charts) + "</div>")
+
+    # prompt, vector, both: how far each moves the language, with text and with images
+    rows_ = ["<h3>Prompt, vector or both, with text and with images</h3><p class=muted>One agent; the vector and both "
+             "at c = ±1; the games played both ways. How far the persona shows in the language, per mode.</p>"
+             "<div class=wrap><table><tr><th class=l rowspan=2>persona</th><th colspan=2>vector</th><th colspan=2>"
+             "prompt</th><th colspan=2>both</th></tr><tr>" + "<th>text</th><th>image</th>" * 3 + "</tr>"]
+    gain = defaultdict(list)
+    for t in traits:
+        for s in (1, -1):
+            cells_ = []
+            for c, at in (("one", 1.0), ("prompt_one", None), ("both_one", 1.0)):
+                for m in ("text", "image"):
+                    rs = [r for g in base for r in by.get(((g, m), t, c), []) if r["steered"] and r["coef"] * s > 0
+                          and (at is None or abs(r["coef"]) == at)]
+                    w, mean, level = language(rs, t)
+                    cells_.append(f"<td>{w}</td>")
+                    if level >= 2:
+                        gain[(c, m)].append(s * mean)
+            rows_.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td>{''.join(cells_)}</tr>")
+    rows_.append("</table></div>")
+    avg = lambda c, m: float(np.mean(gain[(c, m)])) if gain[(c, m)] else float("nan")
+    words_ = {"one": "the vector", "prompt_one": "the prompt", "both_one": "both together"}
+    trend = [f"{words_[c]} moves it {'further' if avg(c, 'image') > avg(c, 'text') else 'less far'} with images"
+             for c in words_ if math.isfinite(avg(c, "text")) and math.isfinite(avg(c, "image"))]
+    if trend:
+        rows_.append(f"<p>Where the effect is clear, {'; '.join(trend)} (the intended way, on average over personas).</p>")
+    out.append("".join(rows_) + "<p class=muted>Per game and setting, text and image results side by side: in the "
+               "per-game charts below.</p>")
     return "".join(out)
 
 
@@ -500,7 +565,8 @@ def build(rows, logs=None) -> str:
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>"
              + "".join(f"<li>{h}</li>" for h in headline(by, paired_by)) + "</ul></div>",
-             recipe(rows, traits, by_trait, paired_by, cells), synergy(traits, by_trait, paired_by),
+             recipe(rows, traits, by_trait, paired_by, cells),
+             synergy(traits, by_trait, paired_by, {g for g in R.mode_baselines(rows)}),
              text_vs_image(rows, traits, by, paired_by), language_vs_action(rows, cells),
              roles(rows, traits),
              gallery(rows, logs), R.examples_section(logs, traits, coefs) if logs else "",
