@@ -2180,7 +2180,7 @@ def prompt_vector_section(rows, traits, base, scale):
              f"{len(syn_w) + len(sub_w)} cases"
              + (f" (more: {', '.join(syn_w) or '–'}; less: {', '.join(sub_w) or '–'})" if syn_w or sub_w else "")
              + ". A readout is a projection that can saturate, so 'less than the sum' on it can be a ceiling, not "
-               "competition.")
+               "competition. These verdicts pool all games; per game, and whether the games agree: section 25e.")
     ri = lambda a: [res[(t, s, 1, a)][0] for t, s in sides]
     r_pv, r_bv, r_bp = pearson(ri("prompt"), ri("vector")), pearson(ri("both"), ri("vector")), pearson(ri("both"), ri("prompt"))
     rg = defaultdict(list)  # per game x trait x side: the arms' reward effects, to see whether they agree
@@ -2290,6 +2290,56 @@ def _diff_test(a, b):
 
 
 NO_FIT = {"b": float("nan"), "se": float("nan"), "p": float("nan"), "n": 0}
+
+
+def synergy_cells(rows, traits, base, scale):
+    """Per (game cell, trait, side, kind): both − (vector + prompt) for one steered agent, the vector and both at
+    c = ±1, all three against the same unsteered reference. kind 'readout': the trait's readout the intended way, in
+    SD of the game's unsteered agents; 'readout_raw': the same in raw projection units (comparable across games,
+    whose unsteered spread differs a hundredfold); 'reward': the paired reward change in SD units."""
+    conds = ("one", "prompt_one", "both_one")
+    pick = lambda r: r["steered"] and r["condition"] in conds and not r["random"]
+    key = lambda r: (r["cell"], ARM_OF[r["condition"]], r["trait"])
+    arm, rew = _by([r for r in rows if pick(r)], key), _by(paired(rows, base, pick), key)
+    value = {"readout": lambda t: lambda r: r["mon"].get(t), "readout_raw": lambda t: lambda r: r["mon_raw"].get(t),
+             "reward": lambda t: lambda r: r["diff"] / scale.get(r["cell"], 1.0)}
+    out = {}
+    for cell in sorted({k[0] for k in arm}):
+        for t in traits:
+            for s in (1, -1):
+                for kind, val in value.items():
+                    src = rew if kind == "reward" else arm
+                    parts = [_arm_point(src.get((cell, a, t), []), val(t), s, None if a == "prompt" else 1.0)
+                             for a in ("both", "vector", "prompt")]
+                    if any(n < 2 for _, _, n in parts):
+                        continue
+                    al = 1 if kind == "reward" else s
+                    d = al * (parts[0][0] - parts[1][0] - parts[2][0])
+                    se = math.sqrt(sum(x[1] ** 2 for x in parts))
+                    if math.isfinite(d) and math.isfinite(se) and se > 0:
+                        out[(cell, t, s, kind)] = {"b": d, "se": se, "n": min(n for _, _, n in parts),
+                                                   "clusters": sum(n for _, _, n in parts),
+                                                   "p": math.erfc(abs(d / se) / math.sqrt(2))}
+    return out
+
+
+def heterogeneity(syn, kind):
+    """Per (observation mode, trait, side): do the games' synergies differ beyond their SEs? Cochran's Q over the games
+    with an estimate. {(mode, t, s): {"Q", "games", "p", "pooled"}}."""
+    by = defaultdict(list)
+    for (cell, t, s, k), v in syn.items():
+        if k == kind:
+            by[(cell[1], t, s)].append(v)
+    out = {}
+    for key, vs in by.items():
+        if len(vs) < 3:
+            continue
+        w = np.array([1 / v["se"] ** 2 for v in vs])
+        y = np.array([v["b"] for v in vs])
+        mu = float((w * y).sum() / w.sum())
+        q = float((w * (y - mu) ** 2).sum())
+        out[key] = {"Q": q, "games": len(vs), "pooled": mu, "p": chi2_sf(q, len(vs) - 1)}
+    return out
 
 
 def modality_channel_section(rows, traits, base, scale, steered):
@@ -2410,6 +2460,21 @@ def modality_channel_section(rows, traits, base, scale, steered):
                                   "both − (vector + prompt)" + (", intended way (SD)" if k == "readout" else " (SD)"))
                   for k in kinds}
 
+    # e. per game: pooling averages over games, so synergy in one and interference in another can cancel out
+    per = synergy_cells(rows, traits, base, scale)
+    pcells = sorted({k[0] for k in per})
+    cols_ = [label(t, s) for t, s in sides]
+    unlabel = {label(t, s): (t, s) for t, s in sides}
+    game_tabs, game_found = [], {}
+    for k, title_ in (("readout", "Language: both − (vector + prompt), intended way (SD of the game's unsteered agents)"),
+                      ("reward", "Result: both − (vector + prompt) (SD)")):
+        tab, found, q = matrix(title_, "game", pcells, cols_, lambda c, col, k=k: per.get((c, *unlabel[col], k)))
+        game_tabs.append(tab)
+        game_found[k] = [(key, v) for key, v in found.items() if sig(v, q[key])]
+    het = {k: heterogeneity(per, "readout_raw" if k == "readout" else k) for k in kinds}
+    het_q = {k: dict(zip(het[k], bh([v["p"] for v in het[k].values()]))) for k in kinds}
+    n_cells = {k: sum(1 for key in per if key[3] == k) for k in kinds}
+
     def pooled(m, a):
         """Mean over traits x sides of how far arm a moves the trait the intended way in mode m, with its SE."""
         v = [(s * res[(m, t, s, "readout", a)][0], res[(m, t, s, "readout", a)][1]) for t, s in sides]
@@ -2457,6 +2522,23 @@ def modality_channel_section(rows, traits, base, scale, steered):
                  + ((f". More: {listed(names[1])}." if names[1] else "")
                     + (f" Less: {listed(names[-1])}." if names[-1] else "") + " Everywhere else they simply add."
                     if n_syn[k] else ": in both modes they simply add."))
+    differ = {k: [key for key in het[k] if het_q[k][key] < 0.05] for k in kinds}
+    for k, what in (("readout", "language"), ("reward", "result")):
+        more = [key for key, v in game_found[k] if v["b"] > 0]
+        less = [key for key, v in game_found[k] if v["b"] < 0]
+        top = sorted(game_found[k], key=lambda kv: -abs(kv[1]["b"]))[:4]
+        examples = ", ".join(f"{cell_name(key[0])} × {key[1]} ({v['b']:+.1f})" for key, v in top)
+        f.append(f"<b>Per game, {what} (table e):</b> of {n_cells[k]} game × trait × side cells, prompt + vector is "
+                 f"significantly more than the sum in {len(more)} and less in {len(less)} (BH over the table)"
+                 + (f", e.g. {examples}" if top else "")
+                 + (". Too few games per mode to test whether they differ." if not het[k] else
+                    f". The games differ beyond their noise (Cochran's Q, BH) in {len(differ[k])} of {len(het[k])} "
+                    "trait × side × mode cells"
+                    + (" (language measured in raw projection units here, since the games' unsteered spread differs "
+                       "widely)" if k == "readout" else "")
+                    + (": the pooled verdict above is an average over games that disagree, not a property of the "
+                       "persona." if len(differ[k]) > len(het[k]) / 4 else
+                       ": the pooled verdict holds game by game, as far as the episodes per game allow.")))
     rr, rw_ = agree["readout"][0][0], agree["reward"][0][0]
     take = [f"<b>Image vs text, vector vs prompt.</b> Game by game, how strongly steering moves the language carries "
             f"over from text to images (slopes r = {fmt(rr, 2)}), how it moves the result "
@@ -2466,6 +2548,10 @@ def modality_channel_section(rows, traits, base, scale, steered):
             f"{fmt(pool['vector']['image'], 1)}. On the result, prompt and vector "
             + (f"add up to more or less than their sum in {n_syn['reward']} of {2 * len(sides)} trait × side × mode cases"
                if n_syn["reward"] else "simply add in both modes")
+            + (f" and in {n_cells['reward'] - len(game_found['reward'])} of {n_cells['reward']} game × trait × side "
+               "cells" if n_cells["reward"] else "")
+            + (f"; on the language, whether they reinforce or overlap depends on the game ({len(differ['readout'])} of "
+               f"{len(het['readout'])} trait × side × mode cells differ between games)" if differ["readout"] else "")
             + " (section 25)."]
     body = (f"<h3>a. Slopes per game × trait: images vs text</h3>{trait_legend}<div class=charts>{''.join(scat)}</div>"
             "<h3>b. The curves behind each slope, per game</h3><div class=legend><span><i style='background:var(--s1)'>"
@@ -2483,7 +2569,12 @@ def modality_channel_section(rows, traits, base, scale, steered):
             "var(--s2);height:7px;width:7px'></i>image</span><span>0 = they add; right of 0 = more than the sum (on the "
             "readout: further the intended way)</span></div>"
             f"<div class=charts><div class=chart><h3>Language</h3>{syn_charts['readout']}</div>"
-            f"<div class=chart><h3>Result</h3>{syn_charts['reward']}</div></div>")
+            f"<div class=chart><h3>Result</h3>{syn_charts['reward']}</div></div>"
+            "<h3>e. Synergy per game</h3><p class=muted>Every game with all three arms, text and image separately. "
+            "Cell: both − (vector + prompt); colour by how certain (red = more than the sum, blue = less), stars: "
+            "Benjamini–Hochberg over the table; hover for n and SE. Language values are in each game's own SD units, "
+            "which differ a hundredfold between games: compare colours and stars across games, not the numbers.</p>"
+            + "".join(game_tabs))
     return take, section(25, title,
                          "Does seeing the game as a picture change what steering does, game by game? Does it change "
                          "the vector, the prompt and both alike? And do vector and prompt add up, in the language and in "
@@ -2494,8 +2585,10 @@ def modality_channel_section(rows, traits, base, scale, steered):
                          "(y); persona vector, settings without a side. <b>b</b>: the dose curves those slopes "
                          "summarise, with the fitted line drawn. <b>c</b>: one steered agent, vector (c = ±1), prompt and "
                          "both (c = ±1) per mode, as in section 19. <b>d</b>: both − (vector + prompt) per mode, all three "
-                         "against the same unsteered reference. Tests: image − text with independent SEs; "
-                         "Benjamini–Hochberg over each chart's cells.",
+                         "against the same unsteered reference. <b>e</b>: the same per game (every game with all three "
+                         "arms), and whether the games differ beyond their noise (Cochran's Q per trait × side × mode; "
+                         "for the language on the raw projection, which is comparable across games). Tests: image − "
+                         "text with independent SEs; Benjamini–Hochberg over each chart's or table's cells.",
                          "In a, dots on the dashed diagonal = the picture changes nothing; a tight cloud along it = "
                          "steering transfers across modes game by game. In b, the dashed line is the slope: a curve far "
                          "from its line (bends, plateaus) is summarised badly by one number (section 16). In d, 0 = the "
