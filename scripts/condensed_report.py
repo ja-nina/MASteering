@@ -198,19 +198,22 @@ def _together(parts):
             "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up")
 
 
-def synergy(traits, by_trait, paired_by, modes_games):
+def synergy(traits, by_trait, paired_by, modes_games, per_game):
     """Prompt, vector, both at c = ±1 (the prompt has no strength): the language, and whether the combination is
     more than the sum of the two (synergy), the sum (they add), or less (they overlap), for language and result;
-    over all games, and per observation mode on the games played both ways."""
+    over all games, per observation mode on the games played both ways, and game by game (`per_game`: report.py's
+    synergy_cells). The pooled language verdict uses the raw readout: in SD units, games whose answers barely vary
+    unsteered would dominate it."""
     out = ["<h2 id=synergy>Prompt, vector, or both: do they reinforce each other?</h2><p class=muted>One agent, "
            "the vector at c = ±1 (the prompt has no strength). Each is compared with the same unsteered games, so if "
            "the two simply add, 'both' = vector + prompt. Verdict: <b>more than the sum</b> (synergy), <b>adds up</b>, "
            "or <b>less than the sum</b> (they overlap or compete; on the language this can also be a ceiling). "
            "'All games' pools every game; 'text' and 'image' use only the games played both ways, so the two "
-           "compare the same games.</p>"
+           "compare the same games. 'Games' counts the verdict game by game (more / adds up / less): pooling "
+           "averages over games, so a reinforcement in one game and an overlap in another can cancel out.</p>"
            "<div class=wrap><table><tr><th class=l rowspan=2>persona</th><th rowspan=2>vector</th><th rowspan=2>prompt"
-           "</th><th rowspan=2>both</th><th colspan=3>language: together</th><th colspan=3>result: together</th></tr>"
-           "<tr><th>all games</th><th>text</th><th>image</th><th>all games</th><th>text</th><th>image</th></tr>"]
+           "</th><th rowspan=2>both</th><th colspan=4>language: together</th><th colspan=4>result: together</th></tr>"
+           "<tr>" + "<th>all games</th><th>text</th><th>image</th><th>games: more / adds / less</th>" * 2 + "</tr>"]
     pick = lambda cond, t, s, c=None, m=None: [
         r for r in by_trait.get((cond, t), []) if r["steered"] and r["coef"] * s > 0
         and (c is None or abs(r["coef"]) == c) and (m is None or (r["obs"] == m and r["group"] in modes_games))]
@@ -223,8 +226,8 @@ def synergy(traits, by_trait, paired_by, modes_games):
             lang, res = [], []
             for m in (None, "text", "image"):
                 arms = [pick(c, t, s, at, m) for c, at in (("both_one", 1), ("one", 1), ("prompt_one", None))]
-                lang.append(_together([R._episode_mean([s * r["mon"][t] for r in x if t in r["mon"]],
-                                                       [r["cluster"] for r in x if t in r["mon"]]) for x in arms]))
+                lang.append(_together([R._episode_mean([s * r["mon_raw"][t] for r in x if t in r["mon_raw"]],
+                                                       [r["cluster"] for r in x if t in r["mon_raw"]]) for x in arms]))
                 rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"]
                                            and r["coef"] * s > 0 and (c is None or abs(r["coef"]) == c)
                                            and math.isfinite(r["diff"])
@@ -234,9 +237,19 @@ def synergy(traits, by_trait, paired_by, modes_games):
                                       for x in (rp("both_one", 1), rp("one", 1), rp("prompt_one"))]))
                 count[("language", m)][lang[-1]] += 1
                 count[("result", m)][res[-1]] += 1
+            games = {}
+            for kind in ("readout", "reward"):
+                zs = [v_["b"] / v_["se"] for (cell, t_, s_, k_), v_ in per_game.items() if (t_, s_, k_) == (t, s, kind)]
+                n_more, n_less = sum(z > 2.58 for z in zs), sum(z < -2.58 for z in zs)
+                games[kind] = (f"<td>{n_more} / {len(zs) - n_more - n_less} / {n_less}</td>" if zs
+                               else "<td class=muted>–</td>")
+                count[("games", kind)]["more"] += n_more
+                count[("games", kind)]["less"] += n_less
+                count[("games", kind)]["all"] += len(zs)
             out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td>"
                        + "".join(f"<td>{language(x, t)[0]}</td>" for x in (v, p, b))
-                       + "".join(f"<td><b>{x}</b></td>" for x in lang) + "".join(f"<td>{x}</td>" for x in res) + "</tr>")
+                       + "".join(f"<td><b>{x}</b></td>" for x in lang) + games["readout"]
+                       + "".join(f"<td>{x}</td>" for x in res) + games["reward"] + "</tr>")
     tally = lambda kind, m: ", ".join(f"{k} in {n}" for k, n in sorted(count[(kind, m)].items(), key=lambda kv: -kv[1])
                                       if "too little" not in k)
     out.append("</table></div><p>Overall, on the language: " + tally("language", None)
@@ -245,7 +258,11 @@ def synergy(traits, by_trait, paired_by, modes_games):
                   if modes_games else "")
                + ". On the result: " + tally("result", None)
                + (f" (with text: {tally('result', 'text')}; with images: {tally('result', 'image')})"
-                  if modes_games else "") + ".</p>")
+                  if modes_games else "") + ".</p>"
+               + "".join(f"<p>Game by game, on the {what}: more than the sum in {count[('games', k)]['more']}, less in "
+                         f"{count[('games', k)]['less']} of {count[('games', k)]['all']} game × persona × direction "
+                         "cases (with this many comparisons a few are chance).</p>"
+                         for k, what in (("readout", "language"), ("reward", "result")) if count[("games", k)]["all"]))
     return "".join(out)
 
 
@@ -566,7 +583,8 @@ def build(rows, logs=None) -> str:
     parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>"
              + "".join(f"<li>{h}</li>" for h in headline(by, paired_by)) + "</ul></div>",
              recipe(rows, traits, by_trait, paired_by, cells),
-             synergy(traits, by_trait, paired_by, {g for g in R.mode_baselines(rows)}),
+             synergy(traits, by_trait, paired_by, {g for g in R.mode_baselines(rows)},
+                     R.synergy_cells(rows, traits, base, SCALE)),
              text_vs_image(rows, traits, by, paired_by), language_vs_action(rows, cells),
              roles(rows, traits),
              gallery(rows, logs), R.examples_section(logs, traits, coefs) if logs else "",
