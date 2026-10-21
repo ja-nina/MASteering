@@ -11,6 +11,7 @@ with a summary file are skipped.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -39,6 +40,9 @@ def main(argv=None, open_engines=None) -> int:
     p.add_argument("--tp", type=int, help="GPUs per engine (tensor parallel), overriding the model's: steer on GPUs "
                    "0..tp-1, monitor on the next tp; e.g. --tp 1 runs a 27B copy per 80 GB GPU (a100/h100, 2 GPUs)")
     p.add_argument("--memory", type=float, help="override both engines' gpu_memory_utilization")
+    p.add_argument("--engine", type=json.loads, help="JSON merged into the configs' engine settings (GPU layout, "
+                   "memory, buffers), e.g. 27B on 48 GB GPUs: '{\"monitor\": {\"gpus\": \"2,3,4,5\", "
+                   "\"tensor_parallel_size\": 4, \"memory\": 0.62}}'")
     args = p.parse_args(argv)
     from dotenv import load_dotenv
     load_dotenv()  # OPENROUTER_API_KEY for TextArena juries
@@ -75,6 +79,8 @@ def main(argv=None, open_engines=None) -> int:
     if args.memory:
         engine_cfg = {**engine_cfg, **{k: {**(engine_cfg.get(k) or {}), "memory": args.memory}
                                        for k in ("steer", "monitor")}}
+    for k, v in (args.engine or {}).items():
+        engine_cfg = {**engine_cfg, k: {**(engine_cfg.get(k) or {}), **v} if isinstance(v, dict) else v}
     with open_engines(model, engine_cfg, layers) as (generator, reader):
         counts = run_jobs(jobs, generator, reader, monitor, concurrent=concurrent)
     log(f"done: {counts['ok']} episode(s) ok, {counts['failed']} failed")
