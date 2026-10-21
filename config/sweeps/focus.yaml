@@ -26,8 +26,11 @@ models:
   # tensor_parallel_size 2: each engine on 2 GPUs, 4 per job, on 80 GB GPUs only (sbatch -p gpu-all --gres=gpu:4
   # --constraint="gpu-a100|gpu-h100"). The capture buffer's rows hold all 64 x 5120 layers (9B: 32 x 4096), so 9B's
   # 8 GiB / 32768 tokens takes 20 GiB here; 16 GiB (26214 tokens) with capture calls of at most a quarter of it.
-  # That buffer sits outside vLLM's share: monitor at 0.75 (60 GB of 80). It does not fit next to half the weights
-  # on 48 GB GPUs (a40: 0.75 left no KV cache, 0.9 no room for the buffer; rtx8000 has no bf16).
+  # The buffer counts twice: vLLM sees it as used memory, and vLLM-Hook also wants it free outside vLLM's share
+  # (weights + 2 x buffer + ~2 GiB warm-up + KV <= GPU). Monitor at 0.75 (60 GB of 80). On 48 GB a40s (rtx8000: no
+  # bf16) only with the monitor on 4 GPUs and an 8 GiB buffer, at run time:
+  #   --engine '{"aperture_gib": 8, "capture_tokens": 3072, "monitor": {"gpus": "2,3,4,5", "tensor_parallel_size": 4,
+  #             "memory": 0.8, "max_num_batched_tokens": 4096}}'   (sbatch -p gpu-a40 --gres=gpu:6)
   qwen3.8-27b:
     engine: {steer: {gpus: "0,1", memory: 0.9}, monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16,
              capture_tokens: 6144}
