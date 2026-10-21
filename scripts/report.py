@@ -34,6 +34,8 @@ Reads the agent-episode rows of summarize_runs.py and answers, per trait and per
                      strong vs mild, team vs one member vs an honest player)
   23 natural         unsteered agents' trait-reward correlation vs the steered effect
   24 risk, tempo     spread of reward changes by |c|; game length when everyone is steered
+  25 image x channel per game x trait slopes with images vs text (language, result), the curves with their
+                     fitted lines; vector / prompt / both per mode; synergy both - (vector + prompt) per mode
 Slopes come with standard errors clustered by episode; p-values (normal approximation) are
 Benjamini-Hochberg corrected over all cells of a table (q). Pooled slopes across games use game
 fixed effects; for rewards, each game's rewards are first scaled by its unsteered reward SD.
@@ -646,16 +648,19 @@ def slope_cell(s, q=None):
 
 
 def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, height=200, colours=None, notes=None,
-               span=None):
+               span=None, fits=None):
     """series: {name: [(x, mean, half_ci)]} -> SVG with axes, labels and a zero line. `notes`: {series: text} shown
     when hovering that series' line (e.g. its summary); `span`: (low, high) of the y axis, shared by charts shown
-    side by side."""
+    side by side; `fits`: {series: (intercept, slope)} drawn as a dashed straight line over the x range (the fitted
+    slope, so the slope is seen and not only read off a table)."""
     pts = [p for s in series.values() for p in s if math.isfinite(p[1])]
     if not pts:
         return "<p class=muted>no data yet</p>"
     xs = [p[0] for p in pts]
-    lo = min([p[1] - (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0])
-    hi = max([p[1] + (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0])
+    fits = {k: v for k, v in (fits or {}).items() if v and all(map(math.isfinite, v))}
+    ends = [a + b * x for a, b in fits.values() for x in (min(xs), max(xs))]
+    lo = min([p[1] - (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0] + ends)
+    hi = max([p[1] + (p[2] if math.isfinite(p[2]) else 0) for p in pts] + [0] + ends)
     lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
     lo, hi = span if span and span[1] > span[0] else (lo, hi)
     x0, x1 = min(xs), max(xs) if max(xs) > min(xs) else min(xs) + 1
@@ -674,6 +679,10 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
                  f'{html.escape(ylabel)}</text>')
     colours = {"vector": "var(--pos)", "random": "var(--rnd)", "prompt": "var(--neg)", **(colours or {})}
+    for name, (a, b) in fits.items():
+        parts.append(f'<line x1="{sx(x0):.1f}" y1="{sy(a + b * x0):.1f}" x2="{sx(x1):.1f}" y2="{sy(a + b * x1):.1f}" '
+                     f'stroke="{colours.get(name, "currentColor")}" stroke-width="1.2" stroke-opacity=".7" '
+                     f'stroke-dasharray="5 3"><title>{html.escape(name)}: fitted slope {b:+.2f} per unit c</title></line>')
     for name, s in series.items():
         s = sorted(p for p in s if math.isfinite(p[1]))
         c = colours.get(name, "currentColor")
@@ -697,8 +706,9 @@ def line_chart(series, title, ylabel, xlabel="steering coefficient", width=300, 
     return "".join(parts)
 
 
-def scatter_chart(points, xlabel, ylabel, width=320, height=280):
-    """points: [(x, y, label)] -> SVG scatter with zero lines and the diagonal y = x (same effect both ways)."""
+def scatter_chart(points, xlabel, ylabel, width=320, height=280, colour=None):
+    """points: [(x, y, label)] -> SVG scatter with zero lines and the diagonal y = x (same effect both ways).
+    `colour`: label -> CSS colour of its dot (default: red for labels with '+', blue otherwise)."""
     pts = [(x, y, lab) for x, y, lab in points if math.isfinite(x) and math.isfinite(y)]
     if len(pts) < 2:
         return "<p class=muted>no data yet</p>"
@@ -721,9 +731,50 @@ def scatter_chart(points, xlabel, ylabel, width=320, height=280):
     parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
                  f'{html.escape(ylabel)}</text>')
     for x, y, lab in pts:
-        c = "var(--pos)" if "+" in lab else "var(--neg)"
+        c = colour(lab) if colour else "var(--pos)" if "+" in lab else "var(--neg)"
         parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3" fill="{c}" fill-opacity=".75">'
                      f'<title>{html.escape(lab)}: x={x:.2f}, y={y:.2f}</title></circle>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def forest_chart(items, colours, xlabel, width=330, span=None):
+    """items: [(row label, {series: (mean, half CI)})] -> SVG with one row per item and, per series, a dot with its
+    95% CI (series offset a little vertically, coloured by `colours` {series: CSS colour}), and a zero line.
+    `span`: (low, high) of the x axis, shared by charts shown side by side; values beyond it are drawn at the edge."""
+    vals = [(m - (h if math.isfinite(h) else 0), m + (h if math.isfinite(h) else 0))
+            for _, ser in items for m, h in ser.values() if math.isfinite(m)]
+    if not vals:
+        return "<p class=muted>no data yet</p>"
+    lo, hi = min([a for a, _ in vals] + [0]), max([b for _, b in vals] + [0])
+    lo, hi = span if span and span[1] > span[0] else (lo, hi)
+    lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
+    L, R, T, B, row = 104, 10, 6, 32, 17
+    height = T + B + row * len(items)
+    sx = lambda v: L + (min(max(v, lo), hi) - lo) / (hi - lo) * (width - L - R)
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="{html.escape(xlabel)}">',
+             f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - B}" stroke="currentColor" '
+             f'stroke-opacity=".35" stroke-dasharray="2 2"/>']
+    for v in (lo, 0, hi):
+        parts.append(f'<text x="{sx(v):.1f}" y="{height - B + 12}" text-anchor="middle">{v:.3g}</text>')
+    parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
+    names = list(colours)
+    for i, (lab, ser) in enumerate(items):
+        y0 = T + row * i + row / 2
+        if i % 2:
+            parts.append(f'<rect x="{L}" y="{T + row * i}" width="{width - L - R}" height="{row}" fill="currentColor" '
+                         f'fill-opacity=".04"/>')
+        parts.append(f'<text x="{L - 6}" y="{y0 + 3:.1f}" text-anchor="end">{html.escape(lab)}</text>')
+        for j, name in enumerate(names):
+            m, h = ser.get(name, (float("nan"), float("nan")))
+            if not math.isfinite(m):
+                continue
+            y, c = y0 + (j - (len(names) - 1) / 2) * 4, colours[name]
+            if math.isfinite(h):
+                parts.append(f'<line x1="{sx(m - h):.1f}" x2="{sx(m + h):.1f}" y1="{y:.1f}" y2="{y:.1f}" stroke="{c}" '
+                             f'stroke-opacity=".6"/>')
+            parts.append(f'<circle cx="{sx(m):.1f}" cy="{y:.1f}" r="2.8" fill="{c}"><title>{html.escape(lab)}, '
+                         f'{html.escape(name)}: {m:.2f} ± {h:.2f}</title></circle>')
     parts.append("</svg>")
     return "".join(parts)
 
@@ -1163,7 +1214,8 @@ def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_
         + (f"More of the trait pays off for {', '.join(helps)}" if helps else "")
         + ("; it " if helps and hurts else "") + (f"costs the agent for {', '.join(hurts)}" if hurts else "")
         + (" (SD per unit c). " if helps or hurts else "")
-        + "A persona that is plainly visible in the text often leaves the moves unchanged.")
+        + "A persona that is plainly visible in the text often leaves the agent's result unchanged (its concrete "
+          "choices can still shift: section 15).")
 
     by_cond = defaultdict(list)
     for (c, _), v in o_found.items():
@@ -1187,25 +1239,28 @@ def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_
                else f"Group welfare (everyone's total, games without hidden roles): {w_neg} significant falls, "
                f"{w_pos} rises."))
 
-    ceiling, balanced = [], []
+    high, low, balanced = [], [], []
     by_cell = _by(deceiver_wins([r for r in rows if r["condition"] == "none"]), lambda w: w["cell"])
     for cell, ws in sorted(by_cell.items()):
         rate = float(np.mean([w["won"] for w in ws]))
-        (ceiling if rate >= 80 or rate <= 20 else balanced).append(f"{cell_name(cell)} ({rate:.0f}%, n = {len(ws)})")
-    if ceiling:
-        take.append(
-            "<b>Hidden roles: Avalon is at a ceiling, the others are not.</b> " if balanced else
-            "<b>Hidden-role results hit a ceiling.</b> ")
-        take[-1] += (f"The deceivers win nearly every unsteered game in {', '.join(ceiling)}, so there steering can "
-                     "mostly only make them lose (a positive deceiver slope means 'loses when pushed away from the "
-                     "trait')" + (f"; in {', '.join(balanced)} the sides are balanced, so effects can go either way: "
-                                  "these are the games that can show whether a persona makes deceivers <i>better</i>."
-                                  if balanced else ". Whether a persona makes deceivers better needs a balanced game."))
+        (high if rate >= 80 else low if rate <= 20 else balanced).append(
+            f"{cell_name(cell)} ({rate:.0f}%, n = {len(ws)})")
+    if high or low:
+        capped = [x.split(" (")[0] for x in high + low]
+        take.append(f"<b>Hidden roles: {', '.join(capped)} {'is' if len(capped) == 1 else 'are'} near a ceiling"
+                    + (", the others are not" if balanced else "") + ".</b> "
+                    + (f"The deceivers win nearly every unsteered game in {', '.join(high)}, so there steering can "
+                       "mostly only make them lose (a positive deceiver slope means 'loses when pushed away from the "
+                       "trait')" if high else "")
+                    + ("; " if high and low else "")
+                    + (f"they almost never win in {', '.join(low)}, so there steering can mostly only help them"
+                       if low else "")
+                    + (f"; in {', '.join(balanced)} the sides are balanced, so effects can go either way: these are the "
+                       "games that can show whether a persona makes deceivers <i>better</i>." if balanced else
+                       ". Whether a persona makes deceivers better needs a balanced game."))
 
     if sides:
         weak_neg = [t for t, s in sides if s < 0 and math.isfinite(ch[t][s]["shift"][0]) and ch[t][s]["shift"][0] > -1]
-        rp = corr.get("reward", {}).get("prompt_vector")
-        rv = corr.get("reward", {}).get("vector_vector")
         take.append(
             "<b>A persona prompt is a close but not exact substitute for the vector.</b> Both shift the monitored "
             f"traits in a similar pattern (median cosine {_median(ch[t][s]['cos_vec'] for t, s in sides):.2f}); the "
@@ -1213,13 +1268,8 @@ def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_
             "sign cases beyond it)"
             + (f", but telling the model <i>not</i> to show a trait barely works ({', '.join(weak_neg)}: under 1 SD), "
                "where the vector suppresses it" if weak_neg else "")
-            + ((f". In play they agree as well as two strengths of the vector agree with each other (reward effects "
-                f"per game r = {rp[0]:.2f}, vector vs vector r = {rv[0]:.2f}): what differs is mostly noise"
-                if rp[0] >= rv[0] - 0.1 else
-                f". In play they agree less than two strengths of the vector do (r = {rp[0]:.2f} vs {rv[0]:.2f}): "
-                "the prompt changes play differently") if rp and rv and math.isfinite(rp[0]) and math.isfinite(rv[0])
-               else "")
-            + ". Only the vector has a strength knob, so dose–response questions need it.")
+            + ". How alike they play is compared at matched strength in section 19 (takeaway 'Prompt, vector, "
+              "both'). Only the vector has a strength knob, so dose–response questions need it.")
 
     if allm:
         take.append(
@@ -1256,7 +1306,8 @@ def takeaways(rows, traits, cells, bad, man, ratio, as_found, eff, g9_found, g9_
             f"<b>{head}</b> The language moves more when the agent sees the game as a picture than as text for "
             f"{len(stronger_img)} of {len(traits)} traits ({', '.join(stronger_img) or 'none'})"
             + (f", less for {', '.join(weaker_img)}" if weaker_img else "")
-            + f"; no clear difference for the other {len(traits) - len(stronger_img) - len(weaker_img)} (section 12).")
+            + (f"; no clear difference for the other {len(traits) - len(stronger_img) - len(weaker_img)}"
+               if len(stronger_img) + len(weaker_img) < len(traits) else "") + " (sections 12, 25).")
 
     unsteered = {c: len({r["cluster"] for r in rows if r["cell"] == c and r["condition"] == "none"}) for c in cells}
     thin = [c for c in cells if 0 < unsteered[c] < 20]
@@ -1784,8 +1835,8 @@ def dose_response_section(steered, traits, cells, scale, own_all=()):
                    "saturating = it bends back but the turning point lies beyond ±" + f"{cmax:g}" + "; ∩/∪ = it peaks or "
                    "dips inside the range (turning point given); flat = no significant trend. Details: the mean reward "
                    "change at every coefficient, per game.",
-                   "A ∩ means the trait helps up to a point and hurts beyond it — e.g. a little assertiveness wins "
-                   "bids, a lot breaks the answers. '∩ stronger either way hurts': the turning point is at c ≈ 0, so "
+                   "A ∩ means the trait helps up to a point and hurts beyond it — e.g. when moderate steering "
+                   "changes the play but strong steering breaks the answers (section 13). '∩ stronger either way hurts': the turning point is at c ≈ 0, so "
                    "the harder the persona is pushed, in either direction, the worse the agent does. Every point is measured "
                    "against the same unsteered games, so a lucky or unlucky baseline shifts the whole curve up or down: the "
                    "fit has an intercept, so the <i>shape</i> (rising, bending) is robust to that, the level is not — with few unsteered episodes, trust shapes more "
@@ -2214,6 +2265,244 @@ def prompt_vector_section(rows, traits, base, scale):
                          "equals.", f, body)
 
 
+MODES = {"text": "var(--s1)", "image": "var(--s2)"}  # observation mode -> chart colour
+TRAIT_COLOURS = [f"var(--s{i})" for i in range(1, 9)]
+
+
+def _line_fit(xs, ys):
+    """(intercept, slope) of the least-squares line through the points, for drawing (None if it is undefined)."""
+    x, y = np.asarray(xs, float), np.asarray(ys, float)
+    keep = np.isfinite(x) & np.isfinite(y)
+    if keep.sum() < 3 or np.ptp(x[keep]) == 0:
+        return None
+    b, a = np.polyfit(x[keep], y[keep], 1)
+    return float(a), float(b)
+
+
+def _diff_test(a, b):
+    """b - a for two independent estimates {"b", "se"}, with SE and two-sided p."""
+    if not (a and b and math.isfinite(a.get("b", float("nan"))) and math.isfinite(b.get("b", float("nan")))):
+        return {"b": float("nan"), "se": float("nan"), "p": float("nan"), "n": 0}
+    se = math.sqrt(a["se"] ** 2 + b["se"] ** 2) if math.isfinite(a["se"]) and math.isfinite(b["se"]) else float("nan")
+    d = b["b"] - a["b"]
+    return {"b": d, "se": se, "n": a.get("n", 0) + b.get("n", 0),
+            "p": math.erfc(abs(d / se) / math.sqrt(2)) if math.isfinite(se) and se > 0 else float("nan")}
+
+
+NO_FIT = {"b": float("nan"), "se": float("nan"), "p": float("nan"), "n": 0}
+
+
+def modality_channel_section(rows, traits, base, scale, steered):
+    """25: observation mode x steering channel. Does seeing the game as a picture change the slopes (language and
+    result) game by game; does it change what the vector, the prompt and both do; and do vector and prompt add up,
+    in the language and in the result, in each mode?"""
+    modes = defaultdict(set)
+    for r in rows:
+        modes[r["group"]].add(r["obs"])
+    groups = sorted(g for g, m in modes.items() if {"text", "image"} <= m)
+    title = "Image vs text × vector vs prompt: slopes and synergy"
+    if not groups:
+        return [], section(25, title, "", "", "", [], "")
+    tcol = {t: TRAIT_COLOURS[i % len(TRAIT_COLOURS)] for i, t in enumerate(traits)}
+    vec = lambda r: is_vector(r) and r["team_cond"] is None
+    rd_of = _by([r for r in rows if r["group"] in groups and (vec(r) or r["condition"] == "none")], lambda r: r["cell"])
+    rw_of = _by([r for r in steered if r["group"] in groups and math.isfinite(r["diff"])],
+                lambda r: (r["cell"], r["trait"]))
+    sd = lambda r: r["diff"] / scale.get(r["cell"], 1.0)
+    kinds = ("readout", "reward")
+
+    # a/b. per game x trait: the readout and reward slope in each mode, and the curves they summarise
+    slopes, curves = {}, {}
+    for g in groups:
+        charts = []
+        for t in traits:
+            for kind in kinds:
+                series, fits, notes = {}, {}, {}
+                for m in MODES:
+                    cell = (g, m)
+                    if kind == "readout":
+                        pts = [r for r in rd_of.get(cell, []) if t in r["mon"]
+                               and (r["condition"] == "none" or r["trait"] == t)]
+                        x = lambda r: r["coef"] if r["condition"] != "none" else 0.0
+                        y = lambda r: r["mon"][t]
+                        fit = readout_slope(pts, t, vec, by_cell=False) \
+                            if any(r["condition"] != "none" for r in pts) else NO_FIT
+                    else:
+                        pts = rw_of.get((cell, t), [])
+                        x, y = (lambda r: r["coef"]), sd
+                        fit = _diff_slope(pts, scale) if pts else NO_FIT
+                    slopes[(g, t, kind, m)] = fit
+                    if not any(r["condition"] != "none" for r in pts):
+                        continue
+                    series[m] = [(c, *mean_ci([y(r) for r in rs], [r["cluster"] for r in rs])[:2])
+                                 for c, rs in sorted(_by(pts, x).items())] \
+                        + ([] if kind == "readout" else [(0.0, 0.0, float("nan"))])
+                    fits[m] = _line_fit([x(r) for r in pts], [y(r) for r in pts])
+                    notes[m] = (f"{m}: slope {fit['b']:+.2f} ± {1.96 * fit['se']:.2f} per unit c"
+                                if math.isfinite(fit.get("b", float("nan"))) else m)
+                if series:
+                    ylab = f"{t} readout (SD)" if kind == "readout" else "reward change (SD)"
+                    charts.append(f"<div class=chart><h3>{html.escape(t)}: "
+                                  f"{'language' if kind == 'readout' else 'result'}</h3>"
+                                  f"{line_chart(series, f'{g} {t} {kind}', ylab, colours=MODES, notes=notes, fits=fits)}"
+                                  "</div>")
+        curves[g] = "".join(charts)
+    diffs = {(g, t, k): _diff_test(slopes[(g, t, k, "text")], slopes[(g, t, k, "image")])
+             for g in groups for t in traits for k in kinds}
+    dq = dict(zip(diffs, bh([v["p"] for v in diffs.values()])))
+    scat, agree = [], {}
+    for k in kinds:
+        pts = [(slopes[(g, t, k, "text")]["b"], slopes[(g, t, k, "image")]["b"], f"{g} × {t}")
+               for g in groups for t in traits]
+        pts = [p for p in pts if math.isfinite(p[0]) and math.isfinite(p[1])]
+        r_ = pearson([p[0] for p in pts], [p[1] for p in pts])
+        same = sum(1 for p in pts if p[0] * p[1] > 0)
+        moved = [(g, t) for g in groups for t in traits if sig(diffs[(g, t, k)], dq[(g, t, k)])]
+        agree[k] = (r_, same, len(pts), moved)
+        lab = "readout slope (SD per unit c)" if k == "readout" else "reward slope (SD per unit c)"
+        scat.append(f"<div class=chart><h3>{'Language' if k == 'readout' else 'Result'}: slope with images vs with "
+                    f"text</h3>{scatter_chart(pts, f'text: {lab}', f'image: {lab}', colour=lambda l: tcol[l.split(' × ')[1]])}"
+                    f"<p class=muted>r = {fmt(r_[0], 2)} [{fmt(r_[1], 2)}, {fmt(r_[2], 2)}], same sign in {same} of "
+                    f"{len(pts)}; image ≠ text (BH) in {len(moved)}</p></div>")
+    trait_legend = ("<div class=legend>" + "".join(f"<span><i style='background:{c};height:7px;width:7px'></i>"
+                                                    f"{html.escape(t)}</span>" for t, c in tcol.items())
+                    + "<span>one dot = one game × trait; dashed: image = text</span></div>")
+
+    # c/d. channel x mode: vector (c = ±1), prompt, both, per mode, readout and reward; and their synergy
+    at = lambda a: None if a == "prompt" else 1.0
+    conds = ("one", "prompt_one", "both_one")
+    pick = lambda r: r["steered"] and r["condition"] in conds and not r["random"] and r["group"] in groups
+    arm = _by([r for r in rows if pick(r)], lambda r: (r["obs"], ARM_OF[r["condition"]], r["trait"]))
+    rew = _by(paired(rows, base, pick), lambda r: (r["obs"], ARM_OF[r["condition"]], r["trait"]))
+    res = {}
+    for m in MODES:
+        for t in traits:
+            for s in (1, -1):
+                for a in ARMS:
+                    res[(m, t, s, "readout", a)] = _arm_point(arm.get((m, a, t), []), lambda r, t=t: r["mon"].get(t),
+                                                              s, at(a))
+                    res[(m, t, s, "reward", a)] = _arm_point(rew.get((m, a, t), []), sd, s, at(a))
+    sides = [(t, s) for t in traits for s in (1, -1)]
+    label = lambda t, s: f"{t} {'+' if s > 0 else '−'}"
+    align = lambda k, s: s if k == "readout" else 1  # readout: the intended way; reward: as it is
+    arm_charts = {}
+    for k in kinds:
+        items = {m: [(label(t, s), {a: (align(k, s) * res[(m, t, s, k, a)][0], 1.96 * res[(m, t, s, k, a)][1])
+                                    for a in ARMS}) for t, s in sides] for m in MODES}
+        ends = [v + e * (h if math.isfinite(h) else 0) for its in items.values() for _, ser in its
+                for v, h in ser.values() if math.isfinite(v) for e in (-1, 1)]
+        span = (min(ends + [0]), max(ends + [0])) if ends else None
+        xl = "readout of the trait, intended way (SD)" if k == "readout" else "reward change (SD)"
+        arm_charts[k] = "".join(f"<div class=chart><h3>{m}</h3>{forest_chart(items[m], ARMS, xl, span=span)}</div>"
+                                for m in MODES)
+    syn = {}
+    for m in MODES:
+        for t, s in sides:
+            for k in kinds:
+                (mb, sb, nb), (mv, sv, nv), (mp, sp, np_) = (res[(m, t, s, k, a)] for a in ("both", "vector", "prompt"))
+                d, se = align(k, s) * (mb - mv - mp), math.sqrt(sb ** 2 + sv ** 2 + sp ** 2)
+                syn[(m, t, s, k)] = {"b": d, "se": se, "n": nb + nv + np_,
+                                     "p": math.erfc(abs(d / se) / math.sqrt(2)) if math.isfinite(se) and se > 0
+                                     else float("nan")}
+    sq = dict(zip(syn, bh([v["p"] for v in syn.values()])))
+    syn_charts = {k: forest_chart([(label(t, s), {m: (syn[(m, t, s, k)]["b"], 1.96 * syn[(m, t, s, k)]["se"])
+                                                  for m in MODES}) for t, s in sides], MODES,
+                                  "both − (vector + prompt)" + (", intended way (SD)" if k == "readout" else " (SD)"))
+                  for k in kinds}
+
+    def pooled(m, a):
+        """Mean over traits x sides of how far arm a moves the trait the intended way in mode m, with its SE."""
+        v = [(s * res[(m, t, s, "readout", a)][0], res[(m, t, s, "readout", a)][1]) for t, s in sides]
+        v = [(x, e) for x, e in v if math.isfinite(x) and math.isfinite(e)]
+        if not v:
+            return float("nan"), float("nan")
+        return float(np.mean([x for x, _ in v])), math.sqrt(sum(e ** 2 for _, e in v)) / len(v)
+    ptab = ["<h3>Pooled: how far each channel moves the trait the intended way (SD, mean over traits × sides)</h3>"
+            "<div class=wrap><table><tr><th class=l>channel</th><th>text</th><th>image</th><th>image − text</th></tr>"]
+    pool = {}
+    for a in ARMS:
+        (mt, et), (mi, ei) = pooled("text", a), pooled("image", a)
+        pool[a] = {"text": mt, "image": mi, "diff": _diff_test({"b": mt, "se": et}, {"b": mi, "se": ei})}
+        ptab.append(f"<tr><td class=l>{a}{'' if a == 'prompt' else ' (c = ±1)'}</td>"
+                    + _value_td(mt, 1.96 * et, scale=10) + _value_td(mi, 1.96 * ei, scale=10)
+                    + slope_cell(pool[a]["diff"]) + "</tr>")
+    ptab.append("</table></div>")
+    inter = _diff_test(pool["vector"]["diff"], pool["prompt"]["diff"])  # does the picture change the prompt more?
+
+    # findings
+    f = []
+    for k, what in (("readout", "language (readout)"), ("reward", "result (reward)")):
+        r_, same, n, moved = agree[k]
+        f.append(f"<b>Slopes, image vs text, {what}:</b> per game × trait the slope with images correlates "
+                 f"r = {fmt(r_[0], 2)} with the slope with text (n = {n}); same sign in {same} of {n}; significantly "
+                 f"different (BH) in {len(moved)}"
+                 + (": " + ", ".join(f"{g} × {t} ({slopes[(g, t, k, 'text')]['b']:+.2f} with text, "
+                                     f"{slopes[(g, t, k, 'image')]['b']:+.2f} with images)" for g, t in moved[:5])
+                    + (f"; {len(moved) - 5} more" if len(moved) > 5 else "") if moved else "") + ".")
+    f.append("<b>Channels by mode</b> (pooled, intended way, SD): "
+             + "; ".join(f"{a} {fmt(pool[a]['text'], 2)} with text, {fmt(pool[a]['image'], 2)} with images" for a in ARMS)
+             + (f". The picture changes the prompt's effect by {inter['b']:+.2f} SD more than the vector's "
+                f"(± {fmt(1.96 * inter['se'], 2)}, p = {fmt(inter['p'], 3)})" if math.isfinite(inter["b"]) else "") + ".")
+    n_syn = {}
+    for k, what in (("readout", "language"), ("reward", "result")):
+        hit = lambda m, sign: [(t, s) for t, s in sides if sig(syn[(m, t, s, k)], sq[(m, t, s, k)])
+                               and sign * syn[(m, t, s, k)]["b"] > 0]
+        names = {sign: [f"{label(t, s)} with {m} ({syn[(m, t, s, k)]['b']:+.2f})" for m in MODES
+                        for t, s in hit(m, sign)] for sign in (1, -1)}
+        n_syn[k] = len(names[1]) + len(names[-1])
+        listed = lambda v: ", ".join(v[:5]) + (f" and {len(v) - 5} more" if len(v) > 5 else "")
+        f.append(f"<b>Synergy, {what}:</b> prompt + vector is more than the sum of the two in "
+                 f"{len(hit('text', 1))} (text) / {len(hit('image', 1))} (images) of {len(sides)} trait × side cases, "
+                 f"less in {len(hit('text', -1))} / {len(hit('image', -1))}"
+                 + ((f". More: {listed(names[1])}." if names[1] else "")
+                    + (f" Less: {listed(names[-1])}." if names[-1] else "") + " Everywhere else they simply add."
+                    if n_syn[k] else ": in both modes they simply add."))
+    rr, rw_ = agree["readout"][0][0], agree["reward"][0][0]
+    take = [f"<b>Image vs text, vector vs prompt.</b> Game by game, how strongly steering moves the language carries "
+            f"over from text to images (slopes r = {fmt(rr, 2)}), how it moves the result "
+            + ("much less" if math.isfinite(rr) and math.isfinite(rw_) and rw_ < rr - 0.2 else "about as well")
+            + f" (r = {fmt(rw_, 2)}). The prompt moves the language {fmt(pool['prompt']['text'], 1)} SD with text and "
+            f"{fmt(pool['prompt']['image'], 1)} with images, the vector (c = ±1) {fmt(pool['vector']['text'], 1)} and "
+            f"{fmt(pool['vector']['image'], 1)}. On the result, prompt and vector "
+            + (f"add up to more or less than their sum in {n_syn['reward']} of {2 * len(sides)} trait × side × mode cases"
+               if n_syn["reward"] else "simply add in both modes")
+            + " (section 25)."]
+    body = (f"<h3>a. Slopes per game × trait: images vs text</h3>{trait_legend}<div class=charts>{''.join(scat)}</div>"
+            "<h3>b. The curves behind each slope, per game</h3><div class=legend><span><i style='background:var(--s1)'>"
+            "</i>text</span><span><i style='background:var(--s2)'></i>image</span><span>dots: mean per c, bars: 95% CI; "
+            "dashed: the fitted straight line (hover it for the slope)</span></div>"
+            + "".join(f"<details><summary>{html.escape(g)}</summary><div class=charts>{curves[g]}</div></details>"
+                      for g in groups)
+            + "<h3>c. Vector, prompt, both: text and image side by side</h3><div class=legend>"
+            + "".join(f"<span><i style='background:{c};height:7px;width:7px'></i>{a}</span>" for a, c in ARMS.items())
+            + "<span>vector and both at c = ±1; bars: 95% CI</span></div>"
+            f"<h3>Language: readout of the trait</h3><div class=charts>{arm_charts['readout']}</div>"
+            f"<h3>Result: reward change</h3><div class=charts>{arm_charts['reward']}</div>" + "".join(ptab)
+            + "<h3>d. Synergy: both − (vector + prompt), text vs image</h3><div class=legend>"
+            "<span><i style='background:var(--s1);height:7px;width:7px'></i>text</span><span><i style='background:"
+            "var(--s2);height:7px;width:7px'></i>image</span><span>0 = they add; right of 0 = more than the sum (on the "
+            "readout: further the intended way)</span></div>"
+            f"<div class=charts><div class=chart><h3>Language</h3>{syn_charts['readout']}</div>"
+            f"<div class=chart><h3>Result</h3>{syn_charts['reward']}</div></div>")
+    return take, section(25, title,
+                         "Does seeing the game as a picture change what steering does, game by game? Does it change "
+                         "the vector, the prompt and both alike? And do vector and prompt add up, in the language and in "
+                         "the result, with text and with images?",
+                         "Games played both ways only (" + ", ".join(groups) + "). <b>a</b>: per game × trait the slope "
+                         "per unit c of the steered agent's readout of its trait (SD vs the game's unsteered agents) and "
+                         "of its reward change (same seat, same seed, unsteered; SD units), with text (x) and with images "
+                         "(y); persona vector, settings without a side. <b>b</b>: the dose curves those slopes "
+                         "summarise, with the fitted line drawn. <b>c</b>: one steered agent, vector (c = ±1), prompt and "
+                         "both (c = ±1) per mode, as in section 19. <b>d</b>: both − (vector + prompt) per mode, all three "
+                         "against the same unsteered reference. Tests: image − text with independent SEs; "
+                         "Benjamini–Hochberg over each chart's cells.",
+                         "In a, dots on the dashed diagonal = the picture changes nothing; a tight cloud along it = "
+                         "steering transfers across modes game by game. In b, the dashed line is the slope: a curve far "
+                         "from its line (bends, plateaus) is summarised badly by one number (section 16). In d, 0 = the "
+                         "two channels add; on the readout, values below 0 can be a ceiling of the projection rather "
+                         "than competition.", f, body)
+
+
 def length_section(rows, traits):
     """20: how much of the readout shift is the answer getting shorter or longer."""
     tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>readout slope</th><th>answer length per unit c</th>"
@@ -2494,11 +2783,18 @@ def role_section(rows, traits, base, scale):
                "</summary>" + "".join(mats) + "</details>")
 
     # findings: what holds across games
-    capped = [cell_name(c) for c in cells_ if (lambda b: b[2] and (b[0] >= 80 or b[0] <= 20))(rate(by.get((c, "none"), [])))]
+    b0s = {c: rate(by.get((c, "none"), [])) for c in cells_}
+    high = [cell_name(c) for c, b in b0s.items() if b[2] and b[0] >= 80]
+    low = [cell_name(c) for c, b in b0s.items() if b[2] and b[0] <= 20]
+    few = [cell_name(c) for c, b in b0s.items() if b[2] < 20]
     f = [f"Unsteered, the deceivers win: {'; '.join(base_txt)}."
-         + (f" {', '.join(capped)}: near a ceiling, so steering there can mostly only make the deceivers lose; the "
-            "other games are balanced enough for effects either way." if capped else "")
-         + " The unsteered episodes are few, so tables b–d compare steered runs with each other, not with them."]
+         + (f" {', '.join(high)}: near a ceiling, so steering there can mostly only make the deceivers lose." if high
+            else "")
+         + (f" {', '.join(low)}: the deceivers almost never win, so steering there can mostly only help them." if low
+            else "")
+         + (" The other games are balanced enough for effects either way." if high or low else "")
+         + (f" Fewer than 20 unsteered episodes in {', '.join(few)}: there, tables b–d compare steered runs with each "
+            "other rather than with them." if few else "")]
     broke = []
     for cell in cells_:
         for s in (-1, 1):
@@ -2583,7 +2879,8 @@ def role_section(rows, traits, base, scale):
                          "Positive = the deceivers win more. In b, a cell is a trait's net effect on who wins; read across "
                          "a row to see whether it holds in every game. In c, negative on both sides = the side does "
                          "worse the harder it is steered, whatever the direction (the curves in a bend down at both "
-                         "ends). Avalon (text) deceivers win every unsteered game, so effects there can only be losses.",
+                         "ends). Where the deceivers win nearly every unsteered game (first finding), effects can mostly only be "
+                         "losses.",
                          f, "".join(out))
 
 
@@ -3452,8 +3749,8 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                             "If the whole evil team (spies, werewolves, mafia) is steered, does it win more or less?",
                             "The evil agents' reward vs the same seats in the unsteered episode with the same seed, per "
                             "unit coefficient.", "One side wins: the deceivers' gain is the honest side's loss. Where "
-                            "the deceivers already win nearly every unsteered game (Avalon), steering can mostly only "
-                            "make them lose (section 22).",
+                            "the deceivers already win nearly every unsteered game, steering can mostly only make them "
+                            "lose; section 22 gives the unsteered win rate of every game.",
                             f11, p11 + g11))
 
     # 11b. link
@@ -3623,7 +3920,8 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                  dose_response_section(steered, traits, cells, scale, own), footprint_section(rows, traits),
                  naming_section(rows, traits), prompt_vector_section(rows, traits, base, scale), length_section(rows, traits),
                  group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
-                 natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale)):
+                 natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale),
+                 modality_channel_section(rows, traits, base, scale, steered)):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -3648,7 +3946,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
