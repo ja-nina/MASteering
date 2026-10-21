@@ -108,15 +108,16 @@ class SteerEngine:
 
 
 class CaptureEngine:
-    def __init__(self, llm, spec: ModelSpec, layers: List[int], hidden: int) -> None:
+    def __init__(self, llm, spec: ModelSpec, layers: List[int], hidden: int, max_tokens: int = CAPTURE_TOKENS) -> None:
         self.llm, self.spec, self.layers, self.hidden = llm, spec, list(layers), hidden
+        self.max_tokens = max_tokens
 
     def read(self, results: List[TurnResult]) -> List[Dict[int, torch.Tensor]]:
         rows: List[Optional[Dict[int, torch.Tensor]]] = [None] * len(results)
         batch, tokens = [], 0
         for i in [i for i, r in enumerate(results) if r.token_ids] + [None]:
             n = 0 if i is None else len(results[i].prompt_token_ids) + len(results[i].token_ids)
-            if batch and (i is None or len(batch) == CAPTURE_BATCH or tokens + n > CAPTURE_TOKENS):
+            if batch and (i is None or len(batch) == CAPTURE_BATCH or tokens + n > self.max_tokens):
                 for j, r in zip(batch, self._read_or_skip([results[j] for j in batch])):
                     rows[j] = r
                 batch, tokens = [], 0
@@ -246,8 +247,10 @@ def _pixels_per_token(spec: ModelSpec) -> int:
 @contextmanager
 def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int]]):
     """Yield (SteerEngine, CaptureEngine | None). engine_cfg: {max_model_len, sampling, max_images,
-    steer: {gpus, memory}, monitor: {gpus, memory}, tensor_parallel_size (default: the model's)}; no monitor
-    engine when monitor_layers is None."""
+    steer: {gpus, memory}, monitor: {gpus, memory}, tensor_parallel_size (default: the model's),
+    aperture_gib (capture buffer, default env.sh's MIA_APERTURE_GPU_BYTES), capture_tokens (default CAPTURE_TOKENS)};
+    no monitor engine when monitor_layers is None. aperture_gib and capture_tokens only size buffers and batches:
+    the captured activations are the same."""
     from transformers import AutoTokenizer
 
     spec = MODELS[model]
@@ -276,10 +279,13 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
         if monitor_layers is not None:
             # capture layers are 1-based: i = output of decoder block i-1
             cap_config = {"hidden_states": {"layers": [l + 1 for l in monitor_layers], "mode": "all_tokens"}}
+            if engine_cfg.get("aperture_gib"):  # read by vLLM-Hook's workers, which start below
+                os.environ["MIA_APERTURE_GPU_BYTES"] = str(int(float(engine_cfg["aperture_gib"]) * 2 ** 30))
             cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
                                 mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images, tp)
             stack.callback(_shutdown, cap_llm)
-            capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden)
+            capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden,
+                                    int(engine_cfg.get("capture_tokens") or CAPTURE_TOKENS))
         try:
             yield steer, capture
         finally:

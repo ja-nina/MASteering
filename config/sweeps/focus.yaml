@@ -23,9 +23,14 @@ engine:
   monitor: {gpus: "1", memory: 0.75}
 # per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
 models:
-  qwen3.8-27b:   # tensor_parallel_size 2: each engine on 2 GPUs, 4 per job (sbatch --gres=gpu:4: a40 8-GPU nodes, a100, h100)
-    # monitor at 0.75 (the 9B setting) left no KV cache on 48 GB GPUs: each engine has its own GPUs, so both at 0.9
-    engine: {steer: {gpus: "0,1", memory: 0.9}, monitor: {gpus: "2,3", memory: 0.9}}
+  # tensor_parallel_size 2: each engine on 2 GPUs, 4 per job, on 80 GB GPUs only (sbatch -p gpu-all --gres=gpu:4
+  # --constraint="gpu-a100|gpu-h100"). The capture buffer's rows hold all 64 x 5120 layers (9B: 32 x 4096), so 9B's
+  # 8 GiB / 32768 tokens takes 20 GiB here; 16 GiB (26214 tokens) with capture calls of at most a quarter of it.
+  # That buffer sits outside vLLM's share: monitor at 0.75 (60 GB of 80). It does not fit next to half the weights
+  # on 48 GB GPUs (a40: 0.75 left no KV cache, 0.9 no room for the buffer; rtx8000 has no bf16).
+  qwen3.8-27b:
+    engine: {steer: {gpus: "0,1", memory: 0.9}, monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16,
+             capture_tokens: 6144}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]
