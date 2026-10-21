@@ -2061,6 +2061,85 @@ def _arm_point(rs, value, s, c=None):
     return _episode_mean([v for v, _ in vals], [cl for _, cl in vals])
 
 
+def prompt_outcomes(rows, base, scale):
+    """j (section 19): does the prompt get better outcomes than the vector? Per game × trait × side, the paired
+    change of one steered agent's own reward (prompt_one vs one) and of the group's reward when everyone is steered
+    (prompt_all vs all; games without hidden roles), SD units, against the vector at c = ±1 (matched) and at its best
+    |c| (more chances: an optimistic reference). (findings, html)"""
+    roles = role_cells(rows)
+    one = paired(rows, base, lambda r: r["steered"] and r["condition"] in ("one", "prompt_one") and not r["random"])
+    one = [{**r, "chg": r["diff"] / scale.get(r["cell"], 1.0)} for r in one]
+    grp = welfare([r for r in rows if r["condition"] in ("all", "prompt_all") and not r["random"]
+                   and r["team_cond"] is None and r["cell"] not in roles],
+                  [r for r in rows if r["condition"] == "none" and r["cell"] not in roles])
+    grp = [{**r, "chg": r["diff"]} for r in grp]
+    findings, parts = [], []
+    for label, data, vec, pr in (("one agent steered: its own result", one, "one", "prompt_one"),
+                                 ("everyone steered: the group's result (games without hidden roles)", grp, "all",
+                                  "prompt_all")):
+        cell_ = {}  # (cell, trait, side, arm, |c|) -> (mean, SE, n, p)
+        for k, rs in _by([r for r in data if r["coef"]], lambda r: (r["cell"], r["trait"], 1 if r["coef"] > 0 else -1,
+                                                                    r["condition"], abs(r["coef"]))).items():
+            m, se, n = _episode_mean([r["chg"] for r in rs], [r["cluster"] for r in rs])
+            if n >= 5 and math.isfinite(se):
+                cell_[k] = (m, se, n, math.erfc(abs(m / se) / math.sqrt(2)) if se > 0 else (0.0 if m else 1.0))
+        q = dict(zip(cell_, bh([v[3] for v in cell_.values()])))
+        keys = sorted({k[:3] for k in cell_ if k[3] == pr and (k[:3] + (vec, 1.0)) in cell_})
+        arms = {"prompt": lambda k: k + (pr, 1.0), f"vector, c = ±1": lambda k: k + (vec, 1.0)}
+        best = {k: max((x for x in cell_ if x[:4] == k + (vec,)), key=lambda x: cell_[x][0]) for k in keys}
+        arms["vector, best |c| per cell"] = lambda k: best[k]
+        tab = [f"<h4>{html.escape(label)}</h4><div class=wrap><table><tr><th class=l>how the persona is given</th>"
+               "<th>game × trait × side cells</th><th>significant gains (BH)</th><th>significant losses (BH)</th>"
+               "<th>mean change (SD)</th><th>share of cells with a gain</th><th>best gain in a game (SD), median over "
+               "games</th></tr>"]
+        summary = {}
+        for a, kf in arms.items():
+            v = [(k, cell_[kf(k)], q[kf(k)]) for k in keys]
+            gains = [(k, x) for k, x, qq in v if qq < 0.05 and x[0] > 0]
+            losses = [(k, x) for k, x, qq in v if qq < 0.05 and x[0] < 0]
+            per_game = defaultdict(list)
+            for k, x, _ in v:
+                per_game[k[0]].append(x[0])
+            top = float(np.median([max(xs) for xs in per_game.values()])) if per_game else float("nan")
+            summary[a] = (gains, losses, per_game)
+            tab.append(f"<tr><td class=l>{html.escape(a)}</td><td>{len(v)}</td><td>{len(gains)}</td><td>{len(losses)}</td>"
+                       f"<td>{np.mean([x[0] for _, x, _ in v]):+.2f}</td><td>{100 * np.mean([x[0] > 0 for _, x, _ in v]):.0f}%"
+                       f"</td><td>{top:+.2f}</td></tr>")
+        tab.append("</table></div>")
+        # head to head in the same cell: prompt minus the vector at c = ±1
+        hh = {}
+        for k in keys:
+            (mp, sp, _, _), (mv, sv, _, _) = cell_[arms["prompt"](k)], cell_[arms["vector, c = ±1"](k)]
+            se = math.hypot(sp, sv)
+            hh[k] = (mp - mv, math.erfc(abs((mp - mv) / se) / math.sqrt(2)) if se > 0 else 1.0)
+        hq = dict(zip(hh, bh([v[1] for v in hh.values()])))
+        better = [k for k in hh if hq[k] < 0.05 and hh[k][0] > 0]
+        worse = [k for k in hh if hq[k] < 0.05 and hh[k][0] < 0]
+        wins = sum(1 for g in summary["prompt"][2] if max(summary["prompt"][2][g]) > max(summary["vector, c = ±1"][2][g]))
+        name = lambda k: f"{cell_name(k[0])} × {k[1]} {'+' if k[2] > 0 else '−'}"
+        gl = lambda a: "; ".join(f"{name(k)} {x[0]:+.2f} (n = {x[2]})" for k, x in
+                                 sorted(summary[a][0], key=lambda kx: -kx[1][0])[:6]) or "none"
+        tab.append(f"<p class=muted>Significant gains — prompt: {html.escape(gl('prompt'))}. Vector at c = ±1: "
+                   f"{html.escape(gl('vector, c = ±1'))}.</p>" + games_note({k[0] for k in keys}))
+        parts.append("".join(tab))
+        n_g = len(summary["prompt"][2])
+        findings.append(
+            f"<b>Outcomes, {html.escape(label)}:</b> the prompt gives {len(summary['prompt'][0])} significant gains and "
+            f"{len(summary['prompt'][1])} losses over {len(keys)} game × trait × side cells, the vector at c = ±1 "
+            f"{len(summary['vector, c = ±1'][0])} and {len(summary['vector, c = ±1'][1])}; head to head in the same cell "
+            f"the prompt is better in {100 * np.mean([v[0] > 0 for v in hh.values()]) if hh else float('nan'):.0f}% "
+            f"of cells, significantly better in {len(better)} and worse in {len(worse)}; its best gain in a game beats "
+            f"the matched vector's in {wins} of {n_g} games. With its strength chosen per cell the vector reaches "
+            f"{len(summary['vector, best |c| per cell'][0])} significant gains (an optimistic reference: the best of "
+            "several noisy strengths).")
+    html_ = ("<h3>j. Outcomes: does the prompt get better results than the vector?</h3><p class=muted>Per game × trait "
+             "× side: the paired change against the same seats (one agent) or the same episode (everyone) unsteered "
+             "with the same seed, in SD units of the game; mean over episodes; Benjamini–Hochberg over every cell of "
+             "the comparison. 'Best |c| per cell' picks, for each cell, the vector strength that did best, so it is "
+             "biased upwards; it shows how much room a tuned strength has, not a fair contest.</p>" + "".join(parts))
+    return findings, html_
+
+
 def prompt_vector_section(rows, traits, base, scale):
     """19: the persona as a vector, as a prompt, or both, side by side at matched strength (c = ±1)."""
     one = [r for r in rows if r["steered"] and r["condition"] in ("one", "prompt_one", "both_one") and not r["random"]]
@@ -2291,6 +2370,9 @@ def prompt_vector_section(rows, traits, base, scale):
             "</summary><div class=charts>" + "".join(charts["reward"]) + "</div>" + g19 + "</details>" + "".join(tabs)
             + "".join(gtab)
             + "".join(ttab) + "".join(stab))
+    j_f, j_html = prompt_outcomes(rows, base, scale)
+    f += j_f
+    body += j_html
     return take, section(19, "Vector, prompt or both? Side by side",
                          "Giving an agent a persona by the vector, by the instruction in its system prompt, or by both: "
                          "which moves its language more, which changes its play, which spreads to the others, which "
@@ -2304,7 +2386,9 @@ def prompt_vector_section(rows, traits, base, scale):
                          "length vs the game's unsteered answers; <b>f</b> the unsteered co-players' readout of the "
                          "trait; <b>g</b> per game; <b>h</b> everyone steered (all vs prompt_all) and the whole "
                          "deceiving side (evil_team vs evil_team_prompt); <b>i</b> synergy: both − (vector + prompt), all three "
-                         "against the same unsteered reference (0 = they add). Charts a: all coefficients, all games pooled.",
+                         "against the same unsteered reference (0 = they add); <b>j</b> outcomes: significant gains and "
+                         "losses per arm, prompt vs vector head to head per game × trait × side, for one agent's own "
+                         "result and for the group when everyone is steered. Charts a: all coefficients, all games pooled.",
                          "Compare the three arms within a row. Readout: + rows should be positive, − rows negative; a "
                          "prompt cell with the wrong sign = the instruction backfires. 'both ÷ (vector + prompt)' ≈ 1: "
                          "the two add; &gt; 1 reinforce; &lt; 1 overlap. Reward: all arms share the same unsteered "
