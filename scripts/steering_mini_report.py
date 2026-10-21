@@ -149,32 +149,29 @@ def headline(by, paired_by):
 
 
 def recipe(rows, traits, by_trait, paired_by, cells):
-    """Per persona and direction: which way of giving it moves the language most, the mildest vector strength that
-    works, what it costs, and in which games it changes the agent's result at full strength."""
+    """Per persona and direction, one agent steered with the vector only: how far its language moves at full
+    strength, the mildest strength that works, what full strength costs, and in which games it changes the agent's
+    result. Prompt and both are compared in synergy()."""
     none = [r for r in rows if r["condition"] == "none"]
     fb0 = 100 * sum(r["fallbacks"] for r in none) / max(1, sum(r["turns"] for r in none))
     len0 = {c: np.mean([r["chars"] for r in rs if r["chars"]]) for c, rs in R._by(none, lambda r: r["cell"]).items()}
-    out = ["<h2 id=recipe>Recipe: how to give an agent a persona, and what it costs</h2><p class=muted>One agent "
-           "steered. 'Strongest way' compares the vector at full strength (c = ±2), the prompt and both together by how "
-           "far the agent's language moves; 'mildest vector that works': the smallest strength with a clear effect; "
-           f"broken answers: turns the game could not parse (unsteered: {fb0:.1f}%); results: games where the agent's "
-           "own result changes clearly with the vector at full strength.</p><div class=wrap><table><tr><th class=l>"
-           "persona</th><th>strongest way to give it (moves the language most)</th><th>weakest vector strength with a "
-           "clear effect on the language</th><th>unparseable turns, strongest way</th><th>answer length vs unsteered, "
-           "strongest way</th><th class=l>games where the agent's result gets better (vector, c = ±2)</th>"
+    out = ["<h2 id=recipe>Recipe: steering one agent with the vector, and what it costs</h2><p class=muted>One "
+           "agent steered with the vector only (no prompt); every column is about that agent, at full strength "
+           "(c = ±2) except the weakest strength. Language: how far the agent's language moves; unparseable turns: "
+           f"turns the game could not parse (unsteered: {fb0:.1f}%); results: games where the agent's own result "
+           "changes clearly, against the same seat in unsteered games with the same seeds. Prompt and both together: "
+           "<a href=#synergy>prompt, vector, both</a>.</p><div class=wrap><table><tr><th class=l>"
+           "persona</th><th>language (vector, c = ±2)</th><th>weakest vector strength with a "
+           "clear effect on the language</th><th>unparseable turns (vector, c = ±2)</th><th>answer length vs "
+           "unsteered (vector, c = ±2)</th><th class=l>games where the agent's result gets better (vector, c = ±2)</th>"
            "<th class=l>games where it gets worse (vector, c = ±2)</th></tr>"]
     for t in traits:
         for s in (1, -1):
-            arms = {"vector": [r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == 2 * s],
-                    "prompt": [r for r in by_trait.get(("prompt_one", t), []) if r["steered"] and r["coef"] * s > 0],
-                    "both": [r for r in by_trait.get(("both_one", t), []) if r["steered"] and r["coef"] == 2 * s]}
-            score = {a: language(rs, t) for a, rs in arms.items() if rs}
-            if not score:
+            rs = [r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == 2 * s]
+            if not rs:
                 continue
-            best = max(score, key=lambda a: s * score[a][1] if score[a][2] >= 2 else -1e9)
             mild = next((c for c in (0.5, 1, 1.5, 2) if (lambda v: v[2] >= 2 and v[1] * s > 0)(
                 language([r for r in by_trait.get(("one", t), []) if r["steered"] and r["coef"] == c * s], t))), None)
-            rs = arms[best]
             fb = 100 * sum(r["fallbacks"] for r in rs) / max(1, sum(r["turns"] for r in rs))
             ratio = np.mean([r["chars"] / len0[r["cell"]] for r in rs if r["chars"] and len0.get(r["cell"])] or [1])
             shape = ("about as long" if 0.8 <= ratio <= 1.25 else f"{ratio:.1f}× longer" if ratio > 1
@@ -187,12 +184,11 @@ def recipe(rows, traits, by_trait, paired_by, cells):
                     if level >= 2:
                         (better if m > 0 else worse).append(f"{html.escape(R.cell_name(cell))} {mark(level)}")
             none_ = "<span class=muted>none clearly</span>"
-            out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td><td>{best}: {score[best][0]}</td>"
+            out.append(f"<tr><td class=l>{'more' if s > 0 else 'less'} {t}</td><td>{language(rs, t)[0]}</td>"
                        f"<td>{f'c = {mild * s:+g}' if mild else 'none clearly'}</td>"
                        f"<td>{fb:.1f}%{' ⚠' if fb > fb0 + 5 else ''}</td><td>{shape}</td>"
                        f"<td class=l>{', '.join(better) or none_}</td><td class=l>{', '.join(worse) or none_}</td></tr>")
-    games = sorted({r["cell"] for c in ("one", "prompt_one", "both_one") for t in traits
-                    for r in by_trait.get((c, t), []) if r["steered"]})
+    games = sorted({r["cell"] for t in traits for r in by_trait.get(("one", t), []) if r["steered"]})
     return "".join(out) + "</table></div>" + R.games_note(games)
 
 
