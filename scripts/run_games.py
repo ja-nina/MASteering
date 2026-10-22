@@ -40,6 +40,8 @@ def main(argv=None, open_engines=None) -> int:
     p.add_argument("--tp", type=int, help="GPUs per engine (tensor parallel), overriding the model's: steer on GPUs "
                    "0..tp-1, monitor on the next tp; e.g. --tp 1 runs a 27B copy per 80 GB GPU (a100/h100, 2 GPUs)")
     p.add_argument("--memory", type=float, help="override both engines' gpu_memory_utilization")
+    p.add_argument("--no-monitor", action="store_true", help="play without the monitor engine (only the steer "
+                   "engine's GPUs are used; turns are logged with empty monitor scores)")
     p.add_argument("--engine", type=json.loads, help="JSON merged into the configs' engine settings (GPU layout, "
                    "memory, buffers), e.g. 27B on 48 GB GPUs: '{\"monitor\": {\"gpus\": \"2,3,4,5\", "
                    "\"tensor_parallel_size\": 4, \"memory\": 0.62}}'")
@@ -64,7 +66,7 @@ def main(argv=None, open_engines=None) -> int:
     if not jobs:
         return 0
 
-    layers = monitor_layers(monitor_cfg, store)
+    layers = None if args.no_monitor else monitor_layers(monitor_cfg, store)
     monitor = Monitor(store, layers, monitor_cfg.get("traits")) if layers is not None else None
     if open_engines is None:
         from testbed.mia_engine import open_engines
