@@ -76,3 +76,17 @@ def test_log_name_extends_another_sweeps_logs(tmp_path):
     other = load_sweep(path, "qwen3.5-2b")
     assert (other["name"], other["log_name"]) == ("focus_qwen3.5-2b", "t_qwen3.5-2b")
     assert next(iter(expand(other).values()))["logging_dir"].startswith("logs/t_qwen3.5-2b/")
+
+
+def test_model_override_narrows_grid_and_drops_monitor(tmp_path):
+    """models.<key> may narrow coefficients (same run_ids for the kept cells) and switch the monitor off."""
+    from scripts.make_configs import load_sweep
+    sweep = {**SWEEP, "monitor": {"layers": "auto"},
+             "models": {"qwen3.5-2b": {"coefficients": [2.5], "monitor": None, "save_images": True}}}
+    path = tmp_path / "s.yaml"
+    path.write_text(yaml.safe_dump(sweep))
+    runs = expand(load_sweep(path, "qwen3.5-2b"))
+    assert "gbs_3p/gbs_3p__all__evil_x2.5.yaml" in runs and not any("x1.25" in k for k in runs)
+    cfg = runs["gbs_3p/gbs_3p__all__evil_x2.5.yaml"]
+    assert cfg["monitor"] is None and cfg["save_images"] is True
+    assert len(expand(load_sweep(path))) > len(runs)  # the sweep's own model keeps the full grid

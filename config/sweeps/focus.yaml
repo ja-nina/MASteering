@@ -23,17 +23,18 @@ engine:
   monitor: {gpus: "1", memory: 0.75}
 # per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
 models:
-  # tensor_parallel_size 2: each engine on 2 GPUs, 4 per job, on 80 GB GPUs only (sbatch -p gpu-all --gres=gpu:4
-  # --constraint="gpu-a100|gpu-h100"). The capture buffer's rows hold all 64 x 5120 layers (9B: 32 x 4096), so 9B's
-  # 8 GiB / 32768 tokens takes 20 GiB here; 16 GiB (26214 tokens) with capture calls of at most a quarter of it.
-  # The buffer counts twice: vLLM sees it as used memory, and vLLM-Hook also wants it free outside vLLM's share
-  # (weights + 2 x buffer + ~2 GiB warm-up + KV <= GPU). Monitor at 0.75 (60 GB of 80). On 48 GB a40s (rtx8000: no
-  # bf16) only with the monitor on 4 GPUs and an 8 GiB buffer, at run time:
-  #   --engine '{"aperture_gib": 8, "capture_tokens": 3072, "monitor": {"gpus": "2,3,4,5", "tensor_parallel_size": 4,
-  #             "memory": 0.8, "max_num_batched_tokens": 4096}}'   (sbatch -p gpu-a40 --gres=gpu:6)
+  # 27B (2026-10-22): c = +-2 only (does any game break at full strength?), no live monitor (save_images: the
+  # monitor can be run over the logged inputs later), one engine on 2 GPUs: a40 or l40 (sbatch -p gpu-all
+  # --gres=gpu:2 --constraint="gpu-a40|gpu-l40"). disable_custom_all_reduce: on l40s vLLM's custom all-reduce hung
+  # right after start-up; NCCL on every GPU type, so all 27B runs sum the same way.
+  # Live monitoring needs a second engine on 2 more 80 GB GPUs (or 4 a40s with an 8 GiB capture buffer): its
+  # buffer rows hold all 64 x 5120 layers and count twice (vLLM sees them as used memory, vLLM-Hook also wants
+  # them free outside vLLM's share), e.g. monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16, capture_tokens: 6144.
   qwen3.8-27b:
-    engine: {steer: {gpus: "0,1", memory: 0.9}, monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16,
-             capture_tokens: 6144}
+    coefficients: [-2, 2]
+    monitor: null
+    save_images: true
+    engine: {steer: {gpus: "0,1", memory: 0.9, disable_custom_all_reduce: true}}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]
