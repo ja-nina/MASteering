@@ -6,7 +6,8 @@
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH --output=slurm-logs/report-%j.out
-# Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main]
+# Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main] [sweep file] [model key]
+#   another model's logs: sbatch scripts/slurm/report.sbatch main_qwen3.8-27b config/sweeps/focus.yaml qwen3.8-27b
 # Summary CSV + HTML report of a sweep, on a compute node: the first pass over older episodes reads their
 # JSONLs and needs more memory and time than the submit node allows. The partition only takes GPU jobs
 # (and at most 10 CPUs per GPU);
@@ -18,6 +19,8 @@ mkdir -p slurm-logs
 PYTHON="${PYTHON:-$(command -v python || true)}"
 [ -x "$PYTHON" ] || { echo "no python found: activate the pvf env before sbatch" >&2; exit 1; }
 SWEEP="${1:-main}"
+SWEEP_FILE="${2:-config/sweeps/$SWEEP.yaml}"
+MODEL="${3:-}"
 LOGS="${MA_LOG_ROOT:-/scratch/inf0/user/nzukowsk/MASteer/logs}/$SWEEP"
 FALLBACK="${MA_FALLBACK_LOG_DIR:-/BS/ForNet/nobackup/MASteer/logs}/$SWEEP"
 OUT="results/$SWEEP"
@@ -29,7 +32,7 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 "$PYTHON" scripts/backfill_tokens.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}" \
     || echo "token backfill incomplete: rerun to count the rest"
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
-"$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "config/sweeps/$SWEEP.yaml" --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
+"$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
 "$PYTHON" scripts/steering_mini_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/steering_mini_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
 echo "$(date)  done: git add $OUT && git commit -m 'Report: $SWEEP' && git push"

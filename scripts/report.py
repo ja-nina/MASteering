@@ -348,10 +348,13 @@ def detectability(rows, t, via=STEERED_VIA):
     return {c: mean_ci(*v) for c, v in sorted(by_coef.items())}
 
 
-def ols(y, X, clusters, fe=None):
+def ols(y, X, clusters, fe=None, width=2):
     """Multiple regression y ~ X (columns, with game fixed effects `fe`); coefficients with SEs clustered by
-    `clusters`. Returns [{"b", "se", "p", "n"}] per column."""
+    `clusters`. Returns [{"b", "se", "p", "n"}] per column (`width` of them, all NaN, when there are no rows: e.g.
+    readout terms of a sweep run without the monitor)."""
     y, X = np.asarray(y, float), np.asarray(X, float)
+    if not len(y):
+        X = np.empty((0, width))
     keep = np.isfinite(y) & np.isfinite(X).all(axis=1)
     y, X = y[keep], X[keep]
     clusters = [c for c, k in zip(clusters, keep) if k]
@@ -934,7 +937,10 @@ def setup_section(rows, sweep, traits, cells):
            f"game state is shown as a picture instead of text. Episode seeds depend only on the game and the "
            f"episode number, so every condition plays the same deals, roles and seats.</span>",
            "<b>Monitor (readout): how it works</b><span>"
-           + monitor_how(len({t for r in rows for t in r["mon"]}), mon_layer) + "</span>",
+           + (monitor_how(len({t for r in rows for t in r["mon"]}), mon_layer) if mon_layer else
+              "<b>Not run for these episodes</b> (played without the monitor engine). Every readout result (sections "
+              "2–4, 8, 11b, 14, 17, 18, 20, 23 and the readout columns elsewhere) is empty until the monitor is run "
+              "over the logged turns; rewards, actions, coherence and length do not need it.") + "</span>",
            "<b>Outcome</b><span>Each game's own reward for the agent (e.g. win/loss of its side in Avalon, Werewolf, "
            "Mafia; points or goods won in auctions, harvest, TextArena games). Compared <i>paired</i>: the same seat in "
            "the unsteered episode with the same seed (same deal, same role).</span>",
@@ -4246,6 +4252,7 @@ def main(argv=None) -> int:
     p.add_argument("agents_csv", help="output of scripts/summarize_runs.py")
     p.add_argument("--out", required=True)
     p.add_argument("--sweep", help="the sweep file (model, generation settings) for the setup section")
+    p.add_argument("--model", help="the model key the sweep was run with (make_configs --model), if not its own")
     p.add_argument("--logs", nargs="+", help="the sweep's log dir(s) (<logging_dir>/<name>, and its fallback): adds "
                    "matched example answers")
     args = p.parse_args(argv)
@@ -4254,7 +4261,10 @@ def main(argv=None) -> int:
         print("no rows")
         return 1
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    sweep = __import__("yaml").safe_load(Path(args.sweep).read_text(encoding="utf-8")) if args.sweep else None
+    if args.sweep:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from scripts.make_configs import load_sweep
+    sweep = load_sweep(args.sweep, args.model) if args.sweep else None
     Path(args.out).write_text(build(rows, sweep, args.logs), encoding="utf-8")
     print(f"report over {len(rows)} agent-episodes -> {args.out}")
     return 0
