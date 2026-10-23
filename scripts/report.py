@@ -1055,6 +1055,100 @@ def games_section(rows, traits, cells, man, eff, base, scale):
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
                  "prompt_one", "prompt_all", "evil_team_prompt", "all_random_L16", "all_random_L32")
 
+PARSE_GAP = 5.0  # percentage points from the game's unsteered rate that count as more (or fewer) unparseable turns
+PARSE_MIN_TURNS = 50  # a case needs this many turns to be flagged
+
+
+def unparseable_cases(rows, order=SETTING_ORDER) -> dict:
+    """Unparseable turns of the steered agents per case (game cell, setting, coefficient), pooled over personas, and
+    each game's base rate (its unsteered agents): {"base": {cell: %}, "cases": {(cell, setting, c): (%, turns,
+    worst persona, its %)}}. Every setting counts, the random controls and prompts included."""
+    rate = lambda rs: 100 * sum(r["fallbacks"] for r in rs) / max(1, sum(r["turns"] for r in rs))
+    base = {c: rate(v) for c, v in _by([r for r in rows if r["condition"] == "none" and r["turns"]],
+                                       lambda r: r["cell"]).items()}
+    steered = [r for r in rows if r["steered"] and r["turns"] and r["trait"] and r["coef"] is not None
+               and r["cell"] in base]
+    per_trait = {k: rate(v) for k, v in _by(steered, lambda r: (r["cell"], r["condition"], r["coef"], r["trait"])).items()}
+    cases = {}
+    for (cell, cond, c), rs in _by(steered, lambda r: (r["cell"], r["condition"], r["coef"])).items():
+        worst = max((t for (ce, co, cc, t) in per_trait if (ce, co, cc) == (cell, cond, c)),
+                    key=lambda t: per_trait[(cell, cond, c, t)])
+        cases[(cell, cond, c)] = (rate(rs), sum(r["turns"] for r in rs), worst, per_trait[(cell, cond, c, worst)])
+    return {"base": base, "cases": cases, "order": order}
+
+
+def _parse_flag(v, base, turns):
+    """'more' | 'fewer' | '' for a case's rate against its game's base rate."""
+    if turns < PARSE_MIN_TURNS:
+        return ""
+    return "more" if v >= base + PARSE_GAP else "fewer" if v <= base - PARSE_GAP else ""
+
+
+def unparseable_tables(rows, order=SETTING_ORDER, words=None) -> str:
+    """The cases of unparseable_cases as tables: a summary per game (base rate, how many cases are more or less
+    unparseable, the worst case), then per game a setting x coefficient table with the base rate next to it. A case is
+    flagged at PARSE_GAP points or more from the game's base rate (with at least PARSE_MIN_TURNS turns)."""
+    u = unparseable_cases(rows, order)
+    base, cases = u["base"], u["cases"]
+    if not cases:
+        return ""
+    words = words or {}
+    name = lambda c: html.escape(words.get(c, c))
+    rank = lambda c: (order.index(c) if c in order else len(order), c)
+    cstr = lambda cond, c: (("+ instruction" if c > 0 else "− instruction") if "prompt" in cond else f"c = {c:+g}")
+    out = [f"<h3>Unparseable turns per case, against the game's base rate</h3><p class=muted>A case = game × setting × "
+           f"strength; the steered agents' turns that stayed unparseable after the retries (the game then plays a "
+           f"default move), pooled over personas; hover a cell for the persona with the most. Base rate: the same "
+           f"game's unsteered agents. <span style='background:rgba(192,57,43,.35)'>&nbsp;more&nbsp;</span> = "
+           f"{PARSE_GAP:g} points or more above the base rate, <span style='background:rgba(44,111,187,.35)'>&nbsp;fewer"
+           f"&nbsp;</span> = {PARSE_GAP:g} or more below (cases with at least {PARSE_MIN_TURNS} turns). Where a game's "
+           f"result depends on parsing (the default move can be good or bad), a reward effect in a flagged case is "
+           f"partly a format effect.</p><div class=wrap><table><tr><th class=l>game</th><th>base rate (unsteered)</th>"
+           f"<th>cases more unparseable</th><th>cases less unparseable</th><th class=l>worst case</th></tr>"]
+    cells = sorted(base, key=lambda c: cell_name(c))
+    for cell in cells:
+        mine = {k: v for k, v in cases.items() if k[0] == cell}
+        if not mine:
+            continue
+        flags = {k: _parse_flag(v[0], base[cell], v[1]) for k, v in mine.items()}
+        (_, wc, wx), wv = max(mine.items(), key=lambda kv: kv[1][0])
+        n_more, n_fewer = sum(f == "more" for f in flags.values()), sum(f == "fewer" for f in flags.values())
+        out.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td><td>{base[cell]:.1f}%</td>"
+                   f"<td>{n_more} of {len(mine)}</td><td>{n_fewer} of {len(mine)}</td>"
+                   f"<td class=l>{name(wc)}, {cstr(wc, wx)}: <b>{wv[0]:.1f}%</b> (most: {html.escape(wv[2])}, "
+                   f"{wv[3]:.1f}%)</td></tr>")
+    out.append("</table></div>")
+    no_base = sorted({cell_name(r["cell"]) for r in rows if r["steered"] and r["cell"] not in base})
+    if no_base:
+        out.append(f"<p class=muted>Not in these tables (no unsteered episodes yet, so no base rate): "
+                   f"{html.escape(', '.join(no_base))}.</p>")
+    colour = {"more": "192,57,43", "fewer": "44,111,187"}
+    for cell in cells:
+        mine = {k: v for k, v in cases.items() if k[0] == cell}
+        if not mine:
+            continue
+        conds = sorted({k[1] for k in mine}, key=rank)
+        coefs = sorted({k[2] for k in mine})
+        tab = [f"<details class=bysetting><summary>{html.escape(cell_name(cell))}: base rate {base[cell]:.1f}%, "
+               f"{sum(_parse_flag(v[0], base[cell], v[1]) == 'more' for v in mine.values())} case(s) more unparseable"
+               f"</summary><div class=wrap><table><tr><th class=l>setting</th><th>base rate</th>"
+               + "".join(f"<th>c = {c:+g}</th>" for c in coefs) + "</tr>"]
+        for cond in conds:
+            row = [f"<tr><td class=l>{name(cond)}</td><td class=muted>{base[cell]:.1f}%</td>"]
+            for c in coefs:
+                v = mine.get((cell, cond, c))
+                if v is None:
+                    row.append("<td class=muted>–</td>")
+                    continue
+                f = _parse_flag(v[0], base[cell], v[1])
+                style = f' style="background:rgba({colour[f]},.35)"' if f else ""
+                row.append(f'<td{style} title="{v[1]} turns; most: {html.escape(v[2])} {v[3]:.1f}%">{v[0]:.1f}%</td>')
+            tab.append("".join(row) + "</tr>")
+        tab.append("</table></div>" + ("<p class=muted>Prompt settings: c = −1 is the opposite instruction, +1 the "
+                                       "instruction.</p>" if any("prompt" in c for c in conds) else "") + "</details>")
+        out.append("".join(tab))
+    return "".join(out)
+
 
 def settings_tables(cell, traits, own_all, co_all) -> str:
     """One game: reward slope per unit c (raw units, paired with the same seat unsteered) per setting × trait,
@@ -4210,12 +4304,23 @@ def build(rows, sweep=None, logs_dir=None) -> str:
         extra.append(f"<b>Steering changes how much agents write.</b> Answers average {ln_c[0.0][0]:.0f} characters "
                      f"unsteered, {ln_c[hi_x][0]:.0f} at c = {hi_x:g} and {ln_c[lo_x][0]:.0f} at c = {lo_x:g} (section 13; "
                      "per persona and setting in section 20 and in the steering mini report's recipe).")
+    up = unparseable_cases(rows)
+    more = [(k, v) for k, v in up["cases"].items() if _parse_flag(v[0], up["base"][k[0]], v[1]) == "more"]
+    if more:
+        by_set = defaultdict(int)
+        for (cell, cond, c), _ in more:
+            by_set[cond] += 1
+        f13.append(f"Every setting, case by case (game × setting × strength, table below): {len(more)} of "
+                   f"{len(up['cases'])} cases are {PARSE_GAP:g}+ points more unparseable than their game's base rate, by "
+                   "setting: " + ", ".join(f"{c} {n}" for c, n in sorted(by_set.items(), key=lambda kv: -kv[1])) + ".")
     body.append(section(13, "Coherence cost: does steering break the agent?",
                         "Does strong steering make agents produce broken or unusually long/short answers?",
-                        "Steered agents (persona vector, all traits) by coefficient, unsteered agents at 0: the share of "
-                        "turns that stayed unparseable after the retries, and the mean answer length.",
+                        "Charts: steered agents (persona vector, all traits) by coefficient, unsteered agents at 0: the "
+                        "share of turns that stayed unparseable after the retries, and the mean answer length. Tables: "
+                        "every setting (random controls and prompts included), case by case, against each game's "
+                        "unsteered base rate.",
                         "x = coefficient; a curve that shoots up at the ends = the model derails before the persona shows.",
-                        f13, charts))
+                        f13, charts + unparseable_tables(rows)))
 
     late_take = []
     for part in (over_episode_section(rows, traits), actions_section(rows, traits, cells),

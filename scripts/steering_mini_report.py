@@ -621,7 +621,7 @@ def build(rows, logs=None) -> str:
     warn = (f"<div class=warn><b>Provisional results for {html.escape(', '.join(last))}:</b> these games pay every "
             "step, but this data has only their last step's payoff; their results change once the report is rebuilt "
             "with episode totals.</div>" if last else "")
-    toc = ("<p class=muted>Contents: <a href=#headline>headline</a> · <a href=#recipe>recipe</a> · "
+    toc = ("<p class=muted>Contents: <a href=#headline>headline</a> · <a href=#recipe>recipe</a> · <a href=#parse>broken answers</a> · "
            "<a href=#synergy>prompt, vector, both</a> · <a href=#image>text vs image</a> · <a href=#actions>language vs "
            "action</a> · <a href=#roles>hidden roles</a> · <a href=#gallery>failure gallery</a> · "
            "<a href=#examples>examples</a> · <a href=#games>per game</a></p>")
@@ -629,6 +629,9 @@ def build(rows, logs=None) -> str:
     parts = [f"<h2 id=headline>Headline</h2><div class=result><ul>"
              + "".join(f"<li>{h}</li>" for h in headline(by, paired_by)) + "</ul></div>",
              recipe(rows, traits, by_trait, paired_by, cells),
+             "<h2 id=parse>Broken answers: which settings leave more turns unparseable?</h2>"
+             + R.unparseable_tables(rows, SETTINGS + tuple(c for c in R.SETTING_ORDER if c not in SETTINGS),
+                                    SETTING_WORDS),
              synergy(traits, by_trait, paired_by, {g for g in R.mode_baselines(rows)},
                      R.synergy_cells(rows, traits, base, SCALE)),
              text_vs_image(rows, traits, by, paired_by), language_vs_action(rows, cells),

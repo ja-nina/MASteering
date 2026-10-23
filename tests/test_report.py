@@ -210,3 +210,20 @@ def test_role_section_mirror_of_evil_and_good_team(tmp_path):
     data = load(path)
     take, html_ = role_section(data, ["evil"], baselines(data), reward_scale(data))
     assert "good_team" in html_ and "helps whichever side carries it: av_6p × evil" in html_
+
+
+def test_unparseable_cases_against_each_games_base_rate():
+    from scripts.report import unparseable_cases, unparseable_tables
+
+    def row(cell, cond, coef, trait, fallbacks, turns=100, steered=True):
+        return {"cell": cell, "condition": cond, "coef": coef, "trait": trait, "fallbacks": fallbacks,
+                "turns": turns, "steered": steered}
+    rows = [row(("g", "text"), "none", None, None, 2, steered=False),
+            row(("g", "text"), "all_random", 2.0, "evil", 30), row(("g", "text"), "all_random", 2.0, "empathy", 10),
+            row(("g", "text"), "one", 2.0, "evil", 3), row(("h", "text"), "one", 2.0, "evil", 50)]
+    u = unparseable_cases(rows)
+    assert u["base"] == {("g", "text"): 2.0}  # h has no unsteered episodes: no base rate, no cases
+    assert u["cases"][(("g", "text"), "all_random", 2.0)] == (20.0, 200, "evil", 30.0)
+    assert u["cases"][(("g", "text"), "one", 2.0)][0] == 3.0
+    page = unparseable_tables(rows)
+    assert "1 of 2" in page and "no unsteered episodes yet" in page
