@@ -23,7 +23,8 @@ engine:
   monitor: {gpus: "1", memory: 0.75}
 # per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
 models:
-  # 27B (2026-10-22): c = +-2 only (does any game break at full strength?), no live monitor (save_images: the
+  # 27B (2026-10-22): c = +-2 first (does any game break at full strength?), +-0.5 and +-1 added 2026-10-23 (the
+  # +-2 runs keep their run_ids and finished episodes), no live monitor (save_images: the
   # monitor can be run over the logged inputs later), one engine on 2 GPUs: a40 or l40 (sbatch -p gpu-all
   # --gres=gpu:2 --constraint="gpu-a40|gpu-l40"). disable_custom_all_reduce: on l40s vLLM's custom all-reduce hung
   # right after start-up; NCCL on every GPU type, so all 27B runs sum the same way.
@@ -31,7 +32,7 @@ models:
   # buffer rows hold all 64 x 5120 layers and count twice (vLLM sees them as used memory, vLLM-Hook also wants
   # them free outside vLLM's share), e.g. monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16, capture_tokens: 6144.
   qwen3.8-27b:
-    coefficients: [-2, 2]
+    coefficients: [-2, -1, -0.5, 0.5, 1, 2]
     monitor: null
     save_images: true
     engine: {steer: {gpus: "0,1", memory: 0.9, disable_custom_all_reduce: true}}
