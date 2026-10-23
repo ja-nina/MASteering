@@ -57,7 +57,7 @@ def judge(values, clusters):
 def number(v, unit=""):
     """A plain number: whole percents, else 3 significant digits; 0 for rounding noise."""
     if unit == "%":
-        return f"{v:.0f}%"
+        return f"{v:.0f}%" if abs(v) >= 0.5 else "0%"  # not "-0%"
     return "0" if abs(v) < 0.005 else f"{v:.3g}"
 
 
@@ -76,7 +76,10 @@ def words(m, level, trait):
 
 
 def language(rs, t):
-    """(words, mean, level) for the readout of trait t of the steered agents rs."""
+    """(words, mean, level) for the readout of trait t of the steered agents rs ('not measured' for a sweep played
+    without the monitor)."""
+    if not MONITORED:
+        return "<span class=muted>not measured</span>", float("nan"), 0
     rs = [r for r in rs if t in r["mon"] and math.isfinite(r["mon"][t])]
     m, level = judge([r["mon"][t] for r in rs], [r["cluster"] for r in rs])
     return words(m, level, t), m, level
@@ -142,6 +145,10 @@ def headline(by, paired_by):
                 n_out += 1
                 outc += result_level(pr)[1] >= 2
     games = sorted({cell for (cell, t, c) in by if c == "one"})
+    if not MONITORED:
+        return [f"One agent steered at full strength (c = ±2): its result in the game changes clearly in {outc} of "
+                f"{n_out} game × persona × direction cases. {mark(3)} Its language was not measured (played without the "
+                "monitor)." + R.games_note(games, "Games counted")]
     return [f"<b>Steering changes what agents say almost everywhere, what they win far less often.</b> One agent "
             f"steered at full strength (c = ±2): its language moves the intended way in {lang} of {n_lang} game × "
             f"persona × direction cases; its result in the game changes clearly in {outc} of {n_out}. {mark(3)}"
@@ -224,6 +231,9 @@ def synergy(traits, by_trait, paired_by, modes_games, per_game):
     pick = lambda cond, t, s, c=None, m=None: [
         r for r in by_trait.get((cond, t), []) if r["steered"] and r["coef"] * s > 0
         and (c is None or abs(r["coef"]) == c) and (m is None or (r["obs"] == m and r["group"] in modes_games))]
+    if not any(pick("one", t, s, 1) for t in traits for s in (1, -1)):
+        return out[0].split("<p class=muted>")[0] + ("<p class=muted>Not in this sweep: the comparison needs the "
+                                                      "vector at c = ±1 (the prompt's matched strength).</p>")
     count = defaultdict(lambda: defaultdict(int))
     for t in traits:
         for s in (1, -1):
@@ -237,7 +247,8 @@ def synergy(traits, by_trait, paired_by, modes_games, per_game):
                                               if (t_, s_, k_) == (t, s, "readout_raw")
                                               and (m is None or (cell[1] == m and cell[0] in modes_games))])
                 z = mu / se if math.isfinite(se) and se > 0 else float("nan")
-                lang.append("<span class=muted>too little data</span>" if not math.isfinite(z) else
+                lang.append("<span class=muted>not measured</span>" if not MONITORED else
+                            "<span class=muted>too little data</span>" if not math.isfinite(z) else
                             "more than the sum" if z > 2.58 else "less than the sum" if z < -2.58 else "adds up")
                 rp = lambda cond, c=None: [r for r in paired_by.get(("*", t, cond), []) if r["steered"]
                                            and r["coef"] * s > 0 and (c is None or abs(r["coef"]) == c)
@@ -267,11 +278,11 @@ def synergy(traits, by_trait, paired_by, modes_games, per_game):
     out.append("</table></div>" + R.games_note(all_g, "Pooled over all games and counted game by game")
                + R.games_note([(g, m) for g in sorted(modes_games) for m in ("text", "image")],
                               "Text and image columns (games played both ways)")
-               + "<p>Overall, on the language: " + tally("language", None)
-               + " of the persona × direction cases"
-               + (f" (with text: {tally('language', 'text')}; with images: {tally('language', 'image')})"
-                  if modes_games else "")
-               + ". On the result: " + tally("result", None)
+               + ("<p>Overall, on the language: " + tally("language", None)
+                  + " of the persona × direction cases"
+                  + (f" (with text: {tally('language', 'text')}; with images: {tally('language', 'image')})"
+                     if modes_games else "") + ". " if MONITORED else "<p>")
+               + "On the result: " + tally("result", None)
                + (f" (with text: {tally('result', 'text')}; with images: {tally('result', 'image')})"
                   if modes_games else "") + ".</p>"
                + "".join(f"<p>Game by game, on the {what}: more than the sum in {count[('games', k)]['more']}, less in "
@@ -345,7 +356,8 @@ def text_vs_image(rows, traits, by, paired_by):
         Rr = [tally["result"][(c, w)] for w in ("larger with images", "smaller with images", "about the same")]
         if sum(L) or sum(Rr):
             out.append(f"<tr><td class=l>{html.escape(SETTING_WORDS[c])}</td>"
-                       + "".join(f"<td>{n}</td>" for n in L + Rr) + "</tr>")
+                       + "".join(f"<td>{n}</td>" if MONITORED else "<td class=muted>not measured</td>" for n in L)
+                       + "".join(f"<td>{n}</td>" for n in Rr) + "</tr>")
     out.append("</table></div>" + R.games_note([(g, m) for g in base for m in ("text", "image")], "Games in this table (played both ways)"))
 
     # language over c, text vs image, per persona: games played both ways, the vector settings without a side
@@ -356,11 +368,12 @@ def text_vs_image(rows, traits, by, paired_by):
                             if r["steered"]], lambda r: r["mon"].get(t)) for m in ("text", "image")}
         charts.append(f"<div class=chart><h3>{html.escape(t)}</h3>"
                       + R.line_chart(series, t, f"{t} in language", colours=mc) + "</div>")
-    out.append("<h3>The persona in the language over c, text vs image</h3><div class=legend><span><i style='background:"
-               "var(--s1)'></i>text</span><span><i style='background:var(--s2)'></i>image</span><span>one agent, half "
-               "or every agent with the vector, the games played both ways; 0 = like unsteered agents; bars: 95% CI"
-               "</span></div><div class=charts>" + "".join(charts) + "</div>"
-               + R.games_note([(g, m) for g in base for m in ("text", "image")], "Games in these charts"))
+    if MONITORED:
+        out.append("<h3>The persona in the language over c, text vs image</h3><div class=legend><span><i style="
+                   "'background:var(--s1)'></i>text</span><span><i style='background:var(--s2)'></i>image</span><span>"
+                   "one agent, half or every agent with the vector, the games played both ways; 0 = like unsteered "
+                   "agents; bars: 95% CI</span></div><div class=charts>" + "".join(charts) + "</div>"
+                   + R.games_note([(g, m) for g in base for m in ("text", "image")], "Games in these charts"))
 
     # the result over c, text vs image, with the straight line through it: how fast the result changes with c
     charts = []
@@ -382,6 +395,8 @@ def text_vs_image(rows, traits, by, paired_by):
                + R.games_note([(g, m) for g in base for m in ("text", "image")], "Games in these charts"))
 
     # prompt, vector, both: how far each moves the language, with text and with images
+    if not MONITORED:
+        return "".join(out)
     rows_ = ["<h3>Prompt, vector or both, with text and with images</h3><p class=muted>One agent; the vector and both "
              "at c = ±1; the games played both ways. How far the persona shows in the language, per mode.</p>"
              "<div class=wrap><table><tr><th class=l rowspan=2>persona</th><th colspan=2>vector alone (c = ±1)</th>"
@@ -555,8 +570,8 @@ def per_game(traits, by, paired_by, wins):
                                                        lambda r: (r["cell"], r["episode"]))
                                               for c in sets if paired_by.get((cell, t, c))}))
             unit = "change in wins (points)" if all(cell in wins for cell in gcells) else "change in score"
-            blocks.append(f"<h3>{html.escape(t)}</h3><div class='charts four'>{charts_row(lang, f'{t} in language')}"
-                          f"{charts_row(res, unit)}</div>")
+            blocks.append(f"<h3>{html.escape(t)}</h3><div class='charts four'>"
+                          f"{charts_row(lang, f'{t} in language') if MONITORED else ''}{charts_row(res, unit)}</div>")
         out.append(f"<details><summary>{html.escape(g)}</summary>{legend(sets)}{''.join(blocks)}</details>")
     return "".join(out)
 
@@ -567,11 +582,14 @@ CSS_EXTRA = """
 .quote { margin:4px 0 10px; padding:6px 10px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); }
 """
 SCALE = {}
+MONITORED = True  # False for a sweep played without the monitor: no language results, only game results
 
 
 def build(rows, logs=None) -> str:
+    global MONITORED
     rows = R.zscored(rows)
     SCALE.update(R.reward_scale(rows))
+    MONITORED = any(r["mon"] for r in rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
     cells = sorted({r["cell"] for r in rows})
     base = R.baselines(rows)
@@ -591,8 +609,11 @@ def build(rows, logs=None) -> str:
              f"chance), {MARK[1]} no clear change, {MARK[0]} too little data. Results are the game's own (wins, or the "
              "score in the game's units), always against the same seats in unsteered games with the same seeds."
              "</span><b>How the monitor reads language</b><span>"
-             + R.monitor_how(len({t for r in rows for t in r["mon"]}),
-                             sorted({r["monitor_layer"] for r in rows if r.get("monitor_layer") is not None}))
+             + (R.monitor_how(len({t for r in rows for t in r["mon"]}),
+                              sorted({r["monitor_layer"] for r in rows if r.get("monitor_layer") is not None}))
+                if MONITORED else "<b>Not run for these episodes</b> (played without the monitor engine): every "
+                "'language' result reads 'not measured' until the monitor is run over the logged turns; the game "
+                "results, unparseable turns, answer length and moves do not need it.")
              + "</span></div>")
     warn = (f"<div class=warn><b>Provisional results for {html.escape(', '.join(last))}:</b> these games pay every "
             "step, but this data has only their last step's payoff; their results change once the report is rebuilt "
