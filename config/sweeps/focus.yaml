@@ -31,8 +31,14 @@ models:
   # Live monitoring needs a second engine on 2 more 80 GB GPUs (or 4 a40s with an 8 GiB capture buffer): its
   # buffer rows hold all 64 x 5120 layers and count twice (vLLM sees them as used memory, vLLM-Hook also wants
   # them free outside vLLM's share), e.g. monitor: {gpus: "2,3", memory: 0.75}, aperture_gib: 16, capture_tokens: 6144.
+  # all_random_L16/L32 (2026-10-23): the random control also at earlier layers. all_random puts it at each persona's
+  # own layer, and at L47 (+2) it broke GBS agents (26-37% unparseable turns with images) whose fallback move then won.
+  # (agreeableness is at L16 and assertive/evil at L32 already: those cells repeat all_random's.)
   qwen3.8-27b:
     coefficients: [-2, -1, -0.5, 0.5, 1, 2]
+    conditions:
+      all_random_L16: {select: all, random_control: true, layer: 16}
+      all_random_L32: {select: all, random_control: true, layer: 32}
     monitor: null
     save_images: true
     engine: {steer: {gpus: "0,1", memory: 0.9, disable_custom_all_reduce: true}}

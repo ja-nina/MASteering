@@ -38,17 +38,18 @@ def load_sweep(path, model=None) -> dict:
     """The sweep file, with `model` swapped for another PersVecFast model key if given; a different
     model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own.
     The sweep's `models: {<key>: {...}}` overrides run settings for that model only (e.g. `engine` for a
-    model that needs 2 GPUs per engine), and may narrow its grid (`coefficients`, `traits`: a subset keeps the
-    run_ids of the cells it keeps); other models' configs do not change."""
+    model that needs 2 GPUs per engine), may narrow its grid (`coefficients`, `traits`: a subset keeps the
+    run_ids of the cells it keeps) and add `conditions` of its own (merged into the sweep's); other models' configs
+    do not change."""
     sweep = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if model and model != sweep["model"]:
         sweep = {**sweep, "model": model, "name": f"{sweep['name']}_{model}",
                  **({"log_name": f"{sweep['log_name']}_{model}"} if sweep.get("log_name") else {})}
     over = (sweep.get("models") or {}).get(sweep["model"]) or {}
-    unknown = set(over) - set(RUN_KEYS) - {"coefficients", "traits"}
+    unknown = set(over) - set(RUN_KEYS) - {"coefficients", "traits", "conditions"}
     if unknown:
-        raise ValueError(f"models.{sweep['model']}: only run settings, coefficients and traits can be overridden, "
-                         f"not {sorted(unknown)}")
+        raise ValueError(f"models.{sweep['model']}: only run settings, coefficients, traits and conditions can be "
+                         f"overridden, not {sorted(unknown)}")
     return _merged(sweep, over)
 
 

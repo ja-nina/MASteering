@@ -90,3 +90,14 @@ def test_model_override_narrows_grid_and_drops_monitor(tmp_path):
     cfg = runs["gbs_3p/gbs_3p__all__evil_x2.5.yaml"]
     assert cfg["monitor"] is None and cfg["save_images"] is True
     assert len(expand(load_sweep(path))) > len(runs)  # the sweep's own model keeps the full grid
+
+
+def test_model_adds_conditions_of_its_own(tmp_path):
+    from scripts.make_configs import load_sweep
+    sweep = {**SWEEP, "models": {"qwen3.5-2b": {"conditions": {"all_L7": {"select": "all", "layer": 7}}}}}
+    path = tmp_path / "s.yaml"
+    path.write_text(yaml.safe_dump(sweep))
+    runs = expand(load_sweep(path, "qwen3.5-2b"))
+    assert runs["gbs_3p/gbs_3p__all_L7__evil_x2.5.yaml"]["steering"]["layer"] == 7
+    assert "gbs_3p/gbs_3p__all__evil_x2.5.yaml" in runs  # the sweep's own conditions stay
+    assert not any("all_L7" in k for k in expand(load_sweep(path)))  # other models: unchanged

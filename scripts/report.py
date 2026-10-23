@@ -81,6 +81,9 @@ def load(path) -> list:
             "obs": r.get("observation") or "text", "episode": int(r["episode"]), "agent": r["agent"],
             "trait": r.get("condition_trait") or None, "coef": num("condition_coefficient"),
             "via": r.get("condition_via") or None, "random": r.get("condition_random") == "True",
+            # a random direction at a fixed layer (all_random_L16, ...) rather than at the persona's own: its own
+            # setting, kept out of the random control the persona's vector is compared with
+            "random_fixed": r.get("condition_random") == "True" and r.get("condition_layer") not in (None, ""),
             "team_cond": r.get("condition_team") or None, "select": r.get("condition_select") or None,
             "steered": r.get("steered") == "True", "team": r.get("team") or None,
             "reward": num("reward"), "reward_from": r.get("reward_from") or None,
@@ -231,7 +234,8 @@ def manipulation(rows, traits):
         pts = vec + base
         x = [r["coef"] if r["steered"] else 0.0 for r in pts]
         res = {"vector": slope(x, [r["mon"][t] for r in pts], [r["cluster"] for r in pts], [r["cell"] for r in pts])}
-        rnd = [r for r in rows if r["steered"] and r["trait"] == t and r["random"] and t in r["mon"]]
+        rnd = [r for r in rows if r["steered"] and r["trait"] == t and r["random"] and not r["random_fixed"]
+               and t in r["mon"]]
         rp = rnd + [r for r in base if r["cell"] in {q["cell"] for q in rnd}]
         res["random"] = slope([r["coef"] if r["steered"] else 0.0 for r in rp], [r["mon"][t] for r in rp],
                               [r["cluster"] for r in rp], [r["cell"] for r in rp])
@@ -513,7 +517,8 @@ def channels(rows, traits, base, scale):
         pro = [r for r in rows if r["steered"] and r["trait"] == t and r["via"] == "prompt" and r["team_cond"] is None]
         cells = {r["cell"] for r in vec} & {r["cell"] for r in pro}
         vec, pro = [r for r in vec if r["cell"] in cells], [r for r in pro if r["cell"] in cells]
-        rnd = [r for r in rows if r["steered"] and r["trait"] == t and r["random"] and r["cell"] in cells]
+        rnd = [r for r in rows if r["steered"] and r["trait"] == t and r["random"] and not r["random_fixed"]
+               and r["cell"] in cells]
         none = [r for r in rows if r["condition"] == "none" and r["cell"] in cells]
         if not cells:
             continue
@@ -907,6 +912,8 @@ def setup_section(rows, sweep, traits, cells):
         "none": "nobody steered (the baseline every comparison is made against)",
         "one": "one randomly drawn agent gets the persona vector", "half": "half of the agents (drawn at random)",
         "all": "every agent", "all_random": "every agent gets a random direction of the same norm (control)",
+        "all_random_L16": "as all_random, at layer 16 for every persona", "all_random_L32": "as all_random, at layer 32 "
+        "for every persona",
         "random_one": "one agent gets a random direction of the same norm (control)",
         "prompt_one": "one agent gets the trait's persona instruction in its system prompt (no vector)",
         "prompt_all": "every agent gets the persona instruction", "both_one": "one agent gets the instruction AND the vector",
@@ -1046,7 +1053,7 @@ def games_section(rows, traits, cells, man, eff, base, scale):
 
 
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
-                 "prompt_one", "prompt_all", "evil_team_prompt")
+                 "prompt_one", "prompt_all", "evil_team_prompt", "all_random_L16", "all_random_L32")
 
 
 def settings_tables(cell, traits, own_all, co_all) -> str:

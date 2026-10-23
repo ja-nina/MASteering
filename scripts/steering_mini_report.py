@@ -26,16 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import report as R  # noqa: E402
 
 SETTINGS = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
-            "prompt_one", "prompt_all", "evil_team_prompt")
+            "prompt_one", "prompt_all", "evil_team_prompt", "all_random_L16", "all_random_L32")
 SETTING_WORDS = {
     "one": "one agent, vector", "half": "half the agents, vector", "all": "every agent, vector",
     "both_one": "one agent, vector + prompt", "good_one": "one honest player, vector",
     "evil_one": "one deceiver, vector", "evil_team": "every deceiver, vector", "good_team": "every honest player, vector",
     "all_random": "every agent, random direction (control)", "prompt_one": "one agent, prompt",
-    "prompt_all": "every agent, prompt", "evil_team_prompt": "every deceiver, prompt", "unsteered": "unsteered"}
+    "prompt_all": "every agent, prompt", "evil_team_prompt": "every deceiver, prompt", "unsteered": "unsteered",
+    "all_random_L16": "every agent, random direction at layer 16 (control)",
+    "all_random_L32": "every agent, random direction at layer 32 (control)"}
 # a prompt setting shares its vector counterpart's colour (drawn as squares); the random control is dashed grey
 COLOUR = {**{c: f"var(--s{i + 1})" for i, c in enumerate(R.SIDE_SETTINGS)}, "all_random": "var(--rnd)",
           "prompt_one": "var(--s1)", "prompt_all": "var(--s3)", "evil_team_prompt": "var(--s7)",
+          "all_random_L16": "var(--s2)", "all_random_L32": "var(--s6)",  # dashed too (random in the name)
           "unsteered": "currentColor"}
 MARK = {3: "●●●", 2: "●●○", 1: "●○○", 0: "○○○"}
 MARK_TIP = {3: "solid", 2: "tentative", 1: "no clear change", 0: "too little data"}

@@ -177,6 +177,7 @@ def episode_rows(job) -> tuple:
             "condition_coefficient": steering.get("coefficient"),
             "condition_via": steering.get("via", "vector") if steering else None,
             "condition_random": bool(steering.get("random_control", False)),
+            "condition_layer": steering.get("layer") if steering.get("layer") not in (None, "auto") else None,
             "steered": steer is not None, "steer_label": steer["label"] if steer else None,
             "role": summary.get("player_roles", {}).get(aid), "team": summary.get("teams", {}).get(aid),
             "reward": rewards.get(aid), "reward_from": reward_from,
