@@ -116,7 +116,8 @@ class CaptureEngine:
         rows: List[Optional[Dict[int, torch.Tensor]]] = [None] * len(results)
         batch, tokens = [], 0
         for i in [i for i, r in enumerate(results) if r.token_ids] + [None]:
-            n = 0 if i is None else len(results[i].prompt_token_ids) + len(results[i].token_ids)
+            n = 0 if i is None else (len(results[i].prompt_token_ids) or results[i].n_prompt_tokens) \
+                + len(results[i].token_ids)
             if batch and (i is None or len(batch) == CAPTURE_BATCH or tokens + n > self.max_tokens):
                 for j, r in zip(batch, self._read_or_skip([results[j] for j in batch])):
                     rows[j] = r
@@ -158,7 +159,10 @@ class CaptureEngine:
         out = []
         for r, o in zip(results, outputs):
             stats = self.llm.analyze(analyzer_spec={"reduce": "none"}, probes=o.probes)["hidden_states"]
-            n_prompt, n_total = len(r.prompt_token_ids), len(o.prompt_token_ids)
+            # a logged image turn read afterwards (scripts/backfill_monitor.py) has no expanded prompt length: its
+            # token_ids stand for the completion's tokens, the rows kept are the last len(token_ids)
+            n_total = len(o.prompt_token_ids)
+            n_prompt = len(r.prompt_token_ids) if r.prompt_token_ids else n_total - len(r.token_ids)
             per_layer = {}
             for layer in self.layers:
                 hs = stats[layer_key(stats.keys(), layer)]
@@ -250,20 +254,35 @@ def _pixels_per_token(spec: ModelSpec) -> int:
     return getattr(vision, "patch_size", 16) * getattr(vision, "spatial_merge_size", 2) if vision else 32
 
 
+def _open_capture(stack, spec, engine_cfg, monitor_layers, work_dir, max_model_len, max_images, tp, shared,
+                  hidden) -> "CaptureEngine":
+    mon_cfg = dict(engine_cfg.get("monitor") or {})
+    # capture layers are 1-based: i = output of decoder block i-1
+    cap_config = {"hidden_states": {"layers": [l + 1 for l in monitor_layers], "mode": "all_tokens"}}
+    if engine_cfg.get("aperture_gib"):  # read by vLLM-Hook's workers, which start below
+        os.environ["MIA_APERTURE_GPU_BYTES"] = str(int(float(engine_cfg["aperture_gib"]) * 2 ** 30))
+    cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
+                        mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images,
+                        mon_cfg.get("tensor_parallel_size") or tp, mon_cfg.get("max_num_batched_tokens"),
+                        bool(mon_cfg.get("disable_custom_all_reduce")))
+    stack.callback(_shutdown, cap_llm)
+    return CaptureEngine(cap_llm, spec, monitor_layers, hidden, int(engine_cfg.get("capture_tokens") or CAPTURE_TOKENS))
+
+
 @contextmanager
 def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int]]):
     """Yield (SteerEngine, CaptureEngine | None). engine_cfg: {max_model_len, sampling, max_images,
     steer: {gpus, memory}, monitor: {gpus, memory}, tensor_parallel_size (default: the model's),
     steer/monitor may set their own tensor_parallel_size, max_num_batched_tokens and disable_custom_all_reduce;
     aperture_gib (capture buffer, default env.sh's MIA_APERTURE_GPU_BYTES), capture_tokens (default CAPTURE_TOKENS)};
-    no monitor engine when monitor_layers is None. aperture_gib and capture_tokens only size buffers and batches:
-    the captured activations are the same."""
+    no monitor engine when monitor_layers is None; no steer engine (None) with steer: {off: true}. aperture_gib and
+    capture_tokens only size buffers and batches: the captured activations are the same."""
     from transformers import AutoTokenizer
 
     spec = MODELS[model]
     work_dir = Path(os.environ.get("TESTBED_MIA_DIR", "out/_mia")).resolve()
     steer_cfg, mon_cfg = dict(engine_cfg.get("steer") or {}), dict(engine_cfg.get("monitor") or {})
-    shared = monitor_layers is not None and steer_cfg.get("gpus") == mon_cfg.get("gpus")
+    shared = monitor_layers is not None and not steer_cfg.get("off") and steer_cfg.get("gpus") == mon_cfg.get("gpus")
     max_model_len = engine_cfg.get("max_model_len") or spec.max_model_len
     max_images = int(engine_cfg.get("max_images", 0))
     tp = engine_cfg.get("tensor_parallel_size")
@@ -277,6 +296,11 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
     if monitor_layers is not None:  # fail before loading anything when other jobs have already filled /tmp
         check_free_space(os.environ["MIA_APERTURE_DIR"], float(os.environ.get("PVF_MIN_TMP_GB", 20)))
     with ExitStack() as stack:
+        if steer_cfg.get("off"):  # the monitor alone (scripts/backfill_monitor.py: reading logged turns)
+            yield None, _open_capture(stack, spec, engine_cfg, monitor_layers, work_dir, max_model_len, max_images,
+                                      tp, shared, hidden)
+            gc.collect()
+            return
         llm = _open_llm(spec, "steer", steer_config, work_dir, steer_cfg.get("gpus"),
                         steer_cfg.get("memory", 0.5 if shared else 0.85), max_model_len, max_images,
                         steer_cfg.get("tensor_parallel_size") or tp, steer_cfg.get("max_num_batched_tokens"),
@@ -284,19 +308,8 @@ def open_engines(model: str, engine_cfg: dict, monitor_layers: Optional[List[int
         stack.callback(_shutdown, llm)
         steer = SteerEngine(llm, spec, AutoTokenizer.from_pretrained(spec.hf_repo), str(zero_vector),
                             dict(engine_cfg.get("sampling") or {}), max_model_len, _pixels_per_token(spec))
-        capture = None
-        if monitor_layers is not None:
-            # capture layers are 1-based: i = output of decoder block i-1
-            cap_config = {"hidden_states": {"layers": [l + 1 for l in monitor_layers], "mode": "all_tokens"}}
-            if engine_cfg.get("aperture_gib"):  # read by vLLM-Hook's workers, which start below
-                os.environ["MIA_APERTURE_GPU_BYTES"] = str(int(float(engine_cfg["aperture_gib"]) * 2 ** 30))
-            cap_llm = _open_llm(spec, "capture", cap_config, work_dir, mon_cfg.get("gpus"),
-                                mon_cfg.get("memory", 0.35 if shared else 0.75), max_model_len, max_images,
-                                mon_cfg.get("tensor_parallel_size") or tp, mon_cfg.get("max_num_batched_tokens"),
-                                bool(mon_cfg.get("disable_custom_all_reduce")))
-            stack.callback(_shutdown, cap_llm)
-            capture = CaptureEngine(cap_llm, spec, monitor_layers, hidden,
-                                    int(engine_cfg.get("capture_tokens") or CAPTURE_TOKENS))
+        capture = None if monitor_layers is None else _open_capture(
+            stack, spec, engine_cfg, monitor_layers, work_dir, max_model_len, max_images, tp, shared, hidden)
         try:
             yield steer, capture
         finally:

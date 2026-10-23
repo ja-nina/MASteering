@@ -184,3 +184,22 @@ def test_capture_retries_a_lost_delivery_then_skips(tmp_path, monkeypatch):
     monkeypatch.setattr(eng, "_read", lambda results: (_ for _ in ()).throw(ValueError("real bug")))
     with pytest.raises(ValueError):
         eng.read(turns)                                                 # other errors still surface
+
+
+def test_capture_reads_a_logged_image_turn_by_its_answer_length(monkeypatch):
+    """scripts/backfill_monitor.py: an image turn from the log has no expanded prompt length; the last
+    len(token_ids) rows (the answer's) are kept, as live keeps the rows after the generation's prompt."""
+    from PIL import Image
+    monkeypatch.setenv("MIA_APERTURE_DIR", "unused")
+
+    class _ImgCaptureLLM(_CaptureLLM):
+        def generate(self, prompts, params):
+            self.prompts = prompts
+            n = [len(p["prompt"].split()) - 1 + 10 for p in prompts]  # expanded: 10 tokens per image
+            return [_out(list(range(k)), [0], probes=k) for k in n]
+
+    img = Image.new("RGB", (8, 8))
+    turn = TurnResult(("a",), "go left now", "stop", [], [0, 0, 0], prompt="sys <img> u ", images=[img],
+                      n_prompt_tokens=12)
+    rows = CaptureEngine(_ImgCaptureLLM(), SPEC, layers=[3], hidden=4).read([turn])
+    assert rows[0][3][:, 0].tolist() == [12.0, 13.0, 14.0]  # the same rows as the live read above

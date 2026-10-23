@@ -8,7 +8,8 @@ Everything comes from the small episode summaries: rewards, roles, teams, who wa
 scripts/backfill_rewards.py writes for the games that pay every step, else `final_rewards` (the last step's
 rewards: the score in games that pay once, at the end). `reward_from` says which: total | backfill | last_step. Episodes logged before summaries had them (or before they
 had phases and actions) get them once from their JSONL (every prompt of every turn: slow), written back into
-the summary, so the next run reads only summaries. Episodes are read in parallel (--jobs) and rows
+the summary, so the next run reads only summaries. Episodes played without the monitor get theirs from the
+episode_N.monitor.json of scripts/backfill_monitor.py, when it has run. Episodes are read in parallel (--jobs) and rows
 streamed to disk, so memory stays flat however large the sweep.
 An --out ending in .gz is gzip-compressed and, past MAX_PART_BYTES, continued in parts <name>-2.csv.gz,
 <name>-3.csv.gz, ... next to it (each a full CSV with header), so every file stays under GitHub's 100 MB limit;
@@ -140,13 +141,23 @@ def episode_tokens(stats: dict, spath: Path) -> dict:
     return out
 
 
+def episode_monitor(stats: dict, spath: Path) -> dict:
+    """agent_stats with the monitor of an episode played without it from the episode_N.monitor.json that
+    scripts/backfill_monitor.py writes (monitor, phase_layer, phases); as they are when the summary has its own."""
+    side = spath.with_name(spath.name[:-len(".summary.json")] + ".monitor.json")
+    if any(a.get("monitor") for a in stats.values()) or not side.exists():
+        return stats
+    filled = json.loads(side.read_text(encoding="utf-8"))["agent_stats"]
+    return {aid: {**a, **filled.get(aid, {})} for aid, a in stats.items()}
+
+
 def episode_rows(job) -> tuple:
     """(run.json, episode, summary path, layer, steered traits) -> (that episode's rows, whether its JSONL was read)."""
     run, ep, spath, layer, traits = job
     summary, from_jsonl = read_summary(Path(spath))
     steering = run.get("steering") or {}
     steering = steering if isinstance(steering, dict) else {"groups": len(steering)}
-    stats = summary["agent_stats"]
+    stats = episode_monitor(summary["agent_stats"], Path(spath))
     layers = sorted({lay for a in stats.values() for lay in a["monitor"]}, key=int)
     at = str(layer) if layer is not None else (layers[len(layers) // 2] if layers else None)
     none = {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": {}, "phases": [None] * 3, "actions": {}}
