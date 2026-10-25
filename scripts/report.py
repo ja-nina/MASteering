@@ -904,7 +904,7 @@ def setup_section(rows, sweep, traits, cells):
             base_eps[r["cell"]].add(r["episode"])
     layers = defaultdict(set)
     for r in rows:
-        if r.get("steer_layer") is not None and r["trait"]:
+        if r.get("steer_layer") is not None and r["trait"] and not r.get("random_fixed"):  # a fixed-layer control
             layers[r["trait"]].add(int(r["steer_layer"]))
     mon_layer = sorted({r["monitor_layer"] for r in rows if r.get("monitor_layer") is not None})
     sw = sweep or {}
