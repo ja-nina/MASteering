@@ -32,6 +32,9 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 "$PYTHON" scripts/backfill_tokens.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}" \
     || echo "token backfill incomplete: rerun to count the rest"
 "$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
+# norms of the persona vectors per layer, for the push size of the random directions (report section 26)
+"$PYTHON" scripts/vector_norms.py --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --out "$OUT/vector_norms.json" \
+    || echo "vector norms unavailable: section 26 plots over c instead of the push size"
 "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
 "$PYTHON" scripts/steering_mini_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/steering_mini_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"

@@ -1150,6 +1150,141 @@ def unparseable_tables(rows, order=SETTING_ORDER, words=None) -> str:
     return "".join(out)
 
 
+def push_size(r, norms):
+    """c times the norm of the vector the agent got at its layer (a random direction has the trait's vector norm,
+    or the norm of PersVecFast's exported random file): how far the hidden state is moved. None without norms."""
+    if not norms or r["coef"] is None or r["steer_layer"] is None or not r["trait"]:
+        return None
+    t, layer = r["trait"], str(int(r["steer_layer"]))
+    n = (norms.get("random", {}).get(t, {}).get(layer) if r["random"] else None) or norms["norms"].get(t, {}).get(layer)
+    return r["coef"] * n if n else None
+
+
+def push_chart(series, fits, xlabel, ylabel, colours, width=330, height=240):
+    """series: {name: [(x, mean, half CI, label)]} -> SVG with a continuous x axis, one colour per series and its
+    fitted straight line `fits` {name: (intercept, slope)}, dashed."""
+    pts = [p for s in series.values() for p in s if math.isfinite(p[1])]
+    if len(pts) < 2:
+        return "<p class=muted>no data yet</p>"
+    xs = [p[0] for p in pts]
+    x0, x1 = min(xs + [0]), max(xs + [0])
+    ys = [p[1] + s * (p[2] if math.isfinite(p[2]) else 0) for p in pts for s in (-1, 1)]
+    lo, hi = min(ys + [0]), max(ys + [0])
+    lo, hi = (lo - 1, hi + 1) if hi == lo else (lo, hi)
+    L, R, T, B = 44, 8, 8, 34
+    sx = lambda v: L + (v - x0) / ((x1 - x0) or 1) * (width - L - R)
+    sy = lambda v: T + (hi - v) / (hi - lo) * (height - T - B)
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="{html.escape(ylabel)}">',
+             f'<line x1="{L}" y1="{sy(0):.1f}" x2="{width - R}" y2="{sy(0):.1f}" stroke="currentColor" '
+             f'stroke-opacity=".3" stroke-dasharray="2 2"/>',
+             f'<line x1="{sx(0):.1f}" y1="{T}" x2="{sx(0):.1f}" y2="{height - B}" stroke="currentColor" stroke-opacity=".2"/>']
+    for v in (lo, 0, hi):
+        parts.append(f'<text x="{L - 4}" y="{sy(v) + 3:.1f}" text-anchor="end">{v:.3g}</text>')
+    for v in (x0, 0, x1):
+        parts.append(f'<text x="{sx(v):.1f}" y="{height - B + 12}" text-anchor="middle">{v:.3g}</text>')
+    parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 4}" text-anchor="middle">{html.escape(xlabel)}</text>')
+    parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
+                 f'{html.escape(ylabel)}</text>')
+    for name, fit in fits.items():
+        s = [p[0] for p in series.get(name, [])]
+        if fit and s and all(map(math.isfinite, fit)):
+            a, b = fit
+            parts.append(f'<line x1="{sx(min(s)):.1f}" y1="{sy(a + b * min(s)):.1f}" x2="{sx(max(s)):.1f}" '
+                         f'y2="{sy(a + b * max(s)):.1f}" stroke="{colours[name]}" stroke-width="1.4" '
+                         f'stroke-dasharray="5 3"><title>{html.escape(name)}: {b:+.3g} per unit push</title></line>')
+    for name, s in series.items():
+        for x, m, h, lab in s:
+            if not math.isfinite(m):
+                continue
+            if math.isfinite(h):
+                parts.append(f'<line x1="{sx(x):.1f}" x2="{sx(x):.1f}" y1="{sy(m - h):.1f}" y2="{sy(m + h):.1f}" '
+                             f'stroke="{colours[name]}" stroke-opacity=".5"/>')
+            parts.append(f'<circle cx="{sx(x):.1f}" cy="{sy(m):.1f}" r="3" fill="{colours[name]}" fill-opacity=".8">'
+                         f'<title>{html.escape(name)}, {html.escape(lab)}: push {x:.3g}, {m:.3g} ± {h:.2g}</title>'
+                         f'</circle>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def push_section(rows, base, scale, norms):
+    """Section 26: the random directions' effect against how far they push (c · |v|), one line per layer, and the
+    persona vectors per unit push next to the random direction at the same layer."""
+    base_rate = {c: 100 * sum(r["fallbacks"] for r in v) / max(1, sum(r["turns"] for r in v))
+                 for c, v in _by([r for r in rows if r["condition"] == "none" and r["turns"]], lambda r: r["cell"]).items()}
+    use_norm = bool(norms)
+    x_of = (lambda r: push_size(r, norms)) if use_norm else (lambda r: r["coef"])
+    unit = "per unit push (c · |v|)" if use_norm else "per unit c"
+    xlabel = "push c · |v| (signed)" if use_norm else "coefficient c (vector norms not found)"
+    rnd = [dict(r, x=x_of(r)) for r in paired(rows, base, lambda r: r["steered"] and r["random"] and r["via"] != "prompt"
+                                                and r["steer_layer"] is not None)]
+    rnd = [r for r in rnd if r["x"] is not None]
+    vec = [dict(r, x=x_of(r)) for r in paired(rows, base, lambda r: r["steered"] and r["condition"] == "all"
+                                                and r["steer_layer"] is not None)]
+    vec = [r for r in vec if r["x"] is not None]
+    if not rnd:
+        return [], ""
+    layers = sorted({int(r["steer_layer"]) for r in rnd})
+    colours = {f"L{l}": TRAIT_COLOURS[i % len(TRAIT_COLOURS)] for i, l in enumerate(layers)}
+    measures = {"reward": ("steered agent's reward vs the same seat unsteered (SD)",
+                           lambda r: r["diff"] / scale.get(r["cell"], 1.0)),
+                "parse": ("unparseable turns, points above the game's unsteered rate",
+                          lambda r: 100 * r["fallbacks"] / r["turns"] - base_rate[r["cell"]]
+                          if r["turns"] and r["cell"] in base_rate else None)}
+    fits, charts = {}, []
+    for m, (ylabel, y) in measures.items():
+        series, lines = {}, {}
+        for l in layers:
+            rs = [r for r in rnd if int(r["steer_layer"]) == l and y(r) is not None]
+            pts = []
+            for (t, c), g in sorted(_by(rs, lambda r: (r["trait"], r["coef"])).items()):
+                mean, half, _ = mean_ci([y(r) for r in g], [r["cluster"] for r in g])
+                pts.append((float(np.mean([r["x"] for r in g])), mean, half, f"norm of {t}, c = {c:+g}"))
+            series[f"L{l}"] = pts
+            fits[(m, l)] = slope([r["x"] for r in rs], [y(r) for r in rs], [r["cluster"] for r in rs],
+                                 [r["cell"] for r in rs])
+            lines[f"L{l}"] = _line_fit([p[0] for p in pts], [p[1] for p in pts])
+        charts.append(f"<div><h4>{html.escape(ylabel)}</h4>{push_chart(series, lines, xlabel, ylabel, colours)}</div>")
+    legend = "".join(f"<span><i style='background:{c}'></i>random direction at {n}</span>" for n, c in colours.items())
+    # the persona vectors (every agent steered) per unit push, beside the random direction at the same layer
+    head = (f"<tr><th class=l>layer</th><th>random: reward {unit}</th><th>random: unparseable points {unit}</th>"
+            f"<th class=l>persona vectors at this layer (every agent): reward {unit}</th></tr>")
+    num = lambda f: (f"{f['b']:+.3g}<span class=sig>{stars(f['p'])}</span>" if f and math.isfinite(f.get("b", float("nan")))
+                     else "–")
+    trs, findings = [], []
+    for l in layers:
+        rf, pf = fits[("reward", l)], fits[("parse", l)]
+        per_t = []
+        for t, g in sorted(_by([r for r in vec if int(r["steer_layer"]) == l], lambda r: r["trait"]).items()):
+            s = slope([r["x"] for r in g], [r["diff"] / scale.get(r["cell"], 1.0) for r in g],
+                      [r["cluster"] for r in g], [r["cell"] for r in g])
+            d = _diff_test(rf, s)
+            per_t.append(f"{html.escape(t)} {num(s)} (vs random: {'differs' if d['p'] < .01 else 'same' if d['p'] == d['p'] else '?'})")
+        trs.append(f"<tr><td class=l>L{l}</td><td>{num(rf)}</td><td>{num(pf)}</td>"
+                   f"<td class=l>{'; '.join(per_t) or '–'}</td></tr>")
+        if math.isfinite(rf["b"]):
+            pv = lambda q: "p &lt; .001" if q < .001 else f"p = {q:.2g}"
+            findings.append(f"Random direction at L{l}: reward {rf['b']:+.3g} {unit} ({pv(rf['p'])}), unparseable "
+                            f"{pf['b']:+.3g} points {unit} ({pv(pf['p'])}).")
+    body = (f"<div class=legend>{legend}<span>dots: mean per persona-norm × c, bars: 95% CI; dashed: straight line "
+            f"through the dots</span></div><div class=charts>{''.join(charts)}</div>"
+            f"<div class=wrap><table>{head}{''.join(trs)}</table></div>"
+            + games_note(sorted({r["cell"] for r in rnd}), "Games in these charts"))
+    return [], section(26, "Random directions: does the size of the push matter, per layer?",
+                       "A random direction of a persona vector's size is the control: how much does pushing the hidden "
+                       "state at all change the result, depending on how hard and at which layer? And do the persona "
+                       "vectors do more than a random push of the same size at the same layer?",
+                       "Every random-direction setting (at each persona's own layer and at fixed layers). x: the push, "
+                       "c times the vector's norm at that layer (signed: −c is the opposite direction). y: the steered "
+                       "agent's paired reward (SD units of the game) and its unparseable turns above the game's "
+                       "unsteered rate. Slopes per layer pooled over games (game fixed effects, SE clustered by "
+                       "episode). Table: the persona vectors' reward slope per unit push next to the random one at the "
+                       "same layer ('differs' at p &lt; .01).",
+                       "A flat line = pushing at that layer does nothing by itself; a slope = any push changes the "
+                       "result, so a persona vector there has to beat that line, not zero. Norms grow with depth, so "
+                       "the same c is a bigger push at later layers.",
+                       findings, body)
+
+
 def settings_tables(cell, traits, own_all, co_all) -> str:
     """One game: reward slope per unit c (raw units, paired with the same seat unsteered) per setting × trait,
     for the steered agents and for the unsteered co-players. Prompt settings have only a sign (c = ±1)."""
@@ -3734,7 +3869,7 @@ def monitor_how(n_mon, layers) -> str:
             "trait alone (sections 3, 17), and answer length and style leak into it (section 20).")
 
 
-def build(rows, sweep=None, logs_dir=None) -> str:
+def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
     rows = zscored(rows)
     traits = sorted({r["trait"] for r in rows if r["trait"]})
     cells = sorted({r["cell"] for r in rows})
@@ -4328,7 +4463,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
                  naming_section(rows, traits), prompt_vector_section(rows, traits, base, scale), length_section(rows, traits),
                  group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale),
-                 modality_channel_section(rows, traits, base, scale, steered)):
+                 modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms)):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -4353,7 +4488,7 @@ def build(rows, sweep=None, logs_dir=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
@@ -4365,6 +4500,7 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--sweep", help="the sweep file (model, generation settings) for the setup section")
     p.add_argument("--model", help="the model key the sweep was run with (make_configs --model), if not its own")
+    p.add_argument("--norms", help="scripts/vector_norms.py's output (default: vector_norms.json next to the CSV)")
     p.add_argument("--logs", nargs="+", help="the sweep's log dir(s) (<logging_dir>/<name>, and its fallback): adds "
                    "matched example answers")
     args = p.parse_args(argv)
@@ -4377,7 +4513,9 @@ def main(argv=None) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from scripts.make_configs import load_sweep
     sweep = load_sweep(args.sweep, args.model) if args.sweep else None
-    Path(args.out).write_text(build(rows, sweep, args.logs), encoding="utf-8")
+    norms_path = Path(args.norms or Path(args.agents_csv).with_name("vector_norms.json"))
+    norms = json.loads(norms_path.read_text(encoding="utf-8")) if norms_path.exists() else None
+    Path(args.out).write_text(build(rows, sweep, args.logs, norms), encoding="utf-8")
     print(f"report over {len(rows)} agent-episodes -> {args.out}")
     return 0
 

@@ -227,3 +227,30 @@ def test_unparseable_cases_against_each_games_base_rate():
     assert u["cases"][(("g", "text"), "one", 2.0)][0] == 3.0
     page = unparseable_tables(rows)
     assert "1 of 2" in page and "no unsteered episodes yet" in page
+
+
+def test_push_section_one_line_per_layer_and_persona_vs_random():
+    from scripts.report import push_section, push_size
+
+    def row(cond, ep, coef, trait, layer, reward, random=False, steered=True, fallbacks=0):
+        return {"cell": ("g", "text"), "group": "g", "obs": "text", "episode": ep, "agent": "a", "condition": cond,
+                "coef": coef, "trait": trait, "steer_layer": layer, "random": random, "via": "vector",
+                "steered": steered, "reward": reward, "fallbacks": fallbacks, "turns": 10, "cluster": (cond, ep)}
+    norms = {"norms": {"evil": {"16": 2.0, "32": 5.0}}, "random": {}}
+    assert push_size(row("all_random_L32", 0, -1.0, "evil", 32, 0, random=True), norms) == -5.0
+    rows = []
+    for ep in range(30):
+        rows.append(row("none", ep, None, None, None, 1.0, steered=False))
+        for c in (-2.0, -1.0, 1.0, 2.0):
+            # any push at L32 pays (+0.1 per unit push), at L16 nothing; the persona vector at L32 pays twice that
+            rows.append(row("all_random_L32", ep, c, "evil", 32, 1.0 + 0.1 * 5 * c + (ep % 3 - 1) * .01, random=True))
+            rows.append(row("all_random_L16", ep, c, "evil", 16, 1.0 + (ep % 3 - 1) * .01, random=True))
+            rows.append(row("all", ep, c, "evil", 32, 1.0 + 0.2 * 5 * c + (ep % 3 - 1) * .01))
+    base = {("g", "text", r["episode"], "a"): r["reward"] for r in rows if r["condition"] == "none"}
+    scale = {("g", "text"): 1.0}
+    _, page = push_section(rows, base, scale, norms)
+    assert "L16" in page and "L32" in page and "per unit push" in page
+    assert "Random direction at L32: reward +0.1 " in page and "Random direction at L16: reward +0 " in page
+    assert "evil +0.2" in page and "differs" in page
+    _, page = push_section(rows, base, scale, None)  # no norms: per unit c
+    assert "per unit c" in page and "vector norms not found" in page
