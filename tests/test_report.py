@@ -254,5 +254,19 @@ def test_push_section_one_line_per_layer_and_persona_vs_random():
     assert "evil +0.2" in page and "differs" in page
     assert "Per game: random-direction slopes" in page and "<details><summary>" in page
     assert "Games where a random push at L32 moves reward" in page
+    # broken answers -> gain: a random push that pays +0.02 SD per point of unparseable turns, persona vectors not
+    rows = []
+    for ep in range(40):
+        rows.append(row("none", ep, None, None, None, 1.0, steered=False))
+        for c in (-2.0, -1.0, 1.0, 2.0):
+            f = ep % 2 + int(abs(c))  # 1-3 of 10 turns: 10-30 points above the unsteered 0%
+            rows.append(row("all_random_L32", ep, c, "evil", 32, 1.0 + 0.02 * 10 * f + (ep % 3 - 1) * .01,
+                            random=True, fallbacks=f))
+            rows.append(row("all", ep, c, "evil", 32, 1.0 + 0.1 * c + (ep % 3 - 1) * .01, fallbacks=f))
+    base = {("g", "text", r["episode"], "a"): r["reward"] for r in rows if r["condition"] == "none"}
+    _, page = push_section(rows, base, scale, norms)
+    assert "Broken answers vs gain" in page
+    assert "Random directions, all games: +0.02 SD of reward per +1 point of unparseable turns" in page
+    assert "with its unparseable turns (p &lt; .01): g" in page
     _, page = push_section(rows, base, scale, None)  # no norms: per unit c
     assert "per unit c" in page and "vector norms not found" in page

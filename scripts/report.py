@@ -1186,12 +1186,12 @@ def push_chart(series, fits, xlabel, ylabel, colours, width=330, height=240):
     parts.append(f'<text transform="translate(10,{(T + height - B) / 2:.0f}) rotate(-90)" text-anchor="middle">'
                  f'{html.escape(ylabel)}</text>')
     for name, fit in fits.items():
-        s = [p[0] for p in series.get(name, [])]
+        s = [p[0] for p in series.get(name, [])] or xs  # a line of its own (no dots): over every dot
         if fit and s and all(map(math.isfinite, fit)):
             a, b = fit
             parts.append(f'<line x1="{sx(min(s)):.1f}" y1="{sy(a + b * min(s)):.1f}" x2="{sx(max(s)):.1f}" '
                          f'y2="{sy(a + b * max(s)):.1f}" stroke="{colours[name]}" stroke-width="1.4" '
-                         f'stroke-dasharray="5 3"><title>{html.escape(name)}: {b:+.3g} per unit push</title></line>')
+                         f'stroke-dasharray="5 3"><title>{html.escape(name)}: slope {b:+.3g}</title></line>')
     for name, s in series.items():
         for x, m, h, lab in s:
             if not math.isfinite(m):
@@ -1296,11 +1296,71 @@ def push_section(rows, base, scale, norms):
     for l in layers:
         findings.append(f"Games where a random push at L{l} moves reward (p &lt; .01): "
                         f"{html.escape(', '.join(moved[l])) if l in moved else 'none'}.")
+    # broken answers -> gain: does a random push pay only through the fallback move of unparseable turns?
+    pz_ylabel, pz_xlabel = measures["reward"][0], "unparseable turns, points above the game's unsteered rate"
+    pz_colours = {**colours, "persona vectors": "#888888", "line through the random dots": "currentColor"}
+
+    def parse_gain(rnd, vec):
+        """chart (random dots per layer × trait norm × c, persona dots grey, one line through the random dots) and
+        the agent-level slopes: reward (SD) per +1 point of unparseable turns, within game"""
+        y, x = measures["reward"][1], measures["parse"][1]
+        out = {}
+        for name, rs in (("random", rnd), ("persona", vec)):
+            rs = [r for r in rs if x(r) is not None]
+            out[name] = slope([x(r) for r in rs], [y(r) for r in rs], [r["cluster"] for r in rs],
+                              [r["cell"] for r in rs]) if rs else None
+        series = {}
+        for key, rs in [(f"L{l}", [r for r in rnd if int(r["steer_layer"]) == l]) for l in layers] +                 [("persona vectors", vec)]:
+            pts = []
+            for (t, c), g in sorted(_by([r for r in rs if x(r) is not None], lambda r: (r["trait"], r["coef"])).items()):
+                mean, half, _ = mean_ci([y(r) for r in g], [r["cluster"] for r in g])
+                pts.append((float(np.mean([x(r) for r in g])), mean, half, f"{t}, c = {c:+g}"))
+            if pts:
+                series[key] = pts
+        dots = [p for k, v in series.items() if k != "persona vectors" for p in v if math.isfinite(p[1])]
+        fit = _line_fit([p[0] for p in dots], [p[1] for p in dots]) if len(dots) > 2 else None
+        r2 = float(np.corrcoef([p[0] for p in dots], [p[1] for p in dots])[0, 1] ** 2) if len(dots) > 2 and             np.std([p[0] for p in dots]) > 0 and np.std([p[1] for p in dots]) > 0 else float("nan")
+        chart = push_chart(series, {"line through the random dots": fit}, pz_xlabel, pz_ylabel, pz_colours)
+        return out, r2, chart
+
+    pz_all, pz_r2, pz_chart = parse_gain(rnd, vec)
+    pz_head = ("<tr><th class=l>game</th><th>random: reward per +1 point unparseable</th><th>R² over the random "
+               "settings</th><th>persona vectors (every agent): reward per +1 point unparseable</th></tr>")
+    r2s = lambda v: f"{v:.2f}" if math.isfinite(v) else "–"
+    pz_rows = [f"<tr><td class=l><b>all games</b></td><td>{num(pz_all['random'])}</td><td>{r2s(pz_r2)}</td>"
+               f"<td>{num(pz_all['persona'])}</td></tr>"]
+    pz_details, pz_tied = [], []
+    for cell in cells:
+        o, r2, ch = parse_gain([r for r in rnd if r["cell"] == cell], [r for r in vec if r["cell"] == cell])
+        pz_rows.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td><td>{num(o['random'])}</td>"
+                       f"<td>{r2s(r2)}</td><td>{num(o['persona'])}</td></tr>")
+        pz_details.append(f"<details><summary>{html.escape(cell_name(cell))}: unparseable turns vs reward</summary>"
+                          f"<div class=charts><div>{ch}</div></div></details>")
+        f = o["random"]
+        if f and math.isfinite(f["b"]) and f["p"] < .01:
+            pz_tied.append(f"{cell_name(cell)} ({f['b']:+.3g} SD per point, R² {r2s(r2)})")
+    f = pz_all["random"]
+    if f and math.isfinite(f["b"]):
+        findings.append(f"Random directions, all games: {f['b']:+.3g} SD of reward per +1 point of unparseable turns "
+                        f"({pv(f['p'])}, within game); the settings' unparseable rate explains R² = {r2s(pz_r2)} of "
+                        f"their mean reward change.")
+    findings.append("Games where a random push's reward goes with its unparseable turns (p &lt; .01): "
+                    f"{html.escape('; '.join(pz_tied)) or 'none'}.")
+    pz_legend = "".join(f"<span><i style='background:{c}'></i>{'random direction at ' + n if n in colours else n}</span>"
+                        for n, c in pz_colours.items() if n != "line through the random dots")
+    parse_gain_html = (f"<h4>Broken answers vs gain: random directions' reward against their unparseable turns</h4>"
+                       f"<p class=muted>Each dot is one setting (layer × trait norm × c): x its unparseable turns above "
+                       f"the game's unsteered rate, y the steered agent's reward change (SD). A rising line = a random "
+                       f"push gains because its broken answers get the game's fallback move. Persona vectors (grey) "
+                       f"above or below the random line do something besides breaking answers.</p>"
+                       f"<div class=legend>{pz_legend}<span>dashed: straight line through the random dots</span></div>"
+                       f"<div class=charts><div>{pz_chart}</div></div>"
+                       f"<div class=wrap><table>{pz_head}{''.join(pz_rows)}</table></div>{''.join(pz_details)}")
     per_game = (f"<h4>Per game: random-direction slopes {unit}</h4><div class=wrap><table>{g_head}{''.join(g_rows)}"
                 f"</table></div>{''.join(g_details)}")
     body = (f"<div class=legend>{legend}<span>dots: mean per persona-norm × c, bars: 95% CI; dashed: straight line "
             f"through the dots</span></div>{charts}"
-            f"<div class=wrap><table>{head}{trs}</table></div>" + per_game
+            f"<div class=wrap><table>{head}{trs}</table></div>" + per_game + parse_gain_html
             + games_note(cells, "Games in these charts"))
     return [], section(26, "Random directions: does the size of the push matter, per layer?",
                        "A random direction of a persona vector's size is the control: how much does pushing the hidden "
@@ -1312,7 +1372,8 @@ def push_section(rows, base, scale, norms):
                        "unsteered rate. Slopes per layer pooled over games (game fixed effects, SE clustered by "
                        "episode). Table: the persona vectors' reward slope per unit push next to the random one at the "
                        "same layer ('differs' at p &lt; .01). Then the same per game (each game's own slopes, "
-                       "charts and table).",
+                       "charts and table). Last: the random settings' reward against their unparseable turns "
+                       "(agent-level slope within game, R² over the settings' means), per game.",
                        "A flat line = pushing at that layer does nothing by itself; a slope = any push changes the "
                        "result, so a persona vector there has to beat that line, not zero. Norms grow with depth, so "
                        "the same c is a bigger push at later layers.",
