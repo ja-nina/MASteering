@@ -15,6 +15,12 @@ engine:
   steer:   {gpus: "0", memory: 0.85}   # steering engine on the job's first GPU,
   monitor: {gpus: "1", memory: 0.75}   # capture (monitor) engine on the second: --gres=gpu:2; vLLM-Hook
                                        # puts its 8 GiB capture buffer (env.sh) in the GPU memory left over
+# per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
+models:
+  # 2B (2026-10-27): both engines share one GPU (memory split; the capture buffer goes in what is left), so a task
+  # needs --gres=gpu:1; everything else as the sweep's own model (9B), for a like-for-like comparison.
+  qwen3.5-2b:
+    engine: {steer: {gpus: "0", memory: 0.4}, monitor: {gpus: "0", memory: 0.3}}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
