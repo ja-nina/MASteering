@@ -252,5 +252,7 @@ def test_push_section_one_line_per_layer_and_persona_vs_random():
     assert "L16" in page and "L32" in page and "per unit push" in page
     assert "Random direction at L32: reward +0.1 " in page and "Random direction at L16: reward +0 " in page
     assert "evil +0.2" in page and "differs" in page
+    assert "Per game: random-direction slopes" in page and "<details><summary>" in page
+    assert "Games where a random push at L32 moves reward" in page
     _, page = push_section(rows, base, scale, None)  # no norms: per unit c
     assert "per unit c" in page and "vector norms not found" in page

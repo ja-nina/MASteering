@@ -1230,45 +1230,78 @@ def push_section(rows, base, scale, norms):
                 "parse": ("unparseable turns, points above the game's unsteered rate",
                           lambda r: 100 * r["fallbacks"] / r["turns"] - base_rate[r["cell"]]
                           if r["turns"] and r["cell"] in base_rate else None)}
-    fits, charts = {}, []
-    for m, (ylabel, y) in measures.items():
-        series, lines = {}, {}
+    num = lambda f: (f"{f['b']:+.3g}<span class=sig>{stars(f['p'])}</span>" if f and math.isfinite(f.get("b", float("nan")))
+                     else "–")
+
+    def block(rnd, vec):
+        """charts (one line per layer) + the table rows (random vs the persona vectors at each layer) of one subset"""
+        fits, charts = {}, []
+        for m, (ylabel, y) in measures.items():
+            series, lines = {}, {}
+            for l in layers:
+                rs = [r for r in rnd if int(r["steer_layer"]) == l and y(r) is not None]
+                if not rs:
+                    fits[(m, l)] = None
+                    continue
+                pts = []
+                for (t, c), g in sorted(_by(rs, lambda r: (r["trait"], r["coef"])).items()):
+                    mean, half, _ = mean_ci([y(r) for r in g], [r["cluster"] for r in g])
+                    pts.append((float(np.mean([r["x"] for r in g])), mean, half, f"norm of {t}, c = {c:+g}"))
+                series[f"L{l}"] = pts
+                fits[(m, l)] = slope([r["x"] for r in rs], [y(r) for r in rs], [r["cluster"] for r in rs],
+                                     [r["cell"] for r in rs])
+                lines[f"L{l}"] = _line_fit([p[0] for p in pts], [p[1] for p in pts])
+            charts.append(f"<div><h4>{html.escape(ylabel)}</h4>{push_chart(series, lines, xlabel, ylabel, colours)}</div>")
+        trs = []
         for l in layers:
-            rs = [r for r in rnd if int(r["steer_layer"]) == l and y(r) is not None]
-            pts = []
-            for (t, c), g in sorted(_by(rs, lambda r: (r["trait"], r["coef"])).items()):
-                mean, half, _ = mean_ci([y(r) for r in g], [r["cluster"] for r in g])
-                pts.append((float(np.mean([r["x"] for r in g])), mean, half, f"norm of {t}, c = {c:+g}"))
-            series[f"L{l}"] = pts
-            fits[(m, l)] = slope([r["x"] for r in rs], [y(r) for r in rs], [r["cluster"] for r in rs],
-                                 [r["cell"] for r in rs])
-            lines[f"L{l}"] = _line_fit([p[0] for p in pts], [p[1] for p in pts])
-        charts.append(f"<div><h4>{html.escape(ylabel)}</h4>{push_chart(series, lines, xlabel, ylabel, colours)}</div>")
+            rf, pf = fits[("reward", l)], fits[("parse", l)]
+            per_t = []
+            for t, g in sorted(_by([r for r in vec if int(r["steer_layer"]) == l], lambda r: r["trait"]).items()):
+                s = slope([r["x"] for r in g], [r["diff"] / scale.get(r["cell"], 1.0) for r in g],
+                          [r["cluster"] for r in g], [r["cell"] for r in g])
+                d = _diff_test(rf, s) if rf else {"p": float("nan")}
+                per_t.append(f"{html.escape(t)} {num(s)} (vs random: {'differs' if d['p'] < .01 else 'same' if d['p'] == d['p'] else '?'})")
+            trs.append(f"<tr><td class=l>L{l}</td><td>{num(rf)}</td><td>{num(pf)}</td>"
+                       f"<td class=l>{'; '.join(per_t) or '–'}</td></tr>")
+        return fits, f"<div class=charts>{''.join(charts)}</div>", "".join(trs)
+
     legend = "".join(f"<span><i style='background:{c}'></i>random direction at {n}</span>" for n, c in colours.items())
     # the persona vectors (every agent steered) per unit push, beside the random direction at the same layer
     head = (f"<tr><th class=l>layer</th><th>random: reward {unit}</th><th>random: unparseable points {unit}</th>"
             f"<th class=l>persona vectors at this layer (every agent): reward {unit}</th></tr>")
-    num = lambda f: (f"{f['b']:+.3g}<span class=sig>{stars(f['p'])}</span>" if f and math.isfinite(f.get("b", float("nan")))
-                     else "–")
-    trs, findings = [], []
+    fits, charts, trs = block(rnd, vec)
+    findings = []
+    pv = lambda q: "p &lt; .001" if q < .001 else f"p = {q:.2g}"
     for l in layers:
         rf, pf = fits[("reward", l)], fits[("parse", l)]
-        per_t = []
-        for t, g in sorted(_by([r for r in vec if int(r["steer_layer"]) == l], lambda r: r["trait"]).items()):
-            s = slope([r["x"] for r in g], [r["diff"] / scale.get(r["cell"], 1.0) for r in g],
-                      [r["cluster"] for r in g], [r["cell"] for r in g])
-            d = _diff_test(rf, s)
-            per_t.append(f"{html.escape(t)} {num(s)} (vs random: {'differs' if d['p'] < .01 else 'same' if d['p'] == d['p'] else '?'})")
-        trs.append(f"<tr><td class=l>L{l}</td><td>{num(rf)}</td><td>{num(pf)}</td>"
-                   f"<td class=l>{'; '.join(per_t) or '–'}</td></tr>")
-        if math.isfinite(rf["b"]):
-            pv = lambda q: "p &lt; .001" if q < .001 else f"p = {q:.2g}"
+        if rf and math.isfinite(rf["b"]):
             findings.append(f"Random direction at L{l}: reward {rf['b']:+.3g} {unit} ({pv(rf['p'])}), unparseable "
                             f"{pf['b']:+.3g} points {unit} ({pv(pf['p'])}).")
+    # per game: the random slopes side by side, then each game's own charts and table
+    cells = sorted({r["cell"] for r in rnd})
+    g_head = ("<tr><th class=l>game</th>" + "".join(f"<th>L{l}: reward</th><th>L{l}: unparseable</th>" for l in layers)
+              + "</tr>")
+    g_rows, g_details, moved = [], [], {}
+    for cell in cells:
+        f, ch, tr = block([r for r in rnd if r["cell"] == cell], [r for r in vec if r["cell"] == cell])
+        g_rows.append(f"<tr><td class=l>{html.escape(cell_name(cell))}</td>"
+                      + "".join(f"<td>{num(f[('reward', l)])}</td><td>{num(f[('parse', l)])}</td>" for l in layers)
+                      + "</tr>")
+        g_details.append(f"<details><summary>{html.escape(cell_name(cell))}</summary>{ch}"
+                         f"<div class=wrap><table>{head}{tr}</table></div></details>")
+        for l in layers:
+            rf = f[("reward", l)]
+            if rf and math.isfinite(rf["b"]) and rf["p"] < .01:
+                moved.setdefault(l, []).append(f"{cell_name(cell)} ({rf['b']:+.3g})")
+    for l in layers:
+        findings.append(f"Games where a random push at L{l} moves reward (p &lt; .01): "
+                        f"{html.escape(', '.join(moved[l])) if l in moved else 'none'}.")
+    per_game = (f"<h4>Per game: random-direction slopes {unit}</h4><div class=wrap><table>{g_head}{''.join(g_rows)}"
+                f"</table></div>{''.join(g_details)}")
     body = (f"<div class=legend>{legend}<span>dots: mean per persona-norm × c, bars: 95% CI; dashed: straight line "
-            f"through the dots</span></div><div class=charts>{''.join(charts)}</div>"
-            f"<div class=wrap><table>{head}{''.join(trs)}</table></div>"
-            + games_note(sorted({r["cell"] for r in rnd}), "Games in these charts"))
+            f"through the dots</span></div>{charts}"
+            f"<div class=wrap><table>{head}{trs}</table></div>" + per_game
+            + games_note(cells, "Games in these charts"))
     return [], section(26, "Random directions: does the size of the push matter, per layer?",
                        "A random direction of a persona vector's size is the control: how much does pushing the hidden "
                        "state at all change the result, depending on how hard and at which layer? And do the persona "
@@ -1278,7 +1311,8 @@ def push_section(rows, base, scale, norms):
                        "agent's paired reward (SD units of the game) and its unparseable turns above the game's "
                        "unsteered rate. Slopes per layer pooled over games (game fixed effects, SE clustered by "
                        "episode). Table: the persona vectors' reward slope per unit push next to the random one at the "
-                       "same layer ('differs' at p &lt; .01).",
+                       "same layer ('differs' at p &lt; .01). Then the same per game (each game's own slopes, "
+                       "charts and table).",
                        "A flat line = pushing at that layer does nothing by itself; a slope = any push changes the "
                        "result, so a persona vector there has to beat that line, not zero. Norms grow with depth, so "
                        "the same c is a bigger push at later layers.",
