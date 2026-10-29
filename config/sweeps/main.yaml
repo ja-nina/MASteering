@@ -21,8 +21,12 @@ models:
   # needs --gres=gpu:1; everything else as the sweep's own model (9B), for a like-for-like comparison.
   # concurrent_episodes 128 (2026-10-27): the small model left the GPU idle between turns at 64; only which episodes
   # share a batch changes (seeds and settings stay), as between any two tasks.
+  # A40 (2026-10-29): at monitor 0.3 of 44 GiB, weights + the 8 GiB capture buffer (vLLM counts it as used) left no
+  # KV cache ("No available memory for the cache blocks"): monitor 0.4, steer 0.35, a 4 GiB buffer (a 2B row is
+  # 24 x 2048, so it still holds more rows than 8 GiB does for 9B); only memory and batch sizes, not the results.
   qwen3.5-2b:
-    engine: {concurrent_episodes: 128, steer: {gpus: "0", memory: 0.4}, monitor: {gpus: "0", memory: 0.3}}
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
