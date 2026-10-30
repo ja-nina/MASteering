@@ -4,6 +4,7 @@
     python scripts/progress.py --configs config/runs/main # + episodes finished on disk, of each game's total
     python scripts/progress.py 51880001 --tasks           # one array job, one line per task
     python scripts/progress.py --errors                   # what failed, grouped by error
+    python scripts/progress.py --configs config/runs/main --disk  # on disk only, no slurm-logs (fast)
 
 Per task: the episodes it was given (its `... episode(s) to play in shard` line), how many are
 done / failed, and how long ago it last logged (a long silence = stuck or dead). A resubmitted task
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 TO_PLAY = re.compile(r"\] \d+ run\(s\), (\d+) episode\(s\) to play in shard \d+/\d+(?: of (\S+))?")
@@ -163,12 +165,13 @@ def main(argv=None) -> int:
     p.add_argument("--tasks", action="store_true", help="also print every task")
     p.add_argument("--errors", action="store_true", help="group the failures by error instead")
     p.add_argument("--sweep", default="main", help="sweep name, for the relaunch commands' config dirs")
+    p.add_argument("--disk", action="store_true", help="with --configs: only the episodes on disk, skip slurm-logs")
     args = p.parse_args(argv)
     if args.errors:
         errors(sorted(Path(args.logs).glob(f"games-{args.job}*.out")), args.sweep)
         return 0
 
-    tasks = [task_progress(f) for f in sorted(Path(args.logs).glob(f"games-{args.job}*.out"))]
+    tasks = [] if args.disk and args.configs else         [task_progress(f) for f in sorted(Path(args.logs).glob(f"games-{args.job}*.out"))]
     totals = config_totals(Path(args.configs)) if args.configs else {}
     if not tasks and not totals:
         print(f"no {args.logs}/games-{args.job}*.out")
@@ -190,7 +193,8 @@ def main(argv=None) -> int:
         g["failed"] += t["failed"]
         g["idle"] = min(g["idle"], t["idle_min"])
     if totals:
-        on_disk = {name: disk_done(Path(args.configs) / name) for name in totals}
+        with ThreadPoolExecutor(16) as pool:  # network file system: the groups' directory listings overlap
+            on_disk = dict(zip(totals, pool.map(lambda n: disk_done(Path(args.configs) / n), totals)))
         print(f"{'game group':<26} {'on disk':>8} {'of':>7}   {'progress (finished episodes)':<28}   "
               f"current tasks: started/logs, done, failed")
         for name in sorted(totals):
