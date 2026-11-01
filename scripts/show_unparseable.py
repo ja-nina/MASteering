@@ -65,19 +65,22 @@ def main(argv=None) -> None:
                     continue
                 if "parse_ok" not in rec:
                     continue  # the summary line
-                c = counts.setdefault(rec.get("run_id", f.parent.name), [0, 0, 0])
+                c = counts.setdefault(rec.get("run_id", f.parent.name), [0, 0, 0, 0])
                 c[1] += 1
                 if failed(rec):
                     c[0] += 1
                     c[2] += rec.get("finish_reason") == "length"
+                    c[3] += rec.get("finish_reason") == "prompt_too_long"
                     if not a.count and len(hits) < a.n:
                         hits.append((f, rec))
         if not a.count and len(hits) >= a.n:
             break
     if a.count:
-        print("unparse%   bad/turns   cut off%  run      (cut off = the last attempt hit the token limit)")
-        for run, (bad, tot, cut) in sorted(counts.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
-            print(f"{100 * bad / tot:6.1f}%  {bad:5d}/{tot:<6d} {100 * cut / bad if bad else 0:6.0f}%   {run}")
+        print("unparse%   bad/turns   cut off%  too long%  run   (of the unparseable turns: cut off = answer hit the "
+              "token limit; too long = the prompt alone filled the context, nothing was generated)")
+        for run, (bad, tot, cut, long_) in sorted(counts.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
+            pct = (lambda k: 100 * k / bad if bad else 0)
+            print(f"{100 * bad / tot:6.1f}%  {bad:5d}/{tot:<6d} {pct(cut):6.0f}%   {pct(long_):6.0f}%    {run}")
         return
     if not hits:
         print(f"no unparseable turns in {len(files)} files")
