@@ -6,7 +6,7 @@ the run (game, steering, observation), the agent, every attempt's answer and the
     python scripts/show_unparseable.py logs/smoke                       # 5 random examples
     python scripts/show_unparseable.py <log_root>/gbs_3p -n 10 --match obs-image
     python scripts/show_unparseable.py <log_root> --match sycophantic_x-2 --chars 1500
-    python scripts/show_unparseable.py <log_root> --count               # unparseable / turns per run, no examples
+    python scripts/show_unparseable.py <log_root> --count               # unparseable / turns per run, share cut off
 """
 from __future__ import annotations
 
@@ -65,17 +65,19 @@ def main(argv=None) -> None:
                     continue
                 if "parse_ok" not in rec:
                     continue  # the summary line
-                c = counts.setdefault(rec.get("run_id", f.parent.name), [0, 0])
+                c = counts.setdefault(rec.get("run_id", f.parent.name), [0, 0, 0])
                 c[1] += 1
                 if failed(rec):
                     c[0] += 1
+                    c[2] += rec.get("finish_reason") == "length"
                     if not a.count and len(hits) < a.n:
                         hits.append((f, rec))
         if not a.count and len(hits) >= a.n:
             break
     if a.count:
-        for run, (bad, tot) in sorted(counts.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
-            print(f"{100 * bad / tot:5.1f}%  {bad:5d}/{tot:<6d} {run}")
+        print("unparse%   bad/turns   cut off%  run      (cut off = the last attempt hit the token limit)")
+        for run, (bad, tot, cut) in sorted(counts.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
+            print(f"{100 * bad / tot:6.1f}%  {bad:5d}/{tot:<6d} {100 * cut / bad if bad else 0:6.0f}%   {run}")
         return
     if not hits:
         print(f"no unparseable turns in {len(files)} files")
