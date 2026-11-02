@@ -71,9 +71,31 @@ def read_csv(path):
             yield from csv.DictReader(f)
 
 
-def load(path) -> list:
+EXCLUDED_FILE = Path(__file__).resolve().parents[1] / "config" / "excluded_games.yaml"
+
+
+def excluded_groups() -> dict:
+    """{game group: reason} from config/excluded_games.yaml (games left out of every report)."""
+    if not EXCLUDED_FILE.exists():
+        return {}
+    import yaml
+    spec = yaml.safe_load(EXCLUDED_FILE.read_text(encoding="utf-8")) or {}
+    return {g: reason for reason, groups in spec.items() for g in groups or []}
+
+
+EXCLUDED_NOTE = []  # filled by load(): which groups were left out, for the page
+
+
+def load(path, exclude: bool = True) -> list:
+    """The agent rows of `path`; with `exclude`, without the groups in config/excluded_games.yaml."""
     rows = []
+    skip = excluded_groups() if exclude else {}
+    dropped = defaultdict(int)
     for r in read_csv(path):
+        group = r.get("group") or r["run_id"].split("__")[0]
+        if group in skip:
+            dropped[group] += 1
+            continue
         num = lambda k: float(r[k]) if r.get(k) not in (None, "") else None
         row = {
             "run_id": r["run_id"], "group": r.get("group") or r["run_id"].split("__")[0],
@@ -103,6 +125,11 @@ def load(path) -> list:
     for r in rows:
         r["cell"] = (r["group"], r["obs"])  # a game as played: group and observation mode
         r["cluster"] = (r["run_id"], r["episode"])
+    EXCLUDED_NOTE.clear()
+    if dropped:
+        EXCLUDED_NOTE.append("Left out (config/excluded_games.yaml): " + ", ".join(
+            f"{g} ({skip[g].replace('_', ' ')}, {n} agent-episodes)" for g, n in sorted(dropped.items())))
+        print(EXCLUDED_NOTE[0])
     return rows
 
 
@@ -4578,6 +4605,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
 
     head = (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
             f"initial-scale=1'><title>Steering report</title><style>{CSS}</style></head><body><h1>Steering report</h1>"
+            f"{''.join(f'<p class=muted><b>{html.escape(n)}</b></p>' for n in EXCLUDED_NOTE)}"
             f"<p class=muted>Persona-vector steering of LLM agents in multi-agent games: does it change what they say, "
             f"how they play, and what happens to the group?</p>"
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"

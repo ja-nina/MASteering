@@ -1,0 +1,59 @@
+# Rerun of the TextArena games whose whole answer was posted to every player (config/excluded_games.yaml):
+#   python scripts/make_configs.py config/sweeps/tafix.yaml [--model qwen3.5-2b]
+# Identical to main.yaml (settings, grid, conditions, run_ids, hence seeds) except env_kwargs answer_marker: ACTION
+# (the agents are told that only their final 'ACTION: ...' line reaches the game; testbed/parsers/textarena.py).
+# Own logs (<logging_dir>/tafix[_<model>]); these games come from this sweep only, never merged with main's.
+name: tafix
+model: qwen3.5-9b                    # PersVecFast model key; vectors from ${PVF_OUT}/persona/<model>/bf16
+episodes: 10                         # first pass (16.5k runs, several nights; shards keep it balanced); raise later
+max_tokens: 1024                     # per turn
+max_turns: 200                       # longer episodes stop there, marked truncated (catan, hanabi, ...)
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs   # ~100-250 GB at 10 episodes: too big for /BS/ForNet
+image_size: 448                      # longer side of image observations
+monitor: {layers: auto}              # PersVecFast's candidate layers, every trait
+engine:
+  concurrent_episodes: 64
+  max_model_len: 16384                 # as in the smoke test (the capture buffer holds 32768 rows)
+  max_images: 2                        # per prompt (Melting Pot with global_view sends two)
+  steer:   {gpus: "0", memory: 0.85}   # steering engine on the job's first GPU,
+  monitor: {gpus: "1", memory: 0.75}   # capture (monitor) engine on the second: --gres=gpu:2; vLLM-Hook
+                                       # puts its 8 GiB capture buffer (env.sh) in the GPU memory left over
+# per-model overrides (make_configs --model <key>); the sweep's own model is unaffected
+models:
+  # 2B (2026-10-27): both engines share one GPU (memory split; the capture buffer goes in what is left), so a task
+  # needs --gres=gpu:1; everything else as the sweep's own model (9B), for a like-for-like comparison.
+  # concurrent_episodes 128 (2026-10-27): the small model left the GPU idle between turns at 64; only which episodes
+  # share a batch changes (seeds and settings stay), as between any two tasks.
+  # A40 (2026-10-29): at monitor 0.3 of 44 GiB, weights + the 8 GiB capture buffer (vLLM counts it as used) left no
+  # KV cache ("No available memory for the cache blocks"): monitor 0.4, steer 0.35, a 4 GiB buffer (a 2B row is
+  # 24 x 2048, so it still holds more rows than 8 GiB does for 9B); only memory and batch sizes, not the results.
+  qwen3.5-2b:
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
+coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
+
+conditions:                          # steering-group templates (testbed/steering.py); via: vector by default
+  none: null                         # unsteered baseline
+  one: {select: one}                 # one random agent per episode
+  half: {select: fraction, fraction: 0.5}
+  all: {select: all}
+  evil_team: {team: evil}            # every member of the deceiving side (role games)
+  evil_one: {team: evil, select: one}
+  good_one: {team: good, select: one}
+  all_random: {select: all, random_control: true}   # norm-matched random direction
+  # the same trait as a prompt persona: its PersVecFast instruction in the system prompt
+  prompt_one: {select: one, via: prompt}
+  prompt_all: {select: all, via: prompt}
+  both_one: {select: one, via: both}                # prompt + vector together
+  evil_team_prompt: {team: evil, via: prompt}
+
+games:
+  iterated_ipd:        {family: textarena, id: IteratedPrisonersDilemma-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  iterated_ultimatum:  {family: textarena, id: IteratedUltimatumGame-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  liars_dice:          {family: textarena, id: LiarsDice-v0, players: [3], env_kwargs: {answer_marker: ACTION}}
+  poker:               {family: textarena, id: Poker-v0, players: [4], env_kwargs: {answer_marker: ACTION}}
+  blind_auction:       {family: textarena, id: SimpleBlindAuction-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  settlers_of_catan:   {family: textarena, id: SettlersOfCatan-v0, players: [4], env_kwargs: {answer_marker: ACTION}}

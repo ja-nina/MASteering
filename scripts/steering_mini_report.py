@@ -652,7 +652,7 @@ def build(rows, logs=None) -> str:
     parts = [with_games(x) for x in parts]
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width, "
             f"initial-scale=1'><title>Steering mini report</title><style>{R.CSS}{CSS_EXTRA}</style></head><body>"
-            f"<h1>Steering mini report</h1>{intro}{warn}{toc}{''.join(parts)}</body></html>")
+            f"<h1>Steering mini report</h1>{''.join(f'<p class=muted><b>{html.escape(n)}</b></p>' for n in R.EXCLUDED_NOTE)}{intro}{warn}{toc}{''.join(parts)}</body></html>")
 
 
 def main(argv=None) -> int:

@@ -78,7 +78,10 @@ def build_game(*, family: str, game_id: str, num_players: int,
         return env, MeltingPotRenderer(), MeltingPotParser()
 
     if family == "textarena":
+        # answer_marker (e.g. ACTION): only the text after it reaches the game (else the whole answer, reasoning
+        # included, is the move and is posted to every player); not a TextArena argument
+        marker = env_kwargs.pop("answer_marker", None)
         env = TextArenaAdapter(env_id=game_id, num_players=num_players, **env_kwargs)
-        return env, TextArenaRenderer(), TextArenaParser()
+        return env, TextArenaRenderer(marker=marker), TextArenaParser(marker=marker)
 
     raise ValueError(f"Unknown game family: {family!r}")

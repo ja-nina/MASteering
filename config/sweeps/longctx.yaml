@@ -5,7 +5,10 @@
 # holds every prompt + completion row) is main.yaml's: same games settings, grid, conditions and run_ids, hence the
 # same seeds. Its own logs (<logging_dir>/longctx[_<model>]): these games are replaced WHOLE by this sweep in the
 # analysis (every condition, baseline included); nothing is merged with main's episodes of the same games.
-# DRAFT (2026-11-02): context size and game list to be set from the scan.
+# Games (scan of 2026-11-02, results/context_scan.csv; the leaking games are in tafix.yaml instead): market entry
+# (9B 62% of turns), codenames (9B 11%, 2B 15%), public goods (2B 7%). Mafia, taboo, GOPS and high society hit
+# the limit on <0.5% of turns and stay as they are. Context 65536: the longest prompt seen was 25,650 tokens, but
+# with empty answers in place of real ones; check with scripts/scan_context.py on the memory test.
 name: longctx
 model: qwen3.5-9b
 episodes: 10
@@ -47,6 +50,7 @@ conditions:                          # steering-group templates (testbed/steerin
   both_one: {select: one, via: both}                # prompt + vector together
   evil_team_prompt: {team: evil, via: prompt}
 
-games:   # only the games that hit the context limit (DRAFT: poker, codenames from the unsteered runs)
-  poker:               {family: textarena, id: Poker-v0, players: [4]}
+games:
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4]}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4]}
   codenames:           {family: textarena, id: Codenames-v0, players: [4]}
