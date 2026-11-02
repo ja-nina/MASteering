@@ -52,7 +52,7 @@ class Job:
 # The retry also gets the cut-off answer itself (only the latest one; it is private, like all reasoning before the
 # marker), so the agent can conclude from its own reasoning instead of starting over.
 CUTOFF_NOTE = ("Your previous answer was cut off at the {n}-token limit before you finished it. Here it is:\n"
-               "<<<\n{text}\n>>>\nNow provide your answer in the required format:")
+               "<<<\n{text}\n>>>\n{ask}")
 
 
 class EpisodeRun:
@@ -112,7 +112,10 @@ class EpisodeRun:
                 st["attempt"] += 1
                 feedback = parsed.feedback
                 if self.job.cutoff_feedback and res.finish_reason == "length":
-                    feedback = CUTOFF_NOTE.format(n=self.job.max_tokens, text=res.text.strip()) + " " + feedback
+                    marker = getattr(self.parser, "marker", None)  # answer-marker games: say the format directly
+                    ask = (f"Provide your answer in the format '{marker}: <what you send to the game>'." if marker
+                           else f"Provide your answer. {feedback}")
+                    feedback = CUTOFF_NOTE.format(n=self.job.max_tokens, text=res.text.strip(), ask=ask)
                 st["user"] = st["base_user"] + "\n\n" + feedback
         return final
 

@@ -180,3 +180,23 @@ def test_cutoff_feedback_only_when_enabled_and_cut_off(tmp_path, store):
         assert ("cut off at the 77-token limit" in retry.user) == expect
         assert ("<<<\nno idea\n>>>" in retry.user) == expect   # the cut-off answer itself goes back in
         assert "CHOICE: <number>" in retry.user
+
+
+def test_cutoff_feedback_names_the_marker_format(tmp_path, store):
+    # an answer-marker parser (TextArena's, which needs curses, is stood in for by giving one a marker)
+    cfg = _cfg(tmp_path, "bc_marker", "beauty_contest", 2, episodes=1, max_parse_retries=1,
+               max_tokens=55, cutoff_feedback=True, env_kwargs={"num_rounds": 1})
+    jobs = build_jobs([cfg], store)
+    for job in jobs:
+        make = job.make_env
+        def with_marker(make=make):
+            env, renderer, parser = make()
+            parser.marker = "ACTION"
+            return env, renderer, parser
+        job.make_env = with_marker
+    gen = FakeGenerator(respond=lambda r: "thinking it over" if r.key[3] == "player_0" else "CHOICE: 40",
+                        finish="length")
+    run_jobs(jobs, gen)
+    retry = next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == 1)
+    assert retry.user.endswith("<<<\nthinking it over\n>>>\n"
+                               "Provide your answer in the format 'ACTION: <what you send to the game>'.")
