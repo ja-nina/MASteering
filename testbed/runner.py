@@ -50,10 +50,11 @@ class Job:
 # cut off at max_tokens has no marker yet. The parser's feedback alone ('end with ACTION: ...') made the retry
 # reason at the same length and be cut off again (longctx test 2026-11-02: 9B codenames 41% of turns at 2048).
 # The retry also gets the cut-off answer itself (only the latest one; it is private, like all reasoning before the
-# marker), so the agent can conclude from its own reasoning instead of starting over.
-CUTOFF_NOTE = ("Your previous answer was cut off at the {n}-token limit before you finished it. Here it is:\n"
-               "<<<\n{text}\n>>>\n{ask}")
-
+# marker), so the agent can conclude from its own reasoning instead of starting over. It comes BEFORE the turn's
+# prompt, so the game's own instruction stays last: after it, 9B codenames spymasters answered a bare board word as
+# the clue ('ACTION: [debt 1]', an instant loss) on 7 of 47 retries after a cut-off, never on a first try (0/71).
+CUTOFF_NOTE = ("Your previous answer to the turn below was cut off at the {n}-token limit before you finished it. "
+               "Here it is:\n<<<\n{text}\n>>>")
 
 class EpisodeRun:
     def __init__(self, job: Job) -> None:
@@ -115,8 +116,10 @@ class EpisodeRun:
                     marker = getattr(self.parser, "marker", None)  # answer-marker games: say the format directly
                     ask = (f"Provide your answer in the format '{marker}: <what you send to the game>'." if marker
                            else f"Provide your answer. {feedback}")
-                    feedback = CUTOFF_NOTE.format(n=self.job.max_tokens, text=res.text.strip(), ask=ask)
-                st["user"] = st["base_user"] + "\n\n" + feedback
+                    note = CUTOFF_NOTE.format(n=self.job.max_tokens, text=res.text.strip())
+                    st["user"] = note + "\n\n" + st["base_user"] + "\n\n" + ask
+                else:
+                    st["user"] = st["base_user"] + "\n\n" + feedback
         return final
 
     def commit(self) -> None:

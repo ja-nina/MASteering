@@ -197,6 +197,8 @@ def test_cutoff_feedback_names_the_marker_format(tmp_path, store):
     gen = FakeGenerator(respond=lambda r: "thinking it over" if r.key[3] == "player_0" else "CHOICE: 40",
                         finish="length")
     run_jobs(jobs, gen)
-    retry = next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == 1)
-    assert retry.user.endswith("<<<\nthinking it over\n>>>\n"
+    first, retry = (next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == i) for i in (0, 1))
+    # the cut-off answer first, then the turn's whole prompt (its own instruction last), then the format
+    assert retry.user.startswith("Your previous answer to the turn below was cut off at the 55-token limit")
+    assert retry.user.endswith("<<<\nthinking it over\n>>>\n\n" + first.user + "\n\n"
                                "Provide your answer in the format 'ACTION: <what you send to the game>'.")
