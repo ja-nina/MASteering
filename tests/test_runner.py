@@ -178,4 +178,5 @@ def test_cutoff_feedback_only_when_enabled_and_cut_off(tmp_path, store):
         run_jobs(build_jobs([cfg], store), gen)
         retry = next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == 1)
         assert ("cut off at the 77-token limit" in retry.user) == expect
+        assert ("<<<\nno idea\n>>>" in retry.user) == expect   # the cut-off answer itself goes back in
         assert "CHOICE: <number>" in retry.user
