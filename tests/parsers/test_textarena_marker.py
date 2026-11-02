@@ -31,6 +31,13 @@ def test_bare_bracketed_move_needs_no_marker():
     assert isinstance(parse("I hold 7-7. [Call]"), ParseError)  # reasoning outside brackets: marker needed
 
 
+def test_public_goods_and_market_entry_formats():
+    assert parse("I will cooperate.\nACTION: {Let me propose we all contribute 15}").value == "{Let me propose we all contribute 15}"
+    assert parse("{I propose 15}").value == "{I propose 15}"          # only a braced message: no reasoning in it
+    assert parse("thinking\nACTION: I contribute [15] tokens").value == "I contribute [15] tokens"
+    assert parse("plan\nACTION: {Let us all\nstay out this round} [S]").value == "{Let us all stay out this round} [S]"
+
+
 def test_missing_or_empty_marker_is_retried():
     assert isinstance(parse("no marker here"), ParseError)
     assert isinstance(parse("ACTION:   "), ParseError)

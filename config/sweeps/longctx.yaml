@@ -2,7 +2,11 @@
 # generated, the parser fell back; scripts/scan_context.py, results/context_scan.csv): market entry (9B 62% of turns),
 # codenames (9B 11%, 2B 15%), public goods (2B 7%). The leaking TextArena games are in tafix.yaml.
 #   python scripts/make_configs.py config/sweeps/longctx.yaml [--model qwen3.5-2b]
-# Two changes from main.yaml, everything else (grid, conditions, run_ids, hence seeds) is the same:
+# Three changes from main.yaml, everything else (grid, conditions, run_ids, hence seeds) is the same:
+#  * answer_marker ACTION (as tafix.yaml): only the text after 'ACTION:' reaches the game. TextArena puts each
+#    player's own answer back into that player's prompt, so 9B prompts grew by ~500 tokens a turn with the whole
+#    answer (test 2026-11-02: market entry 15-24k, codenames sycophantic -2 29k tokens after 53 of up to 80 turns,
+#    on course past 32768). With the marker every TextArena game with private reasoning uses the same protocol.
 #  * skip_eliminated (public goods, market entry; test 2026-11-02): TextArena eliminates a player after repeated
 #    invalid moves but then asks the eliminated player again, forever (the rotation is skipped after an invalid
 #    move), so a steered game that broke the agents ran to max_turns with the prompt growing ~500 tokens a turn
@@ -52,6 +56,6 @@ conditions:                          # steering-group templates (testbed/steerin
   evil_team_prompt: {team: evil, via: prompt}
 
 games:
-  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4], env_kwargs: {skip_eliminated: true}}
-  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {skip_eliminated: true}}
-  codenames:           {family: textarena, id: Codenames-v0, players: [4]}
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
+  codenames:           {family: textarena, id: Codenames-v0, players: [4], env_kwargs: {answer_marker: ACTION}}
