@@ -52,8 +52,7 @@ class Job:
 # The retry also gets the cut-off answer itself (only the latest one; it is private, like all reasoning before the
 # marker), so the agent can conclude from its own reasoning instead of starting over.
 CUTOFF_NOTE = ("Your previous answer was cut off at the {n}-token limit before you finished it. Here it is:\n"
-               "<<<\n{text}\n>>>\n"
-               "Do not repeat that reasoning. Conclude from it in a few sentences and give your answer within the limit.")
+               "<<<\n{text}\n>>>")
 
 
 class EpisodeRun:
