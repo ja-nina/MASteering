@@ -1,0 +1,52 @@
+# Long-context rerun of the games whose prompts outgrew main's 16384-token context (finish_reason prompt_too_long:
+# nothing generated, the parser fell back; found by scripts/scan_context.py, results/context_scan.csv).
+#   python scripts/make_configs.py config/sweeps/longctx.yaml [--model qwen3.5-2b]
+# Everything except the context (max_model_len) and the capture buffer it needs (aperture_gib: the capture engine
+# holds every prompt + completion row) is main.yaml's: same games settings, grid, conditions and run_ids, hence the
+# same seeds. Its own logs (<logging_dir>/longctx[_<model>]): these games are replaced WHOLE by this sweep in the
+# analysis (every condition, baseline included); nothing is merged with main's episodes of the same games.
+# DRAFT (2026-11-02): context size and game list to be set from the scan.
+name: longctx
+model: qwen3.5-9b
+episodes: 10
+max_tokens: 1024
+max_turns: 200
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+image_size: 448
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 65536                 # main: 16384
+  aperture_gib: 16                     # 65536 rows x 32 layers x 8 KB (9B); main: 8 (env.sh default)
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.5}    # main 0.75: the larger buffer lives outside vLLM's share
+models:
+  # 2B as in main (one GPU for both engines), buffer for 65536 rows of 24 x 2048 x 2 bytes = 6 GiB
+  qwen3.5-2b:
+    episodes: 10
+    engine: {concurrent_episodes: 128, aperture_gib: 6,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.35}}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
+coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
+
+conditions:                          # steering-group templates (testbed/steering.py); via: vector by default
+  none: null                         # unsteered baseline
+  one: {select: one}                 # one random agent per episode
+  half: {select: fraction, fraction: 0.5}
+  all: {select: all}
+  evil_team: {team: evil}            # every member of the deceiving side (role games)
+  evil_one: {team: evil, select: one}
+  good_one: {team: good, select: one}
+  all_random: {select: all, random_control: true}   # norm-matched random direction
+  # the same trait as a prompt persona: its PersVecFast instruction in the system prompt
+  prompt_one: {select: one, via: prompt}
+  prompt_all: {select: all, via: prompt}
+  both_one: {select: one, via: both}                # prompt + vector together
+  evil_team_prompt: {team: evil, via: prompt}
+
+games:   # only the games that hit the context limit (DRAFT: poker, codenames from the unsteered runs)
+  poker:               {family: textarena, id: Poker-v0, players: [4]}
+  codenames:           {family: textarena, id: Codenames-v0, players: [4]}
