@@ -24,7 +24,8 @@ engine:
   aperture_gib: 16                     # 65536 rows x 32 layers x 8 KB (9B); main: 8 (env.sh default)
   max_images: 2
   steer:   {gpus: "0", memory: 0.85}
-  monitor: {gpus: "1", memory: 0.5}    # main 0.75: the larger buffer lives outside vLLM's share
+  monitor: {gpus: "1", memory: 0.9}    # main 0.75. vLLM counts the buffer in this share: 0.5 left -14 GiB of KV
+                                       # cache (weights 17.7 + buffer 16 + activations 2.5 GiB; test 2026-11-02)
 models:
   # 2B as in main (one GPU for both engines), buffer for 65536 rows of 24 x 2048 x 2 bytes = 6 GiB
   qwen3.5-2b:
