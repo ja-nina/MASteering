@@ -35,7 +35,7 @@ def check_episode(path: Path):
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            recs.append((str(r.get("agent_id")), norm(r.get("completion")),
+            recs.append((str(r.get("agent_id")) + (f" (turn {r.get('turn')})"), norm(r.get("completion")),
                          norm((r.get("system_prompt") or "") + " " + (r.get("user_prompt") or ""))))
     checked = leaked = whole = 0
     example = None
@@ -43,15 +43,20 @@ def check_episode(path: Path):
         if len(comp) < 160:
             continue
         snippet = comp[10:90]  # the start: reasoning comes first; and below the end (comp[-80:]): the move
-        others = [p for a, _, p in recs[i + 1:] if a != aid]
+        me = aid.split(" (")[0]
+        others = [(a, p) for a, _, p in recs[i + 1:] if a.split(" (")[0] != me]
         if not others:
             continue
         checked += 1
-        hit = [p for p in others if snippet in p]
+        hit = [(a, p) for a, p in others if snippet in p]
         if hit:
             leaked += 1
-            whole += any(comp[-80:] in p for p in hit)  # the end of the answer too: the whole answer was forwarded
-            example = example or (aid, comp[:300])
+            w = [(a, p) for a, p in hit if comp[-80:] in p]  # the end of the answer too: the whole answer was forwarded
+            whole += bool(w)
+            if example is None or (w and not example[3]):
+                a2, p2 = (w or hit)[0]
+                k = p2.find(snippet)
+                example = (aid, comp, f"{a2}'s prompt: ...{p2[max(0, k - 120):k + 200]}...", bool(w))
     return checked, leaked, whole, example
 
 
@@ -60,7 +65,8 @@ def main(argv=None) -> None:
     ap.add_argument("roots", nargs="+")
     ap.add_argument("--match", default="__none")
     ap.add_argument("--episodes", type=int, default=2, help="episodes per run")
-    ap.add_argument("-v", action="store_true", help="print one leaked snippet per game")
+    ap.add_argument("-v", action="store_true", help="per game, one answer and where it shows up in another prompt")
+    ap.add_argument("--chars", type=int, default=400, help="characters of the answer shown with -v")
     a = ap.parse_args(argv)
     runs = sorted({p.parent for r in a.roots for p in Path(r).rglob("episode_*.jsonl") if a.match in str(p.parent.name)})
     games = defaultdict(lambda: [0, 0, 0, None])
@@ -77,7 +83,8 @@ def main(argv=None) -> None:
     for game, (c, l, w, ex) in sorted(games.items(), key=lambda kv: -(kv[1][2] / kv[1][0] if kv[1][0] else 0)):
         print(f"{game:34s} {c:16d} {pct(l, c):>21s} {pct(w, c):>18s}")
         if a.v and ex:
-            print(f"    e.g. {ex[0]}: \"{ex[1]}\"")
+            print(f"    {ex[0]} answered ({len(ex[1])} chars): \"{ex[1][:a.chars]}{' ...' if len(ex[1]) > a.chars else ''}\"")
+            print(f"    -> {ex[2]}\n")
 
 
 if __name__ == "__main__":
