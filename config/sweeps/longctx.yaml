@@ -2,7 +2,7 @@
 # generated, the parser fell back; scripts/scan_context.py, results/context_scan.csv): market entry (9B 62% of turns),
 # codenames (9B 11%, 2B 15%), public goods (2B 7%). The leaking TextArena games are in tafix.yaml.
 #   python scripts/make_configs.py config/sweeps/longctx.yaml [--model qwen3.5-2b]
-# Four changes from main.yaml, everything else (grid, conditions, run_ids, hence seeds) is the same:
+# Five changes from main.yaml, everything else (grid, conditions, run_ids, hence seeds) is the same:
 #  * answer_marker ACTION (as tafix.yaml): only the text after 'ACTION:' reaches the game. TextArena puts each
 #    player's own answer back into that player's prompt, so 9B prompts grew by ~500 tokens a turn with the whole
 #    answer (test 2026-11-02: market entry 15-24k, codenames sycophantic -2 29k tokens after 53 of up to 80 turns,
@@ -19,6 +19,9 @@
 #    writing it (test 2026-11-02: codenames unsteered 18 of 26 turns cut off in the middle of real reasoning, a
 #    spymaster weighing clues over the 25 words; every retry cut off again, fallback move; public goods / market entry
 #    sycophantic -2 8% / 4%). With the marker prompts stay short (9B <= 2.2k tokens), so 32768 holds 2048 easily.
+#  * cutoff_feedback (testbed/runner.py): the retry of an answer cut off at max_tokens is told so and to reason
+#    briefly. At 2048 alone 9B codenames unsteered was still cut off on 41% of turns (test 2026-11-02, sycophantic -2
+#    2%): the retry got only 'end with ACTION:', reasoned as long and was cut off again. Only retries change.
 # Its own logs (<logging_dir>/longctx[_<model>]): these games are replaced WHOLE in the analysis (every condition,
 # baseline included); nothing is merged with main's episodes of the same games.
 name: longctx
@@ -27,6 +30,7 @@ episodes: 10
 max_tokens: 2048                     # main: 1024 (see header)
 max_turns: 200
 max_parse_retries: 3
+cutoff_feedback: true                # main: off (see header)
 logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
 image_size: 448
 monitor: {layers: auto}

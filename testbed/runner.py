@@ -43,6 +43,14 @@ class Job:
     fallback_action: Any = 0
     observation: str = "text"                     # text | image | both (testbed/visual.py)
     image_size: int = 448                         # longer side of every image, in pixels
+    cutoff_feedback: bool = False                 # retry of an answer cut off at max_tokens says so (CUTOFF_NOTE)
+
+
+# Opt-in (config cutoff_feedback: true; off in main): with an answer marker the agents reason first, and an answer
+# cut off at max_tokens has no marker yet. The parser's feedback alone ('end with ACTION: ...') made the retry
+# reason at the same length and be cut off again (longctx test 2026-11-02: 9B codenames 41% of turns at 2048).
+CUTOFF_NOTE = ("Your answer was cut off at the {n}-token limit before you finished it. Keep your reasoning short "
+               "(a few sentences) and give your answer within the limit.")
 
 
 class EpisodeRun:
@@ -100,7 +108,10 @@ class EpisodeRun:
                 final.append(st["record"])
             else:
                 st["attempt"] += 1
-                st["user"] = st["base_user"] + "\n\n" + parsed.feedback
+                feedback = parsed.feedback
+                if self.job.cutoff_feedback and res.finish_reason == "length":
+                    feedback = CUTOFF_NOTE.format(n=self.job.max_tokens) + " " + feedback
+                st["user"] = st["base_user"] + "\n\n" + feedback
         return final
 
     def commit(self) -> None:

@@ -11,6 +11,7 @@
     image_size: 448                 # longer side of image observations (pixels)
     save_images: false              # write every turn's images next to the logs
     max_parse_retries: 3
+    cutoff_feedback: false          # retry of an answer cut off at max_tokens says so (testbed/runner.py)
     steering:                       # a group or a list of groups; omit for no steering
       team: evil                    #   pool: team / roles / agents (default: everyone)
       select: all                   #   all | one | count | fraction
@@ -63,6 +64,7 @@ class RunConfig:
     traits_dir: Optional[str] = None
     max_tokens: int = 1024
     max_parse_retries: int = 3
+    cutoff_feedback: bool = False
     max_turns: int = 1000
     observation: str = "text"
     image_size: int = 448
@@ -84,6 +86,7 @@ class RunConfig:
                    traits_dir=os.path.expandvars(d["traits_dir"]) if d.get("traits_dir") else None,
                    max_tokens=int(d.get("max_tokens", 1024)),
                    max_parse_retries=int(d.get("max_parse_retries", 3)),
+                   cutoff_feedback=bool(d.get("cutoff_feedback", False)),
                    max_turns=int(d.get("max_turns", 1000)),
                    observation=_observation(d.get("observation", "text")),
                    image_size=int(d.get("image_size", 448)), save_images=bool(d.get("save_images", False)),
@@ -183,5 +186,5 @@ def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan, info: Dict[str
                make_logger=lambda: EpisodeLogger(run_dir=cfg.logging_dir, run_id=cfg.run_id, episode=ep,
                                                  save_images=cfg.save_images, fallback_dir=cfg.fallback_logging_dir,
                                                  run_info=info),
-               max_parse_retries=cfg.max_parse_retries, max_tokens=cfg.max_tokens, max_turns=cfg.max_turns,
+               max_parse_retries=cfg.max_parse_retries, cutoff_feedback=cfg.cutoff_feedback, max_tokens=cfg.max_tokens, max_turns=cfg.max_turns,
                observation=cfg.observation, image_size=cfg.image_size)

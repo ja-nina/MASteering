@@ -24,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-RUN_KEYS = ("model", "vectors_dir", "traits_dir", "episodes", "max_tokens", "max_parse_retries", "max_turns",
+RUN_KEYS = ("model", "vectors_dir", "traits_dir", "episodes", "max_tokens", "max_parse_retries", "cutoff_feedback", "max_turns",
             "monitor", "engine", "logging_dir", "image_size", "save_images")
 
 

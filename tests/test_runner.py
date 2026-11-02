@@ -168,3 +168,14 @@ def test_summary_total_rewards_sum_every_step(tmp_path, store):
     for rec in _records(configs[1]):
         summed[rec["agent_id"]] = summed.get(rec["agent_id"], 0.0) + rec["reward"]
     assert bc["total_rewards"] == summed and bc["turns"] == 5
+
+
+def test_cutoff_feedback_only_when_enabled_and_cut_off(tmp_path, store):
+    for flag, finish, expect in ((True, "length", True), (True, "stop", False), (False, "length", False)):
+        cfg = _cfg(tmp_path, f"bc_{flag}_{finish}", "beauty_contest", 2, episodes=1, max_parse_retries=1,
+                   max_tokens=77, cutoff_feedback=flag, env_kwargs={"num_rounds": 1})
+        gen = FakeGenerator(respond=lambda r: "no idea" if r.key[3] == "player_0" else "CHOICE: 40", finish=finish)
+        run_jobs(build_jobs([cfg], store), gen)
+        retry = next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == 1)
+        assert ("cut off at the 77-token limit" in retry.user) == expect
+        assert "CHOICE: <number>" in retry.user

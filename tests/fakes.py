@@ -60,13 +60,14 @@ def reply(request) -> str:
 
 
 class FakeGenerator:
-    def __init__(self, respond=reply) -> None:
+    def __init__(self, respond=reply, finish="stop") -> None:
         self.respond = respond
+        self.finish = finish
         self.batches = []
 
     def generate(self, requests):
         self.batches.append(list(requests))
-        return [TurnResult(r.key, self.respond(r), "stop", prompt_token_ids=[1, 2, 3],
+        return [TurnResult(r.key, self.respond(r), self.finish, prompt_token_ids=[1, 2, 3],
                            token_ids=list(range(len(self.respond(r).split()))),
                            prompt=f"<system>{r.system}</system><user>{r.user}</user>", images=r.images)
                 for r in requests]
