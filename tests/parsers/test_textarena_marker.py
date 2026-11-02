@@ -26,8 +26,7 @@ def test_markdown_and_next_line_and_last_marker():
 def test_bare_bracketed_move_needs_no_marker():
     assert parse("[Call]").value == "[Call]"
     assert parse("[Player 2] [Call]").value == "[Call]"
-    assert parse("  [Bid: 3, 4]
-").value == "[Bid: 3, 4]"
+    assert parse("  [Bid: 3, 4]\n").value == "[Bid: 3, 4]"
     assert isinstance(parse("[Player 1]"), ParseError)          # only a label: no move
     assert isinstance(parse("I hold 7-7. [Call]"), ParseError)  # reasoning outside brackets: marker needed
 

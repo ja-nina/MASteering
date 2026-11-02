@@ -15,8 +15,7 @@ from typing import Optional
 
 from testbed.types import ParsedAction, ParseError, ParseResult, RawObs, RenderContext
 
-_ONLY_BRACKETS = re.compile(r"^\s*(\[[^\[\]
-]*\]\s*)+$")
+_ONLY_BRACKETS = re.compile(r"^\s*(\[[^\[\]\n]*\]\s*)+$")
 _PLAYER_LABEL = re.compile(r"\[\s*(player\s*\d+|clue giver|guesser)\s*\]\s*", re.IGNORECASE)
 
 
