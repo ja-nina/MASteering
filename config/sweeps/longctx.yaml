@@ -1,14 +1,18 @@
-# Long-context rerun of the games whose prompts outgrew main's 16384-token context (finish_reason prompt_too_long:
-# nothing generated, the parser fell back; found by scripts/scan_context.py, results/context_scan.csv).
+# Rerun of the games whose prompts outgrew main's 16384-token context (finish_reason prompt_too_long: nothing
+# generated, the parser fell back; scripts/scan_context.py, results/context_scan.csv): market entry (9B 62% of turns),
+# codenames (9B 11%, 2B 15%), public goods (2B 7%). The leaking TextArena games are in tafix.yaml.
 #   python scripts/make_configs.py config/sweeps/longctx.yaml [--model qwen3.5-2b]
-# Everything except the context (max_model_len) and the capture buffer it needs (aperture_gib: the capture engine
-# holds every prompt + completion row) is main.yaml's: same games settings, grid, conditions and run_ids, hence the
-# same seeds. Its own logs (<logging_dir>/longctx[_<model>]): these games are replaced WHOLE by this sweep in the
-# analysis (every condition, baseline included); nothing is merged with main's episodes of the same games.
-# Games (scan of 2026-11-02, results/context_scan.csv; the leaking games are in tafix.yaml instead): market entry
-# (9B 62% of turns), codenames (9B 11%, 2B 15%), public goods (2B 7%). Mafia, taboo, GOPS and high society hit
-# the limit on <0.5% of turns and stay as they are. Context 65536: the longest prompt seen was 25,650 tokens, but
-# with empty answers in place of real ones; check with scripts/scan_context.py on the memory test.
+# Two changes from main.yaml, everything else (grid, conditions, run_ids, hence seeds) is the same:
+#  * skip_eliminated (public goods, market entry; test 2026-11-02): TextArena eliminates a player after repeated
+#    invalid moves but then asks the eliminated player again, forever (the rotation is skipped after an invalid
+#    move), so a steered game that broke the agents ran to max_turns with the prompt growing ~500 tokens a turn
+#    (2B public goods sycophantic -2: 200 turns, 374-450 rejected moves, 94k tokens). With it, the turn passes to the
+#    next player still in, as TextArena's own rotation does. Unsteered games end normally (43-56 turns, <10k tokens).
+#  * max_model_len 32768 (main 16384): the longest prompt seen in main was 25,650 tokens (9B). It is what the capture
+#    buffer of main's engine settings holds (32768 rows: 8 GiB for 9B, 4 GiB for 2B); 65536 needs a 16 GiB buffer,
+#    which does not fit next to 9B on an A40 (MiaSizingError at monitor 0.9, KV cache -14 GiB at 0.5; 2026-11-02).
+# Its own logs (<logging_dir>/longctx[_<model>]): these games are replaced WHOLE in the analysis (every condition,
+# baseline included); nothing is merged with main's episodes of the same games.
 name: longctx
 model: qwen3.5-9b
 episodes: 10
@@ -20,18 +24,14 @@ image_size: 448
 monitor: {layers: auto}
 engine:
   concurrent_episodes: 64
-  max_model_len: 65536                 # main: 16384
-  aperture_gib: 16                     # 65536 rows x 32 layers x 8 KB (9B); main: 8 (env.sh default)
+  max_model_len: 32768                 # main: 16384; main's capture buffer (8 GiB = 32768 rows) holds it
   max_images: 2
   steer:   {gpus: "0", memory: 0.85}
-  monitor: {gpus: "1", memory: 0.9}    # main 0.75. vLLM counts the buffer in this share: 0.5 left -14 GiB of KV
-                                       # cache (weights 17.7 + buffer 16 + activations 2.5 GiB; test 2026-11-02)
+  monitor: {gpus: "1", memory: 0.75}   # as main
 models:
-  # 2B as in main (one GPU for both engines), buffer for 65536 rows of 24 x 2048 x 2 bytes = 6 GiB
-  qwen3.5-2b:
-    episodes: 10
-    engine: {concurrent_episodes: 128, aperture_gib: 6,
-             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.35}}
+  qwen3.5-2b:                          # as main (tafix.yaml): one GPU, 4 GiB buffer = 43690 rows of 24 x 2048 x 2 B
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
 
 traits: [evil, sarcastic, empathy, assertive, sycophantic, trustworthiness, opportunistic, agreeableness]
 coefficients: [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2]   # negative = suppress; prompt conditions use only the sign
@@ -52,6 +52,6 @@ conditions:                          # steering-group templates (testbed/steerin
   evil_team_prompt: {team: evil, via: prompt}
 
 games:
-  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4]}
-  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4]}
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4], env_kwargs: {skip_eliminated: true}}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {skip_eliminated: true}}
   codenames:           {family: textarena, id: Codenames-v0, players: [4]}

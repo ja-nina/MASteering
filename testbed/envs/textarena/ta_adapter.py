@@ -81,6 +81,13 @@ class TextArenaAdapter:
         self.num_players = num_players
         # Extract seed before storing; ta.make() doesn't accept it.
         self._seed: Optional[int] = env_kwargs.pop("seed", None)
+        # skip_eliminated (opt-in, env_kwargs; off in main so its configs replay unchanged): TextArena's
+        # FFAMultiPlayerState eliminates a player after repeated invalid moves but, because set_invalid_move also
+        # flags made_invalid_move, step() does not rotate, so the ELIMINATED player is asked again, and again
+        # (error_count was reset), until max_turns, with the prompt growing each time (Public Goods, Market Entry:
+        # 374-450 rejected moves in a 200-turn stuck episode, test 2026-11-02). With it on, the turn passes to the
+        # next player still in the game, which is what step()'s own rotation does (it skips elimination_order).
+        self._skip_eliminated = bool(env_kwargs.pop("skip_eliminated", False))
         self._env_kwargs = env_kwargs
         self._env = _env  # inject for tests; otherwise built in reset()
         self.context = RenderContext()
@@ -135,6 +142,8 @@ class TextArenaAdapter:
         if not isinstance(action, str):  # the runner's fallback (0) after unparseable answers
             action = NO_ANSWER
         done, info = self._env.step(action)
+        if self._skip_eliminated and not done:
+            self._pass_turn_from_eliminated()
         rewards: Dict[str, float] = {}
         if done:
             ta_rewards, close_info = self._env.close()
@@ -142,6 +151,19 @@ class TextArenaAdapter:
             self.context.last_rewards = rewards
             info = {**(info or {}), "close_info": close_info}
         return StepResult(rewards=rewards, done=done, info=info or {})
+
+    def _pass_turn_from_eliminated(self) -> None:
+        st = getattr(self._env, "state", None)
+        out = getattr(st, "elimination_order", None)
+        if not out or st.current_player_id not in out:
+            return
+        alive = [p for p in range(st.num_players) if p not in out]
+        if not alive:  # everyone out: the game resolves its remaining rounds without them and ends by itself
+            return
+        cur = st.current_player_id
+        st.current_player_id = min(alive, key=lambda p: (p - cur) % st.num_players)
+        st.error_count = 0
+        st.made_invalid_move = False
 
     def roles(self) -> Dict[str, str]:
         """Return {player_N: role_str} for the current episode.
