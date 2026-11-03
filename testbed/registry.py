@@ -81,7 +81,9 @@ def build_game(*, family: str, game_id: str, num_players: int,
         # answer_marker (e.g. ACTION): only the text after it reaches the game (else the whole answer, reasoning
         # included, is the move and is posted to every player); not a TextArena argument
         marker = env_kwargs.pop("answer_marker", None)
+        # cutoff_hint: added to the note that finishes a cut-off answer (runner.cutoff_note); not a TextArena argument
+        hint = env_kwargs.pop("cutoff_hint", "")
         env = TextArenaAdapter(env_id=game_id, num_players=num_players, **env_kwargs)
-        return env, TextArenaRenderer(marker=marker), TextArenaParser(marker=marker)
+        return env, TextArenaRenderer(marker=marker), TextArenaParser(marker=marker, cutoff_hint=hint)
 
     raise ValueError(f"Unknown game family: {family!r}")

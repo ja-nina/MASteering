@@ -1,6 +1,7 @@
 """Adapter for TextArena's turn-based, text-native multiplayer games."""
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from testbed.types import Action, RawObs, RenderContext, StepResult
@@ -70,6 +71,14 @@ def _make_fixed_jury(model_name: str, jury_size: int = 1):
 # sent for an agent that gave no usable answer: TextArena envs expect text and treat it as an invalid move
 NO_ANSWER = "(no answer)"
 
+# Codenames (clue_rule): the spymasters, the clue format TextArena reads, and the rule it enforces without stating it
+SPYMASTERS = (0, 2)
+_CLUE = re.compile(r"\[(\w+)\s+(\d+)\]")
+CLUE_RULE = ("Rule: your clue must not be a word on the board, contain a board word, or be part of one "
+             "(a clue like that loses the game).")
+CLUE_RETRIES = 3
+GAME_ID = -1  # textarena.GAME_ID: the sender id of game messages
+
 # role names (lower-cased substrings) of the deceiving side in TextArena's hidden-role games
 _EVIL_ROLE_WORDS = ("mafia", "werewolf", "spy", "impostor", "traitor", "evil", "morgana", "mordred", "assassin")
 
@@ -88,6 +97,15 @@ class TextArenaAdapter:
         # 374-450 rejected moves in a 200-turn stuck episode, test 2026-11-02). With it on, the turn passes to the
         # next player still in the game, which is what step()'s own rotation does (it skips elimination_order).
         self._skip_eliminated = bool(env_kwargs.pop("skip_eliminated", False))
+        # clue_rule (opt-in, Codenames; off in main): TextArena ends the game the moment a spymaster's clue is a board
+        # word, contains one or is contained in one (case-sensitive substring, env.py), a rule its prompt never
+        # states; 9B spymasters named a board word in 95% of longctx codenames games (2026-11-04), so the games
+        # measured who blunders first. With it on, the rule is told to both spymasters after the game's prompt, and
+        # such a clue is not passed on: the spymaster is told why and asked again, as for an invalid move. After
+        # CLUE_RETRIES refusals in one turn the clue goes to TextArena, which ends the game as it would have.
+        self._clue_rule = bool(env_kwargs.pop("clue_rule", False))
+        self.clue_violations = 0          # refused clues this episode (a metric: rule breaking under steering)
+        self._clue_refusals = 0           # refused clues this turn
         self._env_kwargs = env_kwargs
         self._env = _env  # inject for tests; otherwise built in reset()
         self.context = RenderContext()
@@ -124,6 +142,11 @@ class TextArenaAdapter:
         self._env.reset(num_players=self.num_players, seed=self._seed)
         self.context = RenderContext()
         self._current_pid = None
+        self.clue_violations = self._clue_refusals = 0
+        if self._clue_rule:
+            self._board()  # fails here, not mid-game, if the game has no Codenames board
+            for pid in SPYMASTERS:
+                self._tell(pid, CLUE_RULE)
 
     def agent_ids(self) -> List[str]:
         return [self._pid_str(i) for i in range(self.num_players)]
@@ -141,6 +164,17 @@ class TextArenaAdapter:
         action = actions[agent_id]
         if not isinstance(action, str):  # the runner's fallback (0) after unparseable answers
             action = NO_ANSWER
+        if self._clue_rule and self._current_pid in SPYMASTERS:
+            bad = self._forbidden_clue(action)
+            if bad and self._clue_refusals < CLUE_RETRIES:
+                self._clue_refusals += 1
+                self.clue_violations += 1
+                clue, words = bad
+                self._tell(self._current_pid, f"Your clue '{clue}' is not allowed: it "
+                           f"{'is' if clue in words else 'overlaps with'} the board word(s) {', '.join(words)}. "
+                           f"{CLUE_RULE} Give another clue.")
+                return StepResult(rewards={}, done=False, info={"refused_clue": clue})
+            self._clue_refusals = 0
         done, info = self._env.step(action)
         if self._skip_eliminated and not done:
             self._pass_turn_from_eliminated()
@@ -150,7 +184,36 @@ class TextArenaAdapter:
             rewards = {self._pid_str(k): float(v) for k, v in ta_rewards.items()}
             self.context.last_rewards = rewards
             info = {**(info or {}), "close_info": close_info}
+            if self._clue_rule:
+                info["clue_violations"] = self.clue_violations
         return StepResult(rewards=rewards, done=done, info=info or {})
+
+    def _board(self) -> Dict[str, str]:
+        board = getattr(self._env, "board", None)
+        if board is None:
+            board = (getattr(getattr(self._env, "state", None), "game_state", None) or {}).get("board")
+        if not isinstance(board, dict) or not board:
+            raise ValueError(f"clue_rule: {self.env_id} has no Codenames board")
+        return board
+
+    def _forbidden_clue(self, action: str) -> Optional[Tuple[str, List[str]]]:
+        """(clue, board words it collides with) if TextArena would end the game on this clue (its own check)."""
+        m = _CLUE.search(action)
+        if not m:
+            return None
+        clue = m.group(1)
+        words = [w for w in self._board() if clue in w or w in clue]
+        return (clue, words) if words else None
+
+    def _tell(self, pid: int, message: str) -> None:
+        """A game message to one player, shown in its next observation."""
+        st = self._env.state
+        try:
+            st.add_observation(from_id=GAME_ID, to_id=pid, message=message, for_logging=False)
+        except TypeError:  # newer TextArena: add_observation(message, observation_type, from_id, to_id)
+            import textarena as ta
+            st.add_observation(message=message, observation_type=ta.ObservationType.GAME_MESSAGE,
+                               from_id=GAME_ID, to_id=pid)
 
     def _pass_turn_from_eliminated(self) -> None:
         st = getattr(self._env, "state", None)

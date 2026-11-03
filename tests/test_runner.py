@@ -213,3 +213,10 @@ def test_cutoff_continuation_only_once_and_only_when_enabled(tmp_path, store):
         assert [bool(r.continuation) for r in p0].count(True) == n_cont
         assert len(p0) == 4                                           # then ordinary retries with the feedback
         assert "Respond with 'CHOICE: <number>'" in p0[-1].user and not p0[-1].continuation
+
+
+def test_cutoff_note_carries_the_games_hint():
+    from testbed.runner import CUTOFF_NOTE, cutoff_note
+    assert cutoff_note() == CUTOFF_NOTE
+    assert cutoff_note("No board words.") == ("\n\n[Answer limit reached: no more room to think. "
+                                              "Final answer now. No board words.]\n")

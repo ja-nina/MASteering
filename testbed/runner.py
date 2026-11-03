@@ -54,8 +54,14 @@ class Job:
 # spymaster often skipped to a bare board word as the clue ('ACTION: [debt 1]', an instant loss: 7 of 47 such
 # retries, 0 of 71 first tries), or started over (29% of them parsed with the game's prompt last). If the
 # continuation fails too, the remaining attempts are ordinary retries with the parser's feedback.
+# A game can add a reminder to the note (env_kwargs cutoff_hint, read from the parser): a forced answer skips the
+# reasoning that would have checked it (Codenames: the clue rule, see clue_rule in ta_adapter.py).
 CUTOFF_NOTE = "\n\n[Answer limit reached: no more room to think. Final answer now.]\n"
 CONTINUE_TOKENS = 256
+
+
+def cutoff_note(hint: str = "") -> str:
+    return CUTOFF_NOTE if not hint else CUTOFF_NOTE.replace("now.]", f"now. {hint}]")
 
 class EpisodeRun:
     def __init__(self, job: Job) -> None:
@@ -118,7 +124,8 @@ class EpisodeRun:
                 st["attempt"] += 1
                 marker = getattr(self.parser, "marker", None)
                 if self.job.cutoff_feedback and marker and res.finish_reason == "length" and not st["continued"]:
-                    st["continuation"] = res.text + CUTOFF_NOTE + f"{marker}:"  # same prompt, the answer goes on
+                    note = cutoff_note(getattr(self.parser, "cutoff_hint", ""))
+                    st["continuation"] = res.text + note + f"{marker}:"  # same prompt, the answer goes on
                     st["continued"] = True
                     st["user"] = st["base_user"]
                 else:

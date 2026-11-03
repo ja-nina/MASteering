@@ -21,8 +21,9 @@ _PLAYER_LABEL = re.compile(r"\[\s*(player\s*\d+|clue giver|guesser)\s*\]\s*", re
 
 
 class TextArenaParser:
-    def __init__(self, marker: Optional[str] = None) -> None:
+    def __init__(self, marker: Optional[str] = None, cutoff_hint: str = "") -> None:
         self.marker = marker
+        self.cutoff_hint = cutoff_hint  # for the runner's note on a cut-off answer (runner.cutoff_note)
 
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
