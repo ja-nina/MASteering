@@ -74,12 +74,16 @@ def read_csv(path):
 EXCLUDED_FILE = Path(__file__).resolve().parents[1] / "config" / "excluded_games.yaml"
 
 
-def excluded_groups() -> dict:
-    """{game group: reason} from config/excluded_games.yaml (games left out of every report)."""
+def excluded_groups(sweep: str = "") -> dict:
+    """{game group: reason} from config/excluded_games.yaml (games left out of every report), none for a sweep
+    listed under `reruns` (or one of its models, <name>_<model>): those sweeps are the replacements."""
     if not EXCLUDED_FILE.exists():
         return {}
     import yaml
     spec = yaml.safe_load(EXCLUDED_FILE.read_text(encoding="utf-8")) or {}
+    reruns = spec.pop("reruns", None) or []
+    if any(sweep == s or sweep.startswith(s + "_") for s in reruns):
+        return {}
     return {g: reason for reason, groups in spec.items() for g in groups or []}
 
 
@@ -87,9 +91,10 @@ EXCLUDED_NOTE = []  # filled by load(): which groups were left out, for the page
 
 
 def load(path, exclude: bool = True) -> list:
-    """The agent rows of `path`; with `exclude`, without the groups in config/excluded_games.yaml."""
+    """The agent rows of `path` (results/<sweep>/agents.csv.gz); with `exclude`, without the groups in
+    config/excluded_games.yaml, unless <sweep> is one of its reruns."""
     rows = []
-    skip = excluded_groups() if exclude else {}
+    skip = excluded_groups(Path(path).parent.name) if exclude else {}
     dropped = defaultdict(int)
     for r in read_csv(path):
         group = r.get("group") or r["run_id"].split("__")[0]

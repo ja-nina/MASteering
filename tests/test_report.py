@@ -270,3 +270,10 @@ def test_push_section_one_line_per_layer_and_persona_vs_random():
     assert "with its unparseable turns (p &lt; .01): g" in page
     _, page = push_section(rows, base, scale, None)  # no norms: per unit c
     assert "per unit c" in page and "vector norms not found" in page
+
+
+def test_excluded_games_are_kept_in_their_reruns():
+    from scripts.report import excluded_groups
+    assert "codenames_4p" in excluded_groups("main") and "poker_4p" in excluded_groups("main_qwen3.5-2b")
+    assert excluded_groups("longctx") == {} and excluded_groups("longctx_qwen3.5-2b") == {}
+    assert excluded_groups("tafix") == {}
