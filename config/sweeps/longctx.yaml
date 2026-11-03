@@ -15,15 +15,16 @@
 #  * max_model_len 32768 (main 16384): the longest prompt seen in main was 25,650 tokens (9B). It is what the capture
 #    buffer of main's engine settings holds (32768 rows: 8 GiB for 9B, 4 GiB for 2B); 65536 needs a 16 GiB buffer,
 #    which does not fit next to 9B on an A40 (MiaSizingError at monitor 0.9, KV cache -14 GiB at 0.5; 2026-11-02).
-#  * max_tokens 2048 (main 1024): with the marker the agents reason before 'ACTION:', and 9B ran out of tokens before
-#    writing it (test 2026-11-02: codenames unsteered 18 of 26 turns cut off in the middle of real reasoning, a
-#    spymaster weighing clues over the 25 words; every retry cut off again, fallback move; public goods / market entry
-#    sycophantic -2 8% / 4%). With the marker prompts stay short (9B <= 2.2k tokens), so 32768 holds 2048 easily.
+#  * max_tokens 4096 (main 1024): with the marker the agents reason before 'ACTION:', and 9B ran out of tokens before
+#    writing it (test 2026-11-02 at 1024: codenames unsteered 18 of 26 turns cut off in the middle of real reasoning,
+#    a spymaster weighing clues over the 25 words; public goods / market entry sycophantic -2 8% / 4%; at 2048 still
+#    41% of codenames turns). With the marker prompts stay short (9B <= 6k tokens), so 32768 holds 4096 easily.
 #  * cutoff_feedback (testbed/runner.py): an answer cut off at max_tokens before 'ACTION:' is continued, not
 #    re-asked: the cut-off text, a note that the limit is reached, 'ACTION:', and the model writes its move (<= 256
-#    tokens). Re-asking failed in the tests (2026-11-02/03, 9B codenames): retries reasoned as long and were cut off
-#    again (41% unparseable), or, given the cut-off answer back in a new prompt, the spymaster skipped to a bare board
-#    word as the clue (an instant loss; 7 of 47 such retries, 0 of 71 first tries) or started over.
+#    tokens). Every way of finishing a cut-off spymaster turn produced bare board words as clues (an instant loss
+#    under TextArena's unstated substring rule), never seen on uncut first tries (9B codenames, 2026-11-02/03):
+#    re-asking with the cut-off answer in the prompt 7 of 47 and 4 of 14, continuing 9 of 26 (0 of 22 first tries);
+#    re-asking without it reasoned as long and was cut off again. Hence the larger max_tokens: cut-offs must be rare.
 # Hardware: L40 (48 GB, like main's A40), partition gpu-all; 9B on two GPUs, 2B on one, main's engine settings:
 #   bash scripts/slurm/submit_sweep.sh config/runs/longctx 300 -p gpu-all --gres=gpu:l40:2
 #   bash scripts/slurm/submit_sweep.sh config/runs/longctx_qwen3.5-2b 300 -p gpu-all --gres=gpu:l40:1
@@ -32,7 +33,7 @@
 name: longctx
 model: qwen3.5-9b
 episodes: 10
-max_tokens: 2048                     # main: 1024 (see header)
+max_tokens: 4096                     # main: 1024 (see header)
 max_turns: 200
 max_parse_retries: 3
 cutoff_feedback: true                # main: off (see header)
