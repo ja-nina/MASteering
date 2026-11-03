@@ -67,10 +67,14 @@ class FakeGenerator:
 
     def generate(self, requests):
         self.batches.append(list(requests))
-        return [TurnResult(r.key, self.respond(r), self.finish, prompt_token_ids=[1, 2, 3],
-                           token_ids=list(range(len(self.respond(r).split()))),
-                           prompt=f"<system>{r.system}</system><user>{r.user}</user>", images=r.images)
-                for r in requests]
+        out = []
+        for r in requests:
+            text, cont = self.respond(r), r.continuation.split()
+            finish = self.finish(r) if callable(self.finish) else self.finish
+            out.append(TurnResult(r.key, r.continuation + text, finish, prompt_token_ids=[1, 2, 3],
+                                  token_ids=list(range(len(cont) + len(text.split()))), n_continued=len(cont),
+                                  prompt=f"<system>{r.system}</system><user>{r.user}</user>", images=r.images))
+        return out
 
 
 class FakeReader:

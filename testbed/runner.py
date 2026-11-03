@@ -43,18 +43,19 @@ class Job:
     fallback_action: Any = 0
     observation: str = "text"                     # text | image | both (testbed/visual.py)
     image_size: int = 448                         # longer side of every image, in pixels
-    cutoff_feedback: bool = False                 # retry of an answer cut off at max_tokens says so (CUTOFF_NOTE)
+    cutoff_feedback: bool = False                 # an answer cut off at max_tokens is finished with ACTION: (CUTOFF_NOTE)
 
 
-# Opt-in (config cutoff_feedback: true; off in main): with an answer marker the agents reason first, and an answer
-# cut off at max_tokens has no marker yet. The parser's feedback alone ('end with ACTION: ...') made the retry
-# reason at the same length and be cut off again (longctx test 2026-11-02: 9B codenames 41% of turns at 2048).
-# The retry also gets the cut-off answer itself (only the latest one; it is private, like all reasoning before the
-# marker), so the agent can conclude from its own reasoning instead of starting over. It comes BEFORE the turn's
-# prompt, so the game's own instruction stays last: after it, 9B codenames spymasters answered a bare board word as
-# the clue ('ACTION: [debt 1]', an instant loss) on 7 of 47 retries after a cut-off, never on a first try (0/71).
-CUTOFF_NOTE = ("Your previous answer to the turn below was cut off at the {n}-token limit before you finished it. "
-               "Here it is:\n<<<\n{text}\n>>>")
+# Opt-in (config cutoff_feedback: true; off in main), answer-marker games only: the agents reason before 'ACTION:',
+# and an answer cut off at max_tokens has no marker yet. Instead of asking again, the same answer is continued: the
+# cut-off text, then CUTOFF_NOTE and the marker, and the model writes its move (at most CONTINUE_TOKENS). Re-asking
+# failed (longctx tests 2026-11-02/03, 9B codenames): with the parser's feedback alone the retry reasoned as long and
+# was cut off again (41% of turns unparseable at 2048); with the cut-off answer handed back in a new prompt the
+# spymaster often skipped to a bare board word as the clue ('ACTION: [debt 1]', an instant loss: 7 of 47 such
+# retries, 0 of 71 first tries), or started over (29% of them parsed with the game's prompt last). If the
+# continuation fails too, the remaining attempts are ordinary retries with the parser's feedback.
+CUTOFF_NOTE = "\n\n[Answer limit reached: no more room to think. Final answer now.]\n"
+CONTINUE_TOKENS = 256
 
 class EpisodeRun:
     def __init__(self, job: Job) -> None:
@@ -85,11 +86,13 @@ class EpisodeRun:
                 user, images = observe(self.renderer, self.job.observation, raw_obs, agent_id, self._context())
                 self.waiting[agent_id] = {"raw_obs": raw_obs, "system": system, "base_user": user,
                                           "user": user, "attempt": 0, "record": None, "attempts": [],
+                                          "continuation": "", "continued": False,
                                           "images": [fit(im, self.job.image_size) for im in images]}
         return [TurnRequest(key=(self.job.run_index, self.job.episode, self.turn, aid, st["attempt"]),
-                            system=st["system"], user=st["user"], max_tokens=self.job.max_tokens,
+                            system=st["system"], user=st["user"],
+                            max_tokens=CONTINUE_TOKENS if st["continuation"] else self.job.max_tokens,
                             seed=stable_seed(self.job.run_id, self.job.episode, self.turn, aid, st["attempt"]),
-                            steer=self.steers.get(aid), images=st["images"])
+                            steer=self.steers.get(aid), images=st["images"], continuation=st["continuation"])
                 for aid, st in self.waiting.items() if st["record"] is None]
 
     def deliver(self, results: Dict[tuple, TurnResult]) -> List[dict]:
@@ -103,7 +106,9 @@ class EpisodeRun:
             st["attempts"].append({"attempt": st["attempt"], "user_prompt": st["user"], "completion": res.text,
                                    "finish_reason": res.finish_reason, "n_tokens": res.n_tokens,
                                    "n_prompt_tokens": res.n_prompt_tokens,
+                                   "continued": bool(st["continuation"]),  # completion = cut-off text + note + move
                                    "parse_error": None if isinstance(parsed, ParsedAction) else parsed.feedback})
+            st["continuation"] = ""
             if isinstance(parsed, ParsedAction) or st["attempt"] >= self.job.max_parse_retries:
                 action = parsed.value if isinstance(parsed, ParsedAction) else self.job.fallback_action
                 st["record"] = {"agent_id": aid, "action": action, "result": res, "monitor": {},
@@ -111,15 +116,13 @@ class EpisodeRun:
                 final.append(st["record"])
             else:
                 st["attempt"] += 1
-                feedback = parsed.feedback
-                if self.job.cutoff_feedback and res.finish_reason == "length":
-                    marker = getattr(self.parser, "marker", None)  # answer-marker games: say the format directly
-                    ask = (f"Provide your answer in the format '{marker}: <what you send to the game>'." if marker
-                           else f"Provide your answer. {feedback}")
-                    note = CUTOFF_NOTE.format(n=self.job.max_tokens, text=res.text.strip())
-                    st["user"] = note + "\n\n" + st["base_user"] + "\n\n" + ask
+                marker = getattr(self.parser, "marker", None)
+                if self.job.cutoff_feedback and marker and res.finish_reason == "length" and not st["continued"]:
+                    st["continuation"] = res.text + CUTOFF_NOTE + f"{marker}:"  # same prompt, the answer goes on
+                    st["continued"] = True
+                    st["user"] = st["base_user"]
                 else:
-                    st["user"] = st["base_user"] + "\n\n" + feedback
+                    st["user"] = st["base_user"] + "\n\n" + parsed.feedback
         return final
 
     def commit(self) -> None:

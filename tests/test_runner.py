@@ -170,35 +170,46 @@ def test_summary_total_rewards_sum_every_step(tmp_path, store):
     assert bc["total_rewards"] == summed and bc["turns"] == 5
 
 
-def test_cutoff_feedback_only_when_enabled_and_cut_off(tmp_path, store):
-    for flag, finish, expect in ((True, "length", True), (True, "stop", False), (False, "length", False)):
-        cfg = _cfg(tmp_path, f"bc_{flag}_{finish}", "beauty_contest", 2, episodes=1, max_parse_retries=1,
-                   max_tokens=77, cutoff_feedback=flag, env_kwargs={"num_rounds": 1})
-        gen = FakeGenerator(respond=lambda r: "no idea" if r.key[3] == "player_0" else "CHOICE: 40", finish=finish)
-        run_jobs(build_jobs([cfg], store), gen)
-        retry = next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == 1)
-        assert ("cut off at the 77-token limit" in retry.user) == expect
-        assert ("<<<\nno idea\n>>>" in retry.user) == expect   # the cut-off answer itself goes back in
-        assert "CHOICE: <number>" in retry.user
-
-
-def test_cutoff_feedback_names_the_marker_format(tmp_path, store):
-    # an answer-marker parser (TextArena's, which needs curses, is stood in for by giving one a marker)
-    cfg = _cfg(tmp_path, "bc_marker", "beauty_contest", 2, episodes=1, max_parse_retries=1,
-               max_tokens=55, cutoff_feedback=True, env_kwargs={"num_rounds": 1})
+def _marker_jobs(cfg, store):
+    """Jobs whose parser has an answer marker (TextArena's parser needs curses; a symbolic one is given a marker)."""
     jobs = build_jobs([cfg], store)
     for job in jobs:
-        make = job.make_env
-        def with_marker(make=make):
+        def with_marker(make=job.make_env):
             env, renderer, parser = make()
             parser.marker = "ACTION"
             return env, renderer, parser
         job.make_env = with_marker
-    gen = FakeGenerator(respond=lambda r: "thinking it over" if r.key[3] == "player_0" else "CHOICE: 40",
-                        finish="length")
-    run_jobs(jobs, gen)
-    first, retry = (next(r for b in gen.batches for r in b if r.key[3] == "player_0" and r.key[4] == i) for i in (0, 1))
-    # the cut-off answer first, then the turn's whole prompt (its own instruction last), then the format
-    assert retry.user.startswith("Your previous answer to the turn below was cut off at the 55-token limit")
-    assert retry.user.endswith("<<<\nthinking it over\n>>>\n\n" + first.user + "\n\n"
-                               "Provide your answer in the format 'ACTION: <what you send to the game>'.")
+    return jobs
+
+
+def test_cutoff_answer_is_continued_with_the_marker(tmp_path, store):
+    cfg = _cfg(tmp_path, "bc_cont", "beauty_contest", 2, episodes=1, max_parse_retries=2, max_tokens=55,
+               cutoff_feedback=True, env_kwargs={"num_rounds": 1})
+    # player_0: first answer cut off mid-thought; the continuation writes the move
+    respond = lambda r: ("CHOICE: 40" if r.key[3] == "player_1" else " CHOICE: 33" if r.continuation
+                         else "I think the others pick")
+    finish = lambda r: "length" if r.key[3] == "player_0" and not r.continuation else "stop"
+    gen = FakeGenerator(respond=respond, finish=finish)
+    run_jobs(_marker_jobs(cfg, store), gen)
+    p0 = [r for b in gen.batches for r in b if r.key[3] == "player_0"]
+    assert len(p0) == 2 and p0[1].user == p0[0].user                 # same prompt, no new instructions
+    assert p0[1].continuation == ("I think the others pick\n\n[Answer limit reached: no more room to think. "
+                                  "Final answer now.]\nACTION:")
+    assert p0[1].max_tokens == 256
+    rec = next(r for r in _records(cfg) if r["agent_id"] == "player_0")
+    assert rec["parse_ok"] and rec["attempts"][1]["continued"] and not rec["attempts"][0]["continued"]
+    assert rec["completion"].endswith("ACTION: CHOICE: 33")
+    assert rec["tokens_out"] == 5 + 2                                 # the continued text is not counted twice
+
+
+def test_cutoff_continuation_only_once_and_only_when_enabled(tmp_path, store):
+    for flag, n_cont in ((True, 1), (False, 0)):
+        cfg = _cfg(tmp_path, f"bc_once_{flag}", "beauty_contest", 2, episodes=1, max_parse_retries=3, max_tokens=55,
+                   cutoff_feedback=flag, env_kwargs={"num_rounds": 1})
+        gen = FakeGenerator(respond=lambda r: "CHOICE: 40" if r.key[3] == "player_1" else "still thinking",
+                            finish=lambda r: "length" if r.key[3] == "player_0" else "stop")
+        run_jobs(_marker_jobs(cfg, store), gen)
+        p0 = [r for b in gen.batches for r in b if r.key[3] == "player_0"]
+        assert [bool(r.continuation) for r in p0].count(True) == n_cont
+        assert len(p0) == 4                                           # then ordinary retries with the feedback
+        assert "Respond with 'CHOICE: <number>'" in p0[-1].user and not p0[-1].continuation

@@ -19,11 +19,11 @@
 #    writing it (test 2026-11-02: codenames unsteered 18 of 26 turns cut off in the middle of real reasoning, a
 #    spymaster weighing clues over the 25 words; every retry cut off again, fallback move; public goods / market entry
 #    sycophantic -2 8% / 4%). With the marker prompts stay short (9B <= 2.2k tokens), so 32768 holds 2048 easily.
-#  * cutoff_feedback (testbed/runner.py): the retry of an answer cut off at max_tokens is told so and to reason
-#    briefly. At 2048 alone 9B codenames unsteered was still cut off on 41% of turns (test 2026-11-02, sycophantic -2
-#    2%): the retry got only 'end with ACTION:', reasoned as long and was cut off again. Only retries change.
-#    With it: 9B codenames unsteered 4.5% unparseable (test 2026-11-02, 3 episodes each, all games ended by their rules).
-#    Since then the retry also gets the cut-off answer back, to conclude from instead of starting over.
+#  * cutoff_feedback (testbed/runner.py): an answer cut off at max_tokens before 'ACTION:' is continued, not
+#    re-asked: the cut-off text, a note that the limit is reached, 'ACTION:', and the model writes its move (<= 256
+#    tokens). Re-asking failed in the tests (2026-11-02/03, 9B codenames): retries reasoned as long and were cut off
+#    again (41% unparseable), or, given the cut-off answer back in a new prompt, the spymaster skipped to a bare board
+#    word as the clue (an instant loss; 7 of 47 such retries, 0 of 71 first tries) or started over.
 # Hardware: L40 (48 GB, like main's A40), partition gpu-all; 9B on two GPUs, 2B on one, main's engine settings:
 #   bash scripts/slurm/submit_sweep.sh config/runs/longctx 300 -p gpu-all --gres=gpu:l40:2
 #   bash scripts/slurm/submit_sweep.sh config/runs/longctx_qwen3.5-2b 300 -p gpu-all --gres=gpu:l40:1

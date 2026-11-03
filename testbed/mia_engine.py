@@ -84,26 +84,31 @@ class SteerEngine:
 
         results: Dict[tuple, TurnResult] = {}
         prompts, params, sent = [], [], []
-        texts = []
         for r in requests:
             text = template(self.tokenizer, self.spec, r.system, r.user, len(r.images))
             ids = self.tokenizer.encode(text, add_special_tokens=False)  # the template has them
-            room = self.max_model_len - len(ids) - self._image_tokens(r.images) - 1
+            # a continuation (the answer so far) is read after the generation prompt; generation goes on from it
+            cont = self.tokenizer.encode(r.continuation, add_special_tokens=False) if r.continuation else []
+            room = self.max_model_len - len(ids) - len(cont) - self._image_tokens(r.images) - 1
             if room < 16:
-                results[r.key] = TurnResult(r.key, "", "prompt_too_long", ids, [], text, r.images)
+                results[r.key] = TurnResult(r.key, r.continuation, "prompt_too_long", ids, cont, text, r.images,
+                                            n_continued=len(cont))
                 continue
             kwargs = {**sampling_kwargs(self.spec, r.seed, r.max_tokens), **self.sampling}
             kwargs["max_tokens"] = min(kwargs["max_tokens"], room)
             # image prompts go in as text: vLLM expands each placeholder to the image's tokens
-            prompts.append({"prompt": text, "multi_modal_data": {"image": list(r.images)}} if r.images
-                           else {"prompt_token_ids": ids})
+            prompts.append({"prompt": text + r.continuation, "multi_modal_data": {"image": list(r.images)}}
+                           if r.images else {"prompt_token_ids": ids + cont})
             params.append(SamplingParams(**kwargs, extra_args={"steer": self._steer_arg(r.steer)}))
-            sent.append(r)
-            texts.append(text)
-        for r, text, o in zip(sent, texts, self.llm.generate(prompts, params) if prompts else []):
+            sent.append((r, text, ids, cont))
+        for (r, text, ids, cont), o in zip(sent, self.llm.generate(prompts, params) if prompts else []):
             c = o.outputs[0]
-            results[r.key] = TurnResult(r.key, c.text, c.finish_reason, list(o.prompt_token_ids),
-                                        list(c.token_ids), text, r.images, len(ids) + self._image_tokens(r.images))
+            prompt_ids = list(o.prompt_token_ids)
+            prompt_ids = prompt_ids[:len(prompt_ids) - len(cont)]  # the continuation counts as answer, not prompt
+            # n_prompt_tokens: this request's own prompt (it used the batch's last prompt length before 2026-11-03)
+            results[r.key] = TurnResult(r.key, r.continuation + c.text, c.finish_reason, prompt_ids,
+                                        cont + list(c.token_ids), text, r.images,
+                                        len(ids) + len(cont) + self._image_tokens(r.images), n_continued=len(cont))
         return [results[r.key] for r in requests]
 
 

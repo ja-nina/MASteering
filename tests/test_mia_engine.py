@@ -203,3 +203,24 @@ def test_capture_reads_a_logged_image_turn_by_its_answer_length(monkeypatch):
                       n_prompt_tokens=12)
     rows = CaptureEngine(_ImgCaptureLLM(), SPEC, layers=[3], hidden=4).read([turn])
     assert rows[0][3][:, 0].tolist() == [12.0, 13.0, 14.0]  # the same rows as the live read above
+
+
+def test_continuation_is_read_after_the_prompt_and_returned_as_answer():
+    llm = _SteerLLM()
+    engine = SteerEngine(llm, SPEC, _Tok(), "/zero.pt", {}, max_model_len=40)
+    res = engine.generate([TurnRequest(("a",), "sys", "short question", seed=1, max_tokens=8,
+                                       continuation="so far I think ACTION:")])[0]
+    prompts, params = llm.calls[0]
+    assert prompts[0] == {"prompt_token_ids": [0, 1, 2] + [0, 1, 2, 3, 4]}   # prompt, then the answer so far
+    assert res.prompt_token_ids == [0, 1, 2]                                  # the continuation is answer
+    assert res.token_ids == [0, 1, 2, 3, 4, 7, 8] and res.n_continued == 5 and res.n_tokens == 2
+    assert res.text == "so far I think ACTION:ok" and res.n_prompt_tokens == 3 + 5
+    assert params[0].max_tokens == 8
+
+
+def test_prompt_tokens_are_per_request():
+    llm = _SteerLLM()
+    engine = SteerEngine(llm, SPEC, _Tok(), "/zero.pt", {}, max_model_len=100)
+    a, b = engine.generate([TurnRequest(("a",), "sys", "one two three four", seed=1, max_tokens=8),
+                            TurnRequest(("b",), "sys", "x", seed=2, max_tokens=8)])
+    assert (a.n_prompt_tokens, b.n_prompt_tokens) == (5, 2)

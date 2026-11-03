@@ -11,7 +11,7 @@
     image_size: 448                 # longer side of image observations (pixels)
     save_images: false              # write every turn's images next to the logs
     max_parse_retries: 3
-    cutoff_feedback: false          # retry of an answer cut off at max_tokens says so (testbed/runner.py)
+    cutoff_feedback: false          # answer-marker games: continue a cut-off answer with ACTION: (testbed/runner.py)
     steering:                       # a group or a list of groups; omit for no steering
       team: evil                    #   pool: team / roles / agents (default: everyone)
       select: all                   #   all | one | count | fraction
