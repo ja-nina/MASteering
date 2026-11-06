@@ -277,3 +277,10 @@ def test_excluded_games_are_kept_in_their_reruns():
     assert "codenames_4p" in excluded_groups("main") and "poker_4p" in excluded_groups("main_qwen3.5-2b")
     assert excluded_groups("longctx") == {} and excluded_groups("longctx_qwen3.5-2b") == {}
     assert excluded_groups("tafix") == {}
+
+
+def test_operating_keeps_unsteered_and_mild_coefficients():
+    from scripts.report import operating
+    rows = [{"coef": None}, {"coef": 0.5}, {"coef": -1.0}, {"coef": 1.5}, {"coef": -2.0}]
+    assert [r["coef"] for r in operating(rows, 1)] == [None, 0.5, -1.0]
+    assert operating(rows, None) == rows

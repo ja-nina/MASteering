@@ -138,6 +138,17 @@ def load(path, exclude: bool = True) -> list:
     return rows
 
 
+def operating(rows, max_c=None) -> list:
+    """Only the rows with |c| <= max_c (unsteered rows, c = None, kept); None keeps every row. With max_c = 1 the
+    report describes the operating range only: sections that need the strong ends (curve shapes, 'at max c') then
+    describe c = +-1 as the strongest."""
+    if max_c is None:
+        return rows
+    kept = [r for r in rows if r["coef"] is None or abs(r["coef"]) <= max_c + 1e-9]
+    EXCLUDED_NOTE.append(f"Operating range only: |c| <= {max_c:g} ({len(rows) - len(kept)} agent-episodes left out).")
+    return kept
+
+
 def role_cells(rows) -> set:
     """Game cells with hidden roles (a deceiving side): there the group's total reward only says which side won."""
     return {r["cell"] for r in rows if r["team"] == "evil"}
@@ -4631,8 +4642,9 @@ def main(argv=None) -> int:
     p.add_argument("--norms", help="scripts/vector_norms.py's output (default: vector_norms.json next to the CSV)")
     p.add_argument("--logs", nargs="+", help="the sweep's log dir(s) (<logging_dir>/<name>, and its fallback): adds "
                    "matched example answers")
+    p.add_argument("--max-c", type=float, help="only |c| <= this (unsteered rows kept), e.g. 1 for the operating range")
     args = p.parse_args(argv)
-    rows = load(args.agents_csv)
+    rows = operating(load(args.agents_csv), args.max_c)
     if not rows:
         print("no rows")
         return 1
