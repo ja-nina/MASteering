@@ -104,7 +104,8 @@ class EpisodeLogger:
                  attempts: Optional[list] = None, model_input: str = "", tokens_in: Optional[int] = None,
                  tokens_out: Optional[int] = None) -> None:
         self._stats.add(agent_id, parse_ok=parse_ok, completion=completion, monitor=monitor, action=parsed_action,
-                        tokens_in=tokens_in, tokens_out=tokens_out)
+                        tokens_in=tokens_in, tokens_out=tokens_out, finish_reason=finish_reason,
+                        attempts=attempts or [{"finish_reason": finish_reason, "n_tokens": n_tokens}])
         image_log = self._save_images(turn, agent_id, images) if self.save_images else len(images)
         rec = {
             "run_id": self.run_id, "episode": self.episode, "game": game,

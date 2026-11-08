@@ -12,6 +12,9 @@ Per agent:
                              "labels": {action label: count}} (labels: see action_label)
   tokens_in, tokens_out     tokens the model read (prompt text and images) and generated, over every attempt of
                             every turn (retries re-read the prompt); None when the log does not have them
+  cut_first, cut_final      turns whose first attempt / final answer ended at max_tokens (finish_reason 'length')
+  failed_cut                unparseable turns whose every attempt was cut off (a cut-off, not a format error)
+  first_tokens              generated tokens of each turn's first attempt, in turn order (for length percentiles)
 """
 from __future__ import annotations
 
@@ -57,9 +60,18 @@ class AgentStats:
 
     def add(self, agent_id: str, *, parse_ok: bool = True, completion: str = "",
             monitor: Optional[Dict[str, Dict[str, float]]] = None, action: Any = None,
-            tokens_in: Optional[int] = None, tokens_out: Optional[int] = None) -> None:
+            tokens_in: Optional[int] = None, tokens_out: Optional[int] = None,
+            finish_reason: Optional[str] = None, attempts: Optional[list] = None) -> None:
         a = self._a.setdefault(agent_id, {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": [],
-                                          "labels": {}, "numbers": [], "n": 0, "tokens_in": 0, "tokens_out": 0})
+                                          "labels": {}, "numbers": [], "n": 0, "tokens_in": 0, "tokens_out": 0,
+                                          "cut_first": 0, "cut_final": 0, "failed_cut": 0, "first_tokens": []})
+        att = attempts or ([{"finish_reason": finish_reason, "n_tokens": None}] if finish_reason else [])
+        if att:
+            a["cut_first"] += att[0].get("finish_reason") == "length"
+            a["cut_final"] += finish_reason == "length"
+            a["failed_cut"] += (not parse_ok) and all(x.get("finish_reason") == "length" for x in att)
+            if att[0].get("n_tokens") is not None:
+                a["first_tokens"].append(int(att[0]["n_tokens"]))
         for k, v in (("tokens_in", tokens_in), ("tokens_out", tokens_out)):  # one unknown turn: unknown total
             a[k] = None if v is None or a[k] is None else a[k] + v
         a["turns"] += 1
@@ -82,7 +94,9 @@ class AgentStats:
             out = sum(a.get("n_tokens") or 0 for a in attempts) if attempts else rec["n_tokens"]
         self.add(rec["agent_id"], parse_ok=rec.get("parse_ok", True), completion=rec.get("completion") or "",
                  monitor=rec.get("monitor"), action=rec.get("parsed_action"), tokens_in=rec.get("tokens_in"),
-                 tokens_out=out)
+                 tokens_out=out, finish_reason=rec.get("finish_reason"),
+                 attempts=attempts or ([{"finish_reason": rec.get("finish_reason"), "n_tokens": rec.get("n_tokens")}]
+                                       if "finish_reason" in rec else None))
 
     def to_json(self) -> Dict[str, Dict[str, Any]]:
         out = {}
@@ -97,6 +111,8 @@ class AgentStats:
                 "actions": {"n": a["n"], "numeric": statistics.mean(a["numbers"]) if a["numbers"] else None,
                             "labels": labels},
                 "tokens_in": a["tokens_in"], "tokens_out": a["tokens_out"],
+                "cut_first": a["cut_first"], "cut_final": a["cut_final"], "failed_cut": a["failed_cut"],
+                "first_tokens": a["first_tokens"],
             }
         return out
 

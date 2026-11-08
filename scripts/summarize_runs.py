@@ -186,6 +186,12 @@ def episode_rows(job) -> tuple:
             "tokens_in": tokens.get(aid, (None, None))[0], "tokens_out": tokens.get(aid, (None, None))[1],
             "monitor_layer": at, "steer_layer": (run.get("steering_resolved") or [{}])[0].get("layer"),
             "episode_turns": summary.get("turns"), "truncated": summary.get("truncated"),
+            # cut-offs (episodes logged before these stats: empty; scripts/cutoff_pilot.py / turn_stats.py read
+            # the JSONL then)
+            "cut_first": a.get("cut_first"), "cut_final": a.get("cut_final"), "failed_cut": a.get("failed_cut"),
+            "first_tokens_max": max(a["first_tokens"]) if a.get("first_tokens") else None,
+            "first_tokens_mean": round(sum(a["first_tokens"]) / len(a["first_tokens"]), 1)
+                                 if a.get("first_tokens") else None,
             **{f"mon_{t}": v for t, v in sorted(a["monitor"].get(at, {}).items())},
             **({f"mon_{name}_{t}": ph[t] for name, ph in zip(("early", "mid", "late"), a.get("phases") or [])
                 if ph for t in traits if t in ph} if a.get("phase_layer") == at else {}),

@@ -68,3 +68,30 @@ def test_large_output_split_into_parts(tmp_path, monkeypatch):
     monkeypatch.setattr(summarize_runs, "MAX_PART_BYTES", 10 ** 9)
     assert summarize_runs.write_csv(out, ["a", "b"], rows) == 1  # stale parts of the earlier output removed
     assert summarize_runs.csv_parts(out) == [tmp_path / "agents.csv.gz"]
+
+
+def test_cutoffs_in_summary_and_table(tmp_path):
+    """Cut-offs and first-attempt lengths go into agent_stats and the agent table, so the cut-off pilot and
+    turn statistics need no JSONL. Same numbers from the live logger and from a JSONL replay."""
+    from testbed.logging_.agent_stats import stats_from_jsonl
+    logs, out = tmp_path / "main", str(tmp_path / "res" / "agents.csv.gz")
+    d = logs / "g_2p"
+    (d / "g_2p__none").mkdir(parents=True)
+    (d / "g_2p__none" / "run.json").write_text(json.dumps({"run_id": "g_2p__none", "game": {"id": "g", "players": 2}}))
+    log = EpisodeLogger(str(d), "g_2p__none", 0)
+    cut, ok = {"finish_reason": "length", "n_tokens": 100}, {"finish_reason": "stop", "n_tokens": 30}
+    turns = [([ok], "stop", True), ([cut, ok], "stop", True), ([cut, cut], "length", False)]
+    for t, (att, fin, parsed) in enumerate(turns):
+        att = [{**x, "attempt": i, "user_prompt": "u", "completion": "c", "parse_error": None} for i, x in enumerate(att)]
+        log.log_step(game="g", turn=t, agent_id="p0", system_prompt="s", user_prompt="u", completion="c",
+                     parsed_action=1, parse_retries=len(att) - 1, reward=0.0, parse_ok=parsed, finish_reason=fin,
+                     attempts=att, tokens_out=sum(a["n_tokens"] for a in att))
+    log.close(summary={"final_rewards": {"p0": 1}})
+    a = json.loads((d / "g_2p__none" / "episode_0.summary.json").read_text())["agent_stats"]["p0"]
+    assert (a["cut_first"], a["cut_final"], a["failed_cut"]) == (2, 1, 1)
+    assert a["first_tokens"] == [30, 100, 100]
+    assert stats_from_jsonl(d / "g_2p__none" / "episode_0.jsonl")["p0"]["first_tokens"] == [30, 100, 100]
+    summarize_runs.main([str(logs), "--out", out, "--jobs", "1"])
+    row = read(out)[0]
+    assert (row["cut_first"], row["cut_final"], row["failed_cut"], row["first_tokens_max"]) == ("2", "1", "1", "100")
+    assert float(row["first_tokens_mean"]) == round(230 / 3, 1)
