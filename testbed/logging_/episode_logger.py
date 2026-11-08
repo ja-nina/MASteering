@@ -87,8 +87,13 @@ class EpisodeLogger:
         retry_io(os.makedirs, self.dir, exist_ok=True, patience=patience)
         self.path = os.path.join(self.dir, f"episode_{self.episode}.jsonl")
         self.trace_path = os.path.join(self.dir, f"episode_{self.episode}.trace.txt")
-        self._fh = retry_io(open, self.path, "w", encoding="utf-8", patience=patience)
-        self._trace = retry_io(open, self.trace_path, "w", encoding="utf-8", patience=patience)
+        # each writer gets its own part files, renamed into place on close: two jobs running the same episode (a
+        # resubmit while the first still runs) used to share one file and interleave or truncate it (27B: 693
+        # unreadable JSONLs). An episode's JSONL is thus only visible once whole; the last writer to close wins.
+        part = f".{os.environ.get('SLURM_JOB_ID', 'local')}-{os.getpid()}-{id(self):x}.part"
+        self._part, self._trace_part = self.path + part, self.trace_path + part
+        self._fh = retry_io(open, self._part, "w", encoding="utf-8", patience=patience)
+        self._trace = retry_io(open, self._trace_part, "w", encoding="utf-8", patience=patience)
 
     def log_step(self, *, game: str, turn: int, agent_id: str, system_prompt: str,
                  user_prompt: str, completion: str, parsed_action: Any,
@@ -144,8 +149,10 @@ class EpisodeLogger:
         """Close the files; the summary file (written last) marks the episode as complete."""
         if not self._fh.closed:
             self._fh.close()
+            retry_io(os.replace, self._part, self.path)
         if not self._trace.closed:
             self._trace.close()
+            retry_io(os.replace, self._trace_part, self.trace_path)
         if summary is not None:
             summary = {**summary, "agent_stats": self._stats.to_json()}
             spath = os.path.join(self.dir, f"episode_{self.episode}.summary.json")
