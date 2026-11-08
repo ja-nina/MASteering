@@ -1,12 +1,12 @@
 # Clean 9B sweep (2026-11-08): main's grid, conditions and games, rerun from scratch with every fix found since, so
 # nothing is excluded or merged afterwards. Own configs, logs and results: config/runs/main_v2, <logging_dir>/main_v2,
 # results/main_v2. Run ids equal main's (same seeds), but no episode of main is reused.
-#   1. set max_tokens below from the cut-off pilot (config/sweeps/cutoff_pilot.yaml; make_configs refuses null)
+#   1. max_tokens below was set from the cut-off pilot (config/sweeps/cutoff_pilot.yaml)
 #   2. python scripts/make_configs.py config/sweeps/main_v2.yaml
-#   3. bash scripts/slurm/submit_sweep.sh config/runs/main_v2 400 -p gpu-all --gres=gpu:l40:2
+#   3. bash scripts/slurm/submit_sweep.sh config/runs/main_v2 400 -p gpu-l40 --gres=gpu:2 --time=8:00:00  (or gpu-a40)
 # Changes from main.yaml:
 #  * episodes 20 (main 10, focus games 50): every game has >= 10 seeds for episode-clustered SEs
-#  * max_tokens from the pilot (main 1024: cut-offs were most unparseable turns at baseline and under steering)
+#  * max_tokens 15360 from the pilot (main 1024: cut-offs were most unparseable turns at baseline and under steering)
 #  * max_model_len 32768 (main 16384: TextArena prompts reached 25,650 tokens, prompt_too_long fallbacks)
 #  * cutoff_feedback on (longctx): an answer cut off before 'ACTION:' is continued, not re-asked
 #  * answer_marker ACTION on the six TextArena games that leaked the whole answer (tafix), with skip_eliminated on
@@ -14,7 +14,8 @@
 name: main_v2
 model: qwen3.5-9b                    # PersVecFast model key; vectors from ${PVF_OUT}/persona/<model>/bf16
 episodes: 20
-max_tokens: null                     # per turn: SET FROM THE CUT-OFF PILOT before make_configs
+max_tokens: 15360                    # per turn; cut-off pilot (prelim 2026-11-09): unsteered first answers cut 17.9% at
+                                     # 5k, 0.3% at 15k (only image connect four, 6%); |c|=2 cuts ~13% at any budget (runaway)
 cutoff_feedback: true
 max_turns: 200                       # longer episodes stop there, marked truncated (catan, hanabi, ...)
 max_parse_retries: 3
