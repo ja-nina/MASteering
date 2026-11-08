@@ -1,0 +1,43 @@
+# Cut-off pilot (2026-11-08): which per-turn token budget makes cut-off answers rare, before the clean 9B sweep
+# (main_v2.yaml). main ran at max_tokens 1024: unsteered 27B failures were all cut-offs, 9B at |c|=2 58% of them,
+# and image agents in GBS / Connect Four reason for 2-2.5k tokens on average even when capped. One file, three
+# budgets, each its own sweep, configs and logs (make_configs --max-tokens: name cutoff_pilot_<k>k), same run_ids and
+# so the same seeds, so the budgets compare episode by episode:
+#   for t in 5120 10240 15360; do python scripts/make_configs.py config/sweeps/cutoff_pilot.yaml --max-tokens $t; done
+#   for k in 5k 10k 15k; do bash scripts/slurm/submit_sweep.sh config/runs/cutoff_pilot_$k 60 -p gpu-all --gres=gpu:l40:2; done
+#   python scripts/cutoff_pilot.py <logging_dir>/cutoff_pilot_5k <logging_dir>/cutoff_pilot_10k <logging_dir>/cutoff_pilot_15k
+# Cells: the games and conditions that broke most at 1024 (long-reasoning image games, the strongest length
+# effects: sycophantic -2 shortest, empathy/evil + longest), unsteered, and every agent steered at |c| = 1 and 2.
+# Settings as main_v2 (32768 context, cutoff_feedback, the TextArena answer marker and skip_eliminated).
+name: cutoff_pilot
+model: qwen3.5-9b
+episodes: 3
+max_tokens: null                     # given by --max-tokens (one sweep per budget)
+max_turns: 200
+max_parse_retries: 3
+cutoff_feedback: true                # as longctx: a cut-off ACTION answer is continued, not re-asked
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+image_size: 448
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768                 # prompt + up to 15360 answer tokens; main's capture buffer holds 32768 rows
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+traits: [sycophantic, evil, empathy, assertive]
+coefficients: [-2, -1, 1, 2]
+
+conditions:
+  none: null
+  all: {select: all}
+
+games:
+  gbs:            {family: symbolic, id: gbs, players: [3, 6], observation: [text, image]}
+  connect_four:   {family: symbolic, id: connect_four, players: [2], observation: [text, image]}
+  beauty_contest: {family: symbolic, id: beauty_contest, players: [3], observation: [text, image]}
+  hanabi:         {family: symbolic, id: hanabi, players: [3], observation: [text, image]}
+  avalon:         {family: symbolic, id: avalon, players: [6], roles: true}
+  liars_dice:     {family: textarena, id: LiarsDice-v0, players: [3], env_kwargs: {answer_marker: ACTION}}
+  market_entry:   {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}

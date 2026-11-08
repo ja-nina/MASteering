@@ -101,3 +101,20 @@ def test_model_adds_conditions_of_its_own(tmp_path):
     assert runs["gbs_3p/gbs_3p__all_L7__evil_x2.5.yaml"]["steering"]["layer"] == 7
     assert "gbs_3p/gbs_3p__all__evil_x2.5.yaml" in runs  # the sweep's own conditions stay
     assert not any("all_L7" in k for k in expand(load_sweep(path)))  # other models: unchanged
+
+
+def test_max_tokens_override_gets_own_name_and_logs(tmp_path):
+    import pytest
+    from scripts.make_configs import load_sweep
+    path = tmp_path / "s.yaml"
+    path.write_text(yaml.safe_dump({**SWEEP, "max_tokens": 1024}))
+    s = load_sweep(path, max_tokens=10240)
+    assert s["name"] == "t_10k" and s["max_tokens"] == 10240
+    runs = expand(s)
+    cfg = runs["gbs_3p/gbs_3p__none.yaml"]
+    assert cfg["max_tokens"] == 10240 and cfg["logging_dir"] == "logs/t_10k/gbs_3p"
+    assert set(runs) == set(expand(load_sweep(path)))  # same run_ids, hence seeds, at every budget
+    path.write_text(yaml.safe_dump({**SWEEP, "max_tokens": None}))
+    with pytest.raises(ValueError, match="max_tokens"):
+        load_sweep(path)
+    assert load_sweep(path, max_tokens=5000)["name"] == "t_5000"

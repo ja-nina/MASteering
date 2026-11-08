@@ -4,6 +4,8 @@
     -> config/runs/main/<game>_<players>p/<run_id>.yaml
     python scripts/make_configs.py config/sweeps/main.yaml --model qwen3.5-2b
     -> config/runs/main_qwen3.5-2b/...   (another PersVecFast model; its own runs and logs)
+    python scripts/make_configs.py config/sweeps/cutoff_pilot.yaml --max-tokens 5120
+    -> config/runs/cutoff_pilot_5k/...   (another per-turn token budget; its own runs and logs, same run_ids)
 
 Each <game>_<players>p directory is meant to be one SLURM array (scripts/slurm/submit_sweep.sh):
 its runs share an engine pair and play concurrently. A condition is a steering-group template
@@ -34,7 +36,7 @@ def _merged(base: dict, over: dict) -> dict:
                        for k, v in over.items()}}
 
 
-def load_sweep(path, model=None) -> dict:
+def load_sweep(path, model=None, max_tokens=None) -> dict:
     """The sweep file, with `model` swapped for another PersVecFast model key if given; a different
     model gets its own name (<name>_<model>), so its configs and logs never mix with the sweep's own.
     The sweep's `models: {<key>: {...}}` overrides run settings for that model only (e.g. `engine` for a
@@ -50,7 +52,14 @@ def load_sweep(path, model=None) -> dict:
     if unknown:
         raise ValueError(f"models.{sweep['model']}: only run settings, coefficients, traits and conditions can be "
                          f"overridden, not {sorted(unknown)}")
-    return _merged(sweep, over)
+    sweep = _merged(sweep, over)
+    if max_tokens is not None:  # another token budget: own name and logs (<name>_<k>k), same run_ids and seeds
+        tag = f"{max_tokens / 1024:g}k" if max_tokens % 1024 == 0 else str(max_tokens)
+        sweep = {**sweep, "max_tokens": max_tokens, "name": f"{sweep['name']}_{tag}",
+                 **({"log_name": f"{sweep['log_name']}_{tag}"} if sweep.get("log_name") else {})}
+    if "max_tokens" in sweep and not isinstance(sweep["max_tokens"], int):  # e.g. left open (null) until a pilot
+        raise ValueError(f"{path}: max_tokens must be an integer (set it in the file or pass --max-tokens)")
+    return sweep
 
 
 def expand(sweep: dict) -> dict:
@@ -90,9 +99,10 @@ def main(argv=None) -> None:
     p.add_argument("sweep")
     p.add_argument("--out", default="config/runs")
     p.add_argument("--model", help="run the sweep with another PersVecFast model key, e.g. qwen3.5-2b")
+    p.add_argument("--max-tokens", type=int, help="per-turn token budget; the sweep gets the suffix _<k>k")
     p.add_argument("--print-name", action="store_true", help="only print the sweep's (model-suffixed) name")
     args = p.parse_args(argv)
-    sweep = load_sweep(args.sweep, args.model)
+    sweep = load_sweep(args.sweep, args.model, args.max_tokens)
     if args.print_name:
         print(sweep["name"])
         return
