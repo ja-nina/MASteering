@@ -13,6 +13,7 @@
 #      PART=2/2 bash scripts/slurm/submit_sweep.sh config/runs/main_v2 400 -p gpu-a40 --gres=gpu:2 --time=8:00:00
 # Changes from main.yaml:
 #  * episodes 20 (main 10, focus games 50): every game has >= 10 seeds for episode-clustered SEs
+#  * good_team (from focus.yaml, where it was added to main's logs for Avalon only): every role game
 #  * max_tokens 15360 from the pilot (main 1024: cut-offs were most unparseable turns at baseline and under steering)
 #  * max_model_len 32768 (main 16384: TextArena prompts reached 25,650 tokens, prompt_too_long fallbacks)
 #  * cutoff_feedback on (longctx): an answer cut off before 'ACTION:' is continued, not re-asked
@@ -63,6 +64,7 @@ conditions:                          # steering-group templates (testbed/steerin
   evil_team: {team: evil}            # every member of the deceiving side (role games)
   evil_one: {team: evil, select: one}
   good_one: {team: good, select: one}
+  good_team: {team: good}           # the honest side's mirror of evil_team (focus.yaml; F14), not in main.yaml
   all_random: {select: all, random_control: true}   # norm-matched random direction
   # the same trait as a prompt persona: its PersVecFast instruction in the system prompt
   prompt_one: {select: one, via: prompt}
