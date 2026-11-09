@@ -103,7 +103,8 @@ def read_summary(spath: Path) -> tuple:
     summary file (atomically; skipped if it is not writable), so the JSONL is read only once."""
     summary = json.loads(spath.read_text(encoding="utf-8"))
     stats = summary.get("agent_stats")
-    if stats is not None and all("actions" in a for a in stats.values()):
+    need = ("actions", "cut_first") if os.environ.get("MA_SUMMARY_CUTOFFS") else ("actions",)  # --cutoffs
+    if stats is not None and all(k in a for a in stats.values() for k in need):
         return summary, False
     jsonl = spath.with_name(spath.name[:-len(".summary.json")] + ".jsonl")
     summary["agent_stats"] = stats_from_jsonl(jsonl) if jsonl.exists() else {}
@@ -226,7 +227,12 @@ def main(argv=None) -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--layer", type=int)
     p.add_argument("--jobs", type=int, default=8, help="processes reading episodes in parallel")
+    p.add_argument("--cutoffs", action="store_true",
+                   help="fill cut_first/cut_final/failed_cut/first_tokens from the JSONL for episodes whose summary "
+                        "lacks them (logged before 2026-11-09); off by default, as it reads those JSONLs once")
     args = p.parse_args(argv)
+    if args.cutoffs:
+        os.environ["MA_SUMMARY_CUTOFFS"] = "1"  # read by read_summary, also in the worker processes
     runs = {}  # run dir relative to its log dir (<group>/<run_id>) -> [dirs that have it]
     for logs in map(Path, args.logs):
         if logs.is_dir():

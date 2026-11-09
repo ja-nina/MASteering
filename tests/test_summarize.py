@@ -95,3 +95,19 @@ def test_cutoffs_in_summary_and_table(tmp_path):
     row = read(out)[0]
     assert (row["cut_first"], row["cut_final"], row["failed_cut"], row["first_tokens_max"]) == ("2", "1", "1", "100")
     assert float(row["first_tokens_mean"]) == round(230 / 3, 1)
+
+
+def test_cutoffs_flag_fills_old_summaries(tmp_path, monkeypatch):
+    """An episode summarised before the cut-off stats gets them from its JSONL with --cutoffs only."""
+    spath = play(tmp_path / "main", "g_2p__none", 0)
+    s = json.loads(spath.read_text())
+    for a in s["agent_stats"].values():
+        for k in ("cut_first", "cut_final", "failed_cut", "first_tokens"):
+            a.pop(k)
+    spath.write_text(json.dumps(s))
+    out = str(tmp_path / "res" / "agents.csv.gz")
+    monkeypatch.delenv("MA_SUMMARY_CUTOFFS", raising=False)
+    summarize_runs.main([str(tmp_path / "main"), "--out", out, "--jobs", "1"])
+    assert read(out)[0]["cut_first"] == ""
+    summarize_runs.main([str(tmp_path / "main"), "--out", out, "--jobs", "1", "--cutoffs"])
+    assert read(out)[0]["cut_first"] == "0"
