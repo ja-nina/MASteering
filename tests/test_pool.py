@@ -101,3 +101,10 @@ def test_first_is_handed_out_by_next(tmp_path):
     assert p.first().episode == 0
     assert _drain(p) == [0, 1]  # the job first() claimed is not lost or claimed twice
     assert _pool(tmp_path / "x", []).first() is None
+
+
+def test_own_episodes_stop_starting_when_they_could_not_finish(tmp_path):
+    p = _pool(tmp_path, [_job(0), _job(1), _job(2)], deadline=time.time() + 1000)
+    assert p.next().episode == 0 and p.next().episode == 1  # at the start: no lengths known yet, start them
+    p.finished(_job(0), 900.0)  # 1.25 x 900 > 1000 s left
+    assert p.next() is None and len(p.own) == 1  # episode 2 is left for another task or a resubmit

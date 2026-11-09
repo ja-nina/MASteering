@@ -13,7 +13,7 @@ own task would reach last), if there is time left to finish one. Two tasks never
   busy    episodes of a shard whose own task is running are not taken: it is playing or about to play them (and a
           task started before the pool existed writes no claims). Taken are the shards of tasks still pending, or
           ended (timed out, died) with episodes left: one squeue call for the whole array, every 5 min.
-  time    another shard's episode is taken only when the task's remaining time (SLURM end time) exceeds
+  time    an own episode after the first finished one, and another shard's episode at all, is started only when the task's remaining time (SLURM end time) exceeds
           MA_TAKE_MARGIN (default 1.25) x the longest episode this task has finished, so a taken episode is
           not cut off by the time limit (a cut-off episode is lost: nothing of it is kept).
 
@@ -207,7 +207,9 @@ class EpisodePool:
         if getattr(self, "_first", None) is not None:
             job, self._first = self._first, None
             return job
-        while self.own:
+        # own episodes too: once episodes have finished (so their length is known), one starts only if it can end
+        # before the time limit; the ones left are taken by other tasks once this one has ended, or resubmitted
+        while self.own and (not self.durations or self._time_for_one_more()):
             job = self.own.popleft()
             if self._done(job):
                 continue
