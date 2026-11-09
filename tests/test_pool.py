@@ -94,3 +94,10 @@ def test_shard_busy_reads_the_array_once(monkeypatch):
     pool_mod._array_states.cache_clear()
     assert [pool_mod.shard_busy(s) for s in range(4)] == [True, False, True, False]
     assert len(calls) == 1 and "-r" in calls[0]
+
+
+def test_first_is_handed_out_by_next(tmp_path):
+    p = _pool(tmp_path, [_job(0), _job(1)])
+    assert p.first().episode == 0
+    assert _drain(p) == [0, 1]  # the job first() claimed is not lost or claimed twice
+    assert _pool(tmp_path / "x", []).first() is None

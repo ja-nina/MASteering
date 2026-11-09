@@ -197,8 +197,16 @@ class EpisodePool:
             return False  # nothing finished yet: no idea how long an episode takes
         return time.time() + TAKE_MARGIN * max(self.durations) < self.deadline
 
+    def first(self):
+        """next(), kept for the next call to next(): whether there is anything to play, before engines load."""
+        self._first = self.next()
+        return self._first
+
     def next(self):
         """The next job to start, or None (nothing left that can be started now)."""
+        if getattr(self, "_first", None) is not None:
+            job, self._first = self._first, None
+            return job
         while self.own:
             job = self.own.popleft()
             if self._done(job):

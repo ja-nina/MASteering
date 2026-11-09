@@ -74,6 +74,9 @@ def main(argv=None, open_engines=None) -> int:
     pool = EpisodePool(jobs, others, run_dirs=lambda job: dirs[job.run_index], deadline=slurm_deadline())
     log(f"episode pool: {len(jobs)} own, {len(others)} of other shards to take when slots free up"
         + ("" if take else " (taking off: MA_TAKE=0 or one shard)"))
+    if pool.first() is None:  # its episodes are done or taken (by tasks that ran before it): no engines needed
+        log("nothing to play: this shard's episodes are done or being played by other tasks")
+        return 0
 
     layers = None if args.no_monitor else monitor_layers(monitor_cfg, store)
     monitor = Monitor(store, layers, monitor_cfg.get("traits")) if layers is not None else None
