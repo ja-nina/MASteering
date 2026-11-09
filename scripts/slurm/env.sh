@@ -7,6 +7,13 @@ mkdir -p slurm-logs
 PYTHON="${PYTHON:-$(command -v python || true)}"
 [ -x "$PYTHON" ] || { echo "no python found: activate the pvf env before sbatch" >&2; exit 1; }
 echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  python=$PYTHON"
+# persvecfast lives on a network file system that drops out for minutes at a time: tasks that started then died
+# with "No module named 'persvecfast'" (main_v2, 5 tasks). Wait for it instead (up to 10 min)
+for i in $(seq 1 10); do
+  timeout 120 "$PYTHON" -c "import persvecfast" 2>/dev/null && break
+  [ "$i" = 10 ] && { echo "persvecfast still not importable after 10 tries" >&2; exit 1; }
+  echo "persvecfast not importable (try $i), waiting 60 s"; sleep 60
+done
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_USE_FLASHINFER_SAMPLER=0               # its sampler JIT-compiles with nvcc; nodes have no CUDA toolkit
