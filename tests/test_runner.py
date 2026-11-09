@@ -122,6 +122,7 @@ def test_failing_episode_does_not_stop_the_others(tmp_path, store):
 
 def test_run_games_cli_resumes_and_shards(tmp_path, monkeypatch):
     from scripts import run_games
+    monkeypatch.setenv("MA_TAKE", "0")  # the shards alone; taking over: the next test
     make_vectors(tmp_path / "vec")
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
@@ -269,3 +270,25 @@ def test_async_failing_episode_does_not_stop_the_others(tmp_path, store):
     good = _cfg(tmp_path, "gbs_ok", "gbs", 2, episodes=2)
     bad = _cfg(tmp_path, "gbs_bad", "gbs", 2, episodes=1, steering={"team": "evil", "trait": "evil", "coefficient": 1})
     assert run_jobs(build_jobs([good, bad], store), FakeAsyncGenerator(seed=5)) == {"ok": 2, "failed": 1}
+
+
+def test_run_games_takes_other_shards_episodes_once_its_own_are_running(tmp_path, monkeypatch):
+    from scripts import run_games
+    make_vectors(tmp_path / "vec")
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    for name in ("none", "two"):
+        (cfg_dir / f"{name}.yaml").write_text(yaml.safe_dump({
+            "run_id": f"gbs_{name}", "model": "qwen3.5-9b", "vectors_dir": str(tmp_path / "vec"),
+            "game": {"family": "symbolic", "id": "gbs", "players": 3}, "episodes": 3,
+            "steering": None if name == "none" else {"trait": "evil", "coefficient": 1},
+            "logging_dir": str(tmp_path / "logs")}))
+    gen = FakeGenerator()
+    args = ["--config-dir", str(cfg_dir), "--num-shards", "3", "--concurrent", "1"]
+    assert run_games.main(args + ["--shard", "0"], open_engines=fake_open_engines(gen)) == 0
+    summaries = list((tmp_path / "logs").rglob("*.summary.json"))
+    assert len(summaries) == 6  # its own 2, then the 4 of shards 1 and 2 (no SLURM: no deadline, no busy shard)
+    assert not list((tmp_path / "logs").rglob("*.claim"))  # claims are removed when an episode ends
+    calls = len(gen.batches)
+    assert run_games.main(args + ["--shard", "1"], open_engines=fake_open_engines(gen)) == 0
+    assert len(gen.batches) == calls  # shard 1 finds its episodes done

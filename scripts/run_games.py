@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from testbed.config import RunConfig, build_jobs, common, monitor_layers  # noqa: E402
 from testbed.engine import Monitor  # noqa: E402
+from testbed.pool import EpisodePool, slurm_deadline  # noqa: E402
 from testbed.runner import run_jobs  # noqa: E402
 from testbed.steering import VectorStore  # noqa: E402
 from testbed.util import log  # noqa: E402
@@ -60,11 +61,19 @@ def main(argv=None, open_engines=None) -> int:
 
     store = VectorStore(vectors_dir, cache_dir=Path(configs[0].logging_dir) / "_vectors" / model,
                         traits_dir=common(configs, "traits_dir"))
-    jobs = build_jobs(configs, store, args.shard, args.num_shards, args.episodes)
+    take = args.num_shards > 1 and os.environ.get("MA_TAKE", "1") != "0"
+    jobs, others = build_jobs(configs, store, args.shard, args.num_shards, args.episodes, with_others=True)
     log(f"{len(configs)} run(s), {len(jobs)} episode(s) to play in shard {args.shard}/{args.num_shards}"
         + (f" of {Path(args.config_dir).as_posix().rstrip('/')}" if args.config_dir else ""))  # read by progress.py
-    if not jobs:
+    if not take:
+        others = []
+    if not jobs and not others:
         return 0
+    # this shard's episodes, then (in slots that free up) other shards' unstarted ones: testbed/pool.py
+    dirs = [[c.run_dir] + ([c.fallback_logging_dir / c.run_id] if c.fallback_logging_dir else []) for c in configs]
+    pool = EpisodePool(jobs, others, run_dirs=lambda job: dirs[job.run_index], deadline=slurm_deadline())
+    log(f"episode pool: {len(jobs)} own, {len(others)} of other shards to take when slots free up"
+        + ("" if take else " (taking off: MA_TAKE=0 or one shard)"))
 
     layers = None if args.no_monitor else monitor_layers(monitor_cfg, store)
     monitor = Monitor(store, layers, monitor_cfg.get("traits")) if layers is not None else None
@@ -84,8 +93,8 @@ def main(argv=None, open_engines=None) -> int:
     for k, v in (args.engine or {}).items():
         engine_cfg = {**engine_cfg, k: {**(engine_cfg.get(k) or {}), **v} if isinstance(v, dict) else v}
     with open_engines(model, engine_cfg, layers) as (generator, reader):
-        counts = run_jobs(jobs, generator, reader, monitor, concurrent=concurrent)
-    log(f"done: {counts['ok']} episode(s) ok, {counts['failed']} failed")
+        counts = run_jobs(pool, generator, reader, monitor, concurrent=concurrent)
+    log(f"done: {counts['ok']} episode(s) ok, {counts['failed']} failed ({pool.taken} taken from other shards)")
     return 1 if counts["failed"] else 0
 
 

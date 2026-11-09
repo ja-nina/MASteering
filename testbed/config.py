@@ -144,14 +144,15 @@ def monitor_layers(monitor_cfg, store: VectorStore) -> Optional[List[int]]:
 
 
 def build_jobs(configs: List[RunConfig], store: VectorStore, shard: int = 0, num_shards: int = 1,
-               episodes: Optional[int] = None) -> List[Job]:
+               episodes: Optional[int] = None, with_others: bool = False):
     """Jobs for one shard of every run's episodes, minus the finished ones.
 
     Episodes are ordered episode-major (episode 0 of every run, then episode 1, ...) and dealt
     round-robin to the shards, so all shards play episode 0 of every run before any plays
     episode 1: a sweep stopped part-way has about the same number of episodes in every
     condition. Sharding happens before finished episodes are dropped, so an episode always
-    belongs to the same shard."""
+    belongs to the same shard. with_others: (this shard's jobs, the other shards' unfinished jobs) for
+    testbed/pool.py, each of the latter with .shard."""
     plans, infos, order = [], [], []
     for cfg in configs:
         plan = SteeringPlan.from_config(cfg.steering, store)
@@ -169,7 +170,22 @@ def build_jobs(configs: List[RunConfig], store: VectorStore, shard: int = 0, num
         order += [(i, ep) for i in range(len(configs)) if ep < counts[i]]
     mine = order[shard::num_shards]
     done = [cfg.completed_episodes() for cfg in configs]
-    return [_job(configs[i], i, ep, plans[i], infos[i]) for i, ep in mine if ep not in done[i]]
+    jobs = [_job(configs[i], i, ep, plans[i], infos[i]) for i, ep in mine if ep not in done[i]]
+    if with_others:
+        # every other shard's unfinished episodes, to take once this shard's are running (testbed/pool.py):
+        # from the end of each shard's list (what its own task would reach last), the shards interleaved
+        per_shard = [[(i, ep) for i, ep in order[s::num_shards] if ep not in done[i]][::-1]
+                     for s in range(num_shards)]
+        others = []
+        for k in range(max((len(x) for x in per_shard), default=0)):
+            for s in range(num_shards):
+                if s != shard and k < len(per_shard[s]):
+                    i, ep = per_shard[s][k]
+                    job = _job(configs[i], i, ep, plans[i], infos[i])
+                    job.shard = s
+                    others.append(job)
+        return jobs, others
+    return jobs
 
 
 def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan, info: Dict[str, Any]) -> Job:

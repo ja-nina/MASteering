@@ -154,7 +154,7 @@ def disk_done(group: Path) -> int:
 
 
 def bar(pct: float) -> str:
-    return f"{'#' * int(pct / 5):<20} {pct:5.1f}%"
+    return f"{'#' * int(min(pct, 100) / 5):<20} {pct:5.1f}%"  # a task that took other shards' episodes: > 100%
 
 
 def main(argv=None) -> int:

@@ -17,8 +17,8 @@ entry, 2026-11-09: 38 tasks timed out without one episode).
 from __future__ import annotations
 
 import os
+import time
 import traceback
-from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -215,31 +215,46 @@ class EpisodeRun:
             log(f"warning: closing {self.job.run_id} episode {self.job.episode} failed")
 
 
-def run_jobs(jobs: List[Job], generator: Generator, reader: Optional[Reader] = None,
+def run_jobs(jobs, generator: Generator, reader: Optional[Reader] = None,
              monitor: Optional[Monitor] = None, concurrent: int = 32, scheduler: Optional[str] = None) -> Dict[str, int]:
     """Play every job, `concurrent` episodes at a time. Returns {"ok": n, "failed": n}.
+    jobs: a list, or a testbed.pool.EpisodePool (next()/finished(job, seconds)), which can refill freed slots
+    with other shards' episodes.
     scheduler: "async" | "lockstep" | None (async when the generator can, unless MA_SCHEDULER says otherwise)."""
     scheduler = scheduler or os.environ.get("MA_SCHEDULER") or ("async" if hasattr(generator, "submit") else "lockstep")
     if scheduler not in ("async", "lockstep"):
         raise ValueError(f"scheduler must be async or lockstep, not {scheduler!r}")
     log(f"scheduler: {scheduler}")
-    queue, active, counts = deque(jobs), [], {"ok": 0, "failed": 0}
+    from testbed.pool import pool_from_lists
+    pool = pool_from_lists(list(jobs)) if isinstance(jobs, (list, tuple)) else jobs
+    active, counts = [], {"ok": 0, "failed": 0}
+    exhausted = False  # the pool had nothing to start: asked again only once a slot frees
     inflight: set = set()  # async: request keys in the engine
 
     def fail(run, job, stage):
+        nonlocal exhausted
+        exhausted = False  # a slot is free
         counts["failed"] += 1
         log(f"ERROR {job.run_id} episode {job.episode} ({stage}):\n{traceback.format_exc()}")
         if run is not None:
             run.logger.close()
             run.release()
+        pool.finished(job, None)
 
-    while queue or active:
-        while queue and len(active) < concurrent:
-            job = queue.popleft()
+    while True:
+        while not exhausted and len(active) < concurrent:
+            job = pool.next()
+            if job is None:
+                exhausted = True
+                break
             try:
-                active.append(EpisodeRun(job))
+                run = EpisodeRun(job)
+                run.started = time.time()
+                active.append(run)
             except Exception:
                 fail(None, job, "setup")
+        if not active:
+            break
         requests = []
         for run in list(active):
             try:
@@ -288,5 +303,7 @@ def run_jobs(jobs: List[Job], generator: Generator, reader: Optional[Reader] = N
             if run.done:
                 active.remove(run)
                 counts["ok"] += 1
+                pool.finished(run.job, time.time() - run.started)
+                exhausted = False  # a slot is free: the pool may have something now
                 log(f"{run.job.run_id} episode {run.job.episode} done after {run.turn} turns: {run.total_rewards}")
     return counts
