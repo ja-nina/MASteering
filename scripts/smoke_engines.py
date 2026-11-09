@@ -7,6 +7,8 @@
 4. capture readout returns one row per completion token (checked inside CaptureEngine)
 5. image prompts (Qwen3.5 is a VLM) generate, are read back, and still respond to steering
 6. the prompt persona (the trait's PersVecFast instruction in the system prompt) raises the projection
+7. the asynchronous path (submit/poll, the runner's default) steers too: the same requests sent one by one into
+   vLLM's engine give the same texts as the batch for the same seeds, and move the projection the same way
 Every completion, its projections and the check results are saved to --out (samples.json, board.png).
 """
 from __future__ import annotations
@@ -102,6 +104,25 @@ def main(argv=None) -> int:
                    "text": _samples(results, requests, score, labels)}
         for c in ("none", "up", "down", "prompt"):
             print(f"\n--- {c} ({conditions[c].label if conditions[c] else 'unsteered'}):\n{by[(c, 0)].text}", flush=True)
+
+        # 7. asynchronous path: the same requests, submitted one by one and collected as they finish
+        gen.submit(requests)
+        got = []
+        while len(got) < len(requests):
+            got += gen.poll()
+        check("async: every request comes back once", sorted(r.key for r in got) == sorted(r.key for r in requests))
+        a_by = {r.key: r for r in got}
+        a_rows = reader.read(got)
+        a_score = {r.key: monitor.scores(x)[str(up.layer)][args.trait] for r, x in zip(got, a_rows)}
+        a_mean = {c: statistics.mean(a_score[(c, i)] for i in range(len(QUESTIONS))) for c in conditions}
+        print(f"async: mean {args.trait} projection at layer {up.layer}: {a_mean}", flush=True)
+        check(f"async: +{args.coefficient} steering raises the projection", a_mean["up"] > a_mean["none"])
+        check(f"async: -{args.coefficient} steering lowers the projection", a_mean["down"] < a_mean["none"])
+        same_text = sum(a_by[k].text == by[k].text for k in by)
+        check("async: same texts as the batch (same seeds)", same_text >= 0.8 * len(by),
+              f"{same_text}/{len(by)} identical (batch composition can change a few through numerics)")
+        samples["async_mean_projection"] = a_mean
+        samples["async_identical_texts"] = f"{same_text}/{len(by)}"
 
         # image observations: a rendered connect-four position in the prompt
         board = _board_image()

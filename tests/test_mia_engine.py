@@ -20,6 +20,8 @@ class _SamplingParams:
 
 
 sys.modules.setdefault("vllm", types.SimpleNamespace(SamplingParams=_SamplingParams))
+sys.modules.setdefault("vllm.sampling_params", types.SimpleNamespace(
+    RequestOutputKind=types.SimpleNamespace(FINAL_ONLY="final_only")))
 
 from testbed.engine import TurnRequest, TurnResult  # noqa: E402
 from testbed.mia_engine import CaptureEngine, CaptureMismatch, SteerEngine  # noqa: E402
@@ -224,3 +226,43 @@ def test_prompt_tokens_are_per_request():
     a, b = engine.generate([TurnRequest(("a",), "sys", "one two three four", seed=1, max_tokens=8),
                             TurnRequest(("b",), "sys", "x", seed=2, max_tokens=8)])
     assert (a.n_prompt_tokens, b.n_prompt_tokens) == (5, 2)
+
+
+class _Engine:
+    """vLLM's LLMEngine as SteerEngine's asynchronous path uses it: add_request, step, has_unfinished_requests.
+    Each step finishes the oldest request still running."""
+
+    def __init__(self):
+        self.added, self.running = [], []
+
+    def add_request(self, rid, prompt, params):
+        self.added.append((rid, prompt, params))
+        self.running.append((rid, prompt))
+
+    def has_unfinished_requests(self):
+        return bool(self.running)
+
+    def step(self):
+        rid, prompt = self.running.pop(0)
+        out = _out(prompt["prompt_token_ids"], [7, 8, 9])
+        out.request_id, out.finished = rid, True
+        return [out]
+
+
+def test_steer_engine_submit_poll_matches_generate():
+    steer = Steer(layer=12, coeff=2.5, vector_path="/v.pt", label="x")
+    requests = [TurnRequest(("a",), "sys", "short question", seed=1, steer=steer, max_tokens=100),
+                TurnRequest(("b",), "sys", "another one", seed=2, max_tokens=10, continuation="so far"),
+                TurnRequest(("c",), "sys", "word " * 60, seed=3, max_tokens=10)]
+    llm = types.SimpleNamespace(llm=types.SimpleNamespace(llm_engine=_Engine()))
+    engine = SteerEngine(llm, SPEC, _Tok(), "/zero.pt", {"temperature": 0.3}, max_model_len=40)
+    engine.submit(requests)
+    added = llm.llm.llm_engine.added
+    assert len(added) == 2 and all(p.output_kind == "final_only" for _, _, p in added)
+    assert added[0][2].extra_args["steer"]["coefficient"] == 2.5 and added[0][2].seed == 1
+    first = engine.poll()  # the over-long prompt is finished without vLLM, and comes back first
+    assert [r.key for r in first] == [("c",)] and first[0].finish_reason == "prompt_too_long"
+    got = engine.poll() + engine.poll()
+    assert [r.key for r in got] == [("a",), ("b",)]
+    assert got[1].text == "so far" + "ok" and got[1].n_continued == 2 and got[1].token_ids[:2] == [0, 1]
+    assert engine.poll() == []

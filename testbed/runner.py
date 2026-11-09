@@ -1,14 +1,22 @@
-"""Lockstep scheduler: many episodes (of one or several runs) share every generate call.
+"""Scheduler: many episodes (of one or several runs) share one engine.
 
 Turn-based games produce one request at a time, which would leave vLLM idle. Instead each
-active episode exposes the turns it is waiting for; one scheduler step generates all of them
-in one batch, optionally reads them with the monitor, and hands them back. An episode applies
-its pending agents' actions once all of them have a valid (or fallback) action, so
-simultaneous and turn-based games are handled alike. Parse failures are re-asked in the next
-step with the parser's feedback appended to the prompt.
+active episode exposes the turns it is waiting for, and the scheduler keeps up to
+`concurrent` episodes' turns in the engine at once. An episode applies its pending agents'
+actions once all of them have a valid (or fallback) action, so simultaneous and turn-based
+games are handled alike. Parse failures are re-asked with the parser's feedback appended.
+
+Two schedules, the same turns (prompts, seeds, steering): with a generator that has submit/poll
+(mia_engine.SteerEngine) the schedule is asynchronous: every finished answer is parsed, read by
+the monitor and committed at once, and the episode's next turn goes in, while the other answers
+are still being generated. Otherwise (or MA_SCHEDULER=lockstep) every step generates all pending
+turns in one call and waits for the slowest: with long answers (max_tokens 15360) a step costs
+the batch's longest generation, and games of 80+ steps did not finish in 8 h (main_v2 market
+entry, 2026-11-09: 38 tasks timed out without one episode).
 """
 from __future__ import annotations
 
+import os
 import traceback
 from collections import deque
 from dataclasses import dataclass
@@ -208,9 +216,15 @@ class EpisodeRun:
 
 
 def run_jobs(jobs: List[Job], generator: Generator, reader: Optional[Reader] = None,
-             monitor: Optional[Monitor] = None, concurrent: int = 32) -> Dict[str, int]:
-    """Play every job, `concurrent` episodes at a time. Returns {"ok": n, "failed": n}."""
+             monitor: Optional[Monitor] = None, concurrent: int = 32, scheduler: Optional[str] = None) -> Dict[str, int]:
+    """Play every job, `concurrent` episodes at a time. Returns {"ok": n, "failed": n}.
+    scheduler: "async" | "lockstep" | None (async when the generator can, unless MA_SCHEDULER says otherwise)."""
+    scheduler = scheduler or os.environ.get("MA_SCHEDULER") or ("async" if hasattr(generator, "submit") else "lockstep")
+    if scheduler not in ("async", "lockstep"):
+        raise ValueError(f"scheduler must be async or lockstep, not {scheduler!r}")
+    log(f"scheduler: {scheduler}")
     queue, active, counts = deque(jobs), [], {"ok": 0, "failed": 0}
+    inflight: set = set()  # async: request keys in the engine
 
     def fail(run, job, stage):
         counts["failed"] += 1
@@ -232,13 +246,25 @@ def run_jobs(jobs: List[Job], generator: Generator, reader: Optional[Reader] = N
                 mine = run.requests()
                 if not mine:
                     raise RuntimeError("game is not done but no agent is pending")
-                requests += mine
+                requests += [r for r in mine if r.key not in inflight]
             except Exception:
                 active.remove(run)
                 fail(run, run.job, "render")
-        if not requests:
-            continue
-        results = {res.key: res for res in generator.generate(requests)}
+        if scheduler == "lockstep":
+            if not requests:
+                continue
+            results = {res.key: res for res in generator.generate(requests)}
+        else:
+            if requests:
+                generator.submit(requests)
+                inflight.update(r.key for r in requests)
+            if not inflight:
+                continue
+            results = {res.key: res for res in generator.poll()}
+            inflight.difference_update(results)
+            # an episode that failed meanwhile leaves its keys behind: they are not anyone's turn any more
+            live = {(run.job.run_index, run.job.episode) for run in active}
+            inflight = {k for k in inflight if (k[0], k[1]) in live}
         final, broken = [], set()
         for run in active:
             try:

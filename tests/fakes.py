@@ -77,6 +77,26 @@ class FakeGenerator:
         return out
 
 
+class FakeAsyncGenerator(FakeGenerator):
+    """submit/poll like mia_engine.SteerEngine: each poll returns a random non-empty part of what is in flight,
+    so episodes advance out of step with each other."""
+
+    def __init__(self, respond=reply, finish="stop", seed=0) -> None:
+        super().__init__(respond, finish)
+        self.rng, self.pending, self.submits = random.Random(seed), [], []
+
+    def submit(self, requests):
+        self.submits.append(list(requests))
+        self.pending += list(requests)
+
+    def poll(self):
+        if not self.pending:
+            return []
+        k = self.rng.randint(1, len(self.pending))
+        done = [self.pending.pop(self.rng.randrange(len(self.pending))) for _ in range(k)]
+        return FakeGenerator.generate(self, done)
+
+
 class FakeReader:
     def __init__(self, layers) -> None:
         self.layers = list(layers)

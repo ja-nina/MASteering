@@ -10,7 +10,7 @@ import yaml
 from scripts import run_games
 from scripts.collect_samples import main as collect
 from scripts.make_configs import expand, main as make_configs
-from tests.fakes import FakeGenerator, FakeReader, fake_open_engines, make_vectors
+from tests.fakes import FakeAsyncGenerator, FakeGenerator, FakeReader, fake_open_engines, make_vectors
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,7 +69,7 @@ def test_engine_smoke_saves_samples(tmp_path, monkeypatch):
     pytest.importorskip("persvecfast")
     from scripts import smoke_engines
     monkeypatch.setenv("PVF_OUT", str(_pvf(tmp_path)))
-    gen = FakeGenerator(respond=lambda r: "a reply " * 5)
+    gen = FakeAsyncGenerator(respond=lambda r: "a reply " * 5)
     monkeypatch.setattr(smoke_engines, "open_engines", fake_open_engines(gen))
     monkeypatch.chdir(tmp_path)
     smoke_engines.main(["--out", str(tmp_path / "eng")])  # fake rows: the "raises" checks fail; that is fine here
@@ -78,5 +78,6 @@ def test_engine_smoke_saves_samples(tmp_path, monkeypatch):
     assert conds == {"none", "up", "down", "zero", "prompt"} and len(samples["image"]) == 8
     prompt = next(s for s in samples["text"] if s["condition"] == "prompt")
     assert prompt["system"].startswith("You clearly exhibit the trait 'sarcastic'.")
-    assert {c["check"] for c in samples["checks"]} >= {"image prompts generate"}
+    assert {c["check"] for c in samples["checks"]} >= {"image prompts generate", "async: every request comes back once"}
+    assert next(c for c in samples["checks"] if c["check"] == "async: same texts as the batch (same seeds)")["ok"]
     assert (tmp_path / "eng" / "board.png").exists()

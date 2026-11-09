@@ -8,7 +8,7 @@ from testbed.config import RunConfig, build_jobs
 from testbed.engine import Monitor
 from testbed.runner import run_jobs
 from testbed.steering import VectorStore
-from tests.fakes import HIDDEN, FakeGenerator, FakeReader, fake_open_engines, make_vectors
+from tests.fakes import HIDDEN, FakeAsyncGenerator, FakeGenerator, FakeReader, fake_open_engines, make_vectors
 
 
 @pytest.fixture
@@ -220,3 +220,52 @@ def test_cutoff_note_carries_the_games_hint():
     assert cutoff_note() == CUTOFF_NOTE
     assert cutoff_note("No board words.") == ("\n\n[Answer limit reached: no more room to think. "
                                               "Final answer now. No board words.]\n")
+
+
+def _turns(cfg, ep=0):
+    """What an episode's agents saw and did, turn by turn (not when it happened)."""
+    return [(r["turn"], r["agent_id"], r["user_prompt"], r["completion"], r["parsed_action"], r["parse_retries"],
+             r["reward"], json.dumps(r["monitor"], sort_keys=True)) for r in _records(cfg, ep)]
+
+
+@pytest.mark.parametrize("game,players,kw", [("werewolf", 6, {}), ("gbs", 3, {}),
+                                            ("beauty_contest", 2, {"env_kwargs": {"num_rounds": 2}})])
+def test_async_schedule_plays_the_same_turns_as_lockstep(tmp_path, store, game, players, kw):
+    """Answers come back in random order and episodes run out of step, but every episode is the same turn by turn:
+    same prompts, seeds, actions, rewards and monitor scores (simultaneous, turn-based, with retries)."""
+    out = {}
+    for name, gen in (("lockstep", FakeGenerator()), ("async", FakeAsyncGenerator(seed=3))):
+        cfgs = [_cfg(tmp_path / name, f"{game}_none", game, players, episodes=3, monitor={"layers": "auto"}, **kw),
+                _cfg(tmp_path / name, f"{game}_evil", game, players, episodes=3, monitor={"layers": "auto"},
+                     steering={"trait": "evil", "coefficient": 1.0}, **kw)]
+        reader = FakeReader([1, 2, 3])
+        counts = run_jobs(build_jobs(cfgs, store), gen, reader, Monitor(store, [1, 2, 3]), concurrent=4)
+        assert counts == {"ok": 6, "failed": 0}
+        out[name] = [_turns(c, ep) for c in cfgs for ep in range(3)]
+        if name == "async":
+            assert len(gen.submits) > 1 and not gen.pending
+            keys = [r.key for b in gen.submits for r in b]
+            assert len(keys) == len(set(keys))  # a request in flight is never sent twice
+    assert out["async"] == out["lockstep"]
+
+
+def test_async_retries_go_back_in_while_others_wait(tmp_path, store):
+    cfg = _cfg(tmp_path, "bc", "beauty_contest", 2, episodes=1, max_parse_retries=2, env_kwargs={"num_rounds": 1})
+    gen = FakeAsyncGenerator(respond=lambda r: "no idea" if r.key[3] == "player_0" else "CHOICE: 40", seed=1)
+    assert run_jobs(build_jobs([cfg], store), gen) == {"ok": 1, "failed": 0}
+    rec = next(r for r in _records(cfg) if r["agent_id"] == "player_0")
+    assert rec["parse_retries"] == 2 and [a["attempt"] for a in rec["attempts"]] == [0, 1, 2]
+
+
+def test_scheduler_can_be_forced_to_lockstep(tmp_path, store, monkeypatch):
+    monkeypatch.setenv("MA_SCHEDULER", "lockstep")
+    cfg = _cfg(tmp_path, "gbs", "gbs", 3, episodes=2)
+    gen = FakeAsyncGenerator()
+    assert run_jobs(build_jobs([cfg], store), gen) == {"ok": 2, "failed": 0}
+    assert gen.batches and not gen.submits
+
+
+def test_async_failing_episode_does_not_stop_the_others(tmp_path, store):
+    good = _cfg(tmp_path, "gbs_ok", "gbs", 2, episodes=2)
+    bad = _cfg(tmp_path, "gbs_bad", "gbs", 2, episodes=1, steering={"team": "evil", "trait": "evil", "coefficient": 1})
+    assert run_jobs(build_jobs([good, bad], store), FakeAsyncGenerator(seed=5)) == {"ok": 2, "failed": 1}

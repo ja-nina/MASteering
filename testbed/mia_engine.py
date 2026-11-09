@@ -65,6 +65,9 @@ class SteerEngine:
         self.llm, self.spec, self.tokenizer = llm, spec, tokenizer
         self.zero_vector, self.sampling, self.max_model_len = zero_vector, sampling, max_model_len
         self.pixels_per_token = pixels_per_token  # vision patch size x spatial merge
+        self._inflight: Dict[str, tuple] = {}  # asynchronous use: vLLM request id -> what _result needs
+        self._ready: List[TurnResult] = []     # finished without vLLM (prompt_too_long), not yet polled
+        self._counter = 0
 
     def _image_tokens(self, images) -> int:
         p = self.pixels_per_token
@@ -76,40 +79,86 @@ class SteerEngine:
         return {"method": "add_vector", "coefficient": steer.coeff, "optimal_layer": steer.layer,
                 "vector_path": steer.vector_path}
 
-    def generate(self, requests: List[TurnRequest]) -> List[TurnResult]:
-        """One batched call. Generation is capped so prompt + completion (+1 for the monitor's
-        readout pass) fits max_model_len; a prompt that leaves no room comes back empty with
-        finish_reason "prompt_too_long" (the parser then falls back) instead of failing the batch."""
+    def _prepare(self, r: TurnRequest):
+        """(prompt, SamplingParams, meta) for vLLM, or a finished TurnResult when the prompt leaves no room.
+        Generation is capped so prompt + completion (+1 for the monitor's readout pass) fits max_model_len; a
+        prompt that leaves no room comes back empty with finish_reason "prompt_too_long" (the parser then
+        falls back) instead of failing the batch."""
         from vllm import SamplingParams
 
+        text = template(self.tokenizer, self.spec, r.system, r.user, len(r.images))
+        ids = self.tokenizer.encode(text, add_special_tokens=False)  # the template has them
+        # a continuation (the answer so far) is read after the generation prompt; generation goes on from it
+        cont = self.tokenizer.encode(r.continuation, add_special_tokens=False) if r.continuation else []
+        room = self.max_model_len - len(ids) - len(cont) - self._image_tokens(r.images) - 1
+        if room < 16:
+            return TurnResult(r.key, r.continuation, "prompt_too_long", ids, cont, text, r.images,
+                              n_continued=len(cont))
+        kwargs = {**sampling_kwargs(self.spec, r.seed, r.max_tokens), **self.sampling}
+        kwargs["max_tokens"] = min(kwargs["max_tokens"], room)
+        # image prompts go in as text: vLLM expands each placeholder to the image's tokens
+        prompt = ({"prompt": text + r.continuation, "multi_modal_data": {"image": list(r.images)}}
+                  if r.images else {"prompt_token_ids": ids + cont})
+        return prompt, SamplingParams(**kwargs, extra_args={"steer": self._steer_arg(r.steer)}), (r, text, ids, cont)
+
+    def _result(self, meta, o) -> TurnResult:
+        r, text, ids, cont = meta
+        c = o.outputs[0]
+        prompt_ids = list(o.prompt_token_ids)
+        prompt_ids = prompt_ids[:len(prompt_ids) - len(cont)]  # the continuation counts as answer, not prompt
+        # n_prompt_tokens: this request's own prompt (it used the batch's last prompt length before 2026-11-03)
+        return TurnResult(r.key, r.continuation + c.text, c.finish_reason, prompt_ids, cont + list(c.token_ids),
+                          text, r.images, len(ids) + len(cont) + self._image_tokens(r.images), n_continued=len(cont))
+
+    def generate(self, requests: List[TurnRequest]) -> List[TurnResult]:
+        """One batched call: returns when every request is finished (the lockstep scheduler)."""
         results: Dict[tuple, TurnResult] = {}
         prompts, params, sent = [], [], []
         for r in requests:
-            text = template(self.tokenizer, self.spec, r.system, r.user, len(r.images))
-            ids = self.tokenizer.encode(text, add_special_tokens=False)  # the template has them
-            # a continuation (the answer so far) is read after the generation prompt; generation goes on from it
-            cont = self.tokenizer.encode(r.continuation, add_special_tokens=False) if r.continuation else []
-            room = self.max_model_len - len(ids) - len(cont) - self._image_tokens(r.images) - 1
-            if room < 16:
-                results[r.key] = TurnResult(r.key, r.continuation, "prompt_too_long", ids, cont, text, r.images,
-                                            n_continued=len(cont))
+            prep = self._prepare(r)
+            if isinstance(prep, TurnResult):
+                results[r.key] = prep
                 continue
-            kwargs = {**sampling_kwargs(self.spec, r.seed, r.max_tokens), **self.sampling}
-            kwargs["max_tokens"] = min(kwargs["max_tokens"], room)
-            # image prompts go in as text: vLLM expands each placeholder to the image's tokens
-            prompts.append({"prompt": text + r.continuation, "multi_modal_data": {"image": list(r.images)}}
-                           if r.images else {"prompt_token_ids": ids + cont})
-            params.append(SamplingParams(**kwargs, extra_args={"steer": self._steer_arg(r.steer)}))
-            sent.append((r, text, ids, cont))
-        for (r, text, ids, cont), o in zip(sent, self.llm.generate(prompts, params) if prompts else []):
-            c = o.outputs[0]
-            prompt_ids = list(o.prompt_token_ids)
-            prompt_ids = prompt_ids[:len(prompt_ids) - len(cont)]  # the continuation counts as answer, not prompt
-            # n_prompt_tokens: this request's own prompt (it used the batch's last prompt length before 2026-11-03)
-            results[r.key] = TurnResult(r.key, r.continuation + c.text, c.finish_reason, prompt_ids,
-                                        cont + list(c.token_ids), text, r.images,
-                                        len(ids) + len(cont) + self._image_tokens(r.images), n_continued=len(cont))
+            prompts.append(prep[0])
+            params.append(prep[1])
+            sent.append(prep[2])
+        for meta, o in zip(sent, self.llm.generate(prompts, params) if prompts else []):
+            results[meta[0].key] = self._result(meta, o)
         return [results[r.key] for r in requests]
+
+    # asynchronous use (runner.run_jobs): requests go into vLLM's engine one by one and come back as each finishes,
+    # so an episode's next turn never waits for the slowest answer of a batch. Same prompts, seeds and per-request
+    # steering as generate(); only which requests share a forward pass differs (as between generate() calls).
+    def _engine(self):
+        return self.llm.llm.llm_engine  # MiaLLM wraps a vllm.LLM
+
+    def submit(self, requests: List[TurnRequest]) -> None:
+        from vllm.sampling_params import RequestOutputKind
+
+        for r in requests:
+            prep = self._prepare(r)
+            if isinstance(prep, TurnResult):
+                self._ready.append(prep)
+                continue
+            prompt, params, meta = prep
+            params.output_kind = RequestOutputKind.FINAL_ONLY  # only finished requests come back from step()
+            self._counter += 1
+            rid = f"ma-{self._counter}"
+            self._inflight[rid] = meta
+            self._engine().add_request(rid, prompt, params)
+
+    def poll(self) -> List[TurnResult]:
+        """The requests finished since the last poll; waits until there is at least one (unless none is left)."""
+        out, self._ready = self._ready, []
+        engine = self._engine()
+        while not out and self._inflight and engine.has_unfinished_requests():
+            for o in engine.step():
+                if o.finished and o.request_id in self._inflight:
+                    out.append(self._result(self._inflight.pop(o.request_id), o))
+        if not out and self._inflight:
+            lost = sorted(self._inflight)
+            raise RuntimeError(f"vLLM has no unfinished requests but {len(lost)} were never returned: {lost[:5]}")
+        return out
 
 
 class CaptureEngine:
