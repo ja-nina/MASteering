@@ -197,8 +197,13 @@ class EpisodeRun:
                             seen.add(pid)
                             self.eliminations.append({"player_id": pid, "turn": -1, "type": key})
                     break
+        try:  # the game's own score (TextArena: tokens, chips, points), next to the win/lose reward; logging only
+            scores = self.env.game_scores() if hasattr(self.env, "game_scores") else None
+        except Exception:  # noqa: BLE001 - a score that cannot be read must not lose the episode
+            scores = None
         self.logger.close(summary={
             "total_rewards": self.total_rewards, "final_rewards": self.last_rewards, "final_info": self.last_info,
+            "game_scores": scores,
             "player_roles": self._roles(),
             "teams": self.env.teams() if hasattr(self.env, "teams") else {},
             "eliminations": self.eliminations, "turns": self.turn, "truncated": truncated,

@@ -271,6 +271,12 @@ class TextArenaAdapter:
         return {pid: "evil" if any(w in role.lower() for w in _EVIL_ROLE_WORDS) else "good"
                 for pid, role in self.roles().items()}
 
+    def game_scores(self) -> Optional[Dict[str, float]]:
+        """The game's own score per player (tokens, chips, points: testbed/envs/textarena/scores.py), not
+        TextArena's win/lose reward; None for games that have only a winner."""
+        from testbed.envs.textarena.scores import game_scores
+        return game_scores(self.env_id, self._env)
+
     def close(self) -> Dict[str, float]:
         if self.context.last_rewards:
             return dict(self.context.last_rewards)

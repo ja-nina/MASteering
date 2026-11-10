@@ -127,6 +127,18 @@ def episode_rewards(summary: dict, spath: Path) -> tuple:
     return summary.get("final_rewards", {}), "last_step"
 
 
+def episode_scores(summary: dict, spath: Path) -> tuple:
+    """({agent: the game's own score (tokens, chips, points)}, where it came from: summary | replay | None).
+    TextArena's reward only ranks the players (testbed/envs/textarena/scores.py); the score is what they earned.
+    Episodes logged before summaries had game_scores get it from scripts/backfill_scores.py's replay."""
+    if summary.get("game_scores"):
+        return summary["game_scores"], "summary"
+    side = spath.with_name(spath.name[:-len(".summary.json")] + ".scores.json")
+    if side.exists():
+        return json.loads(side.read_text(encoding="utf-8"))["game_scores"], "replay"
+    return {}, None
+
+
 def episode_tokens(stats: dict, spath: Path) -> dict:
     """{agent: (tokens read, tokens generated)}: from the summary's agent_stats, else from the episode_N.tokens.json
     that scripts/backfill_tokens.py writes for episodes logged before the counts; (None, None) when neither has it."""
@@ -163,6 +175,7 @@ def episode_rows(job) -> tuple:
     at = str(layer) if layer is not None else (layers[len(layers) // 2] if layers else None)
     none = {"turns": 0, "fallbacks": 0, "chars": 0, "monitor": {}, "phases": [None] * 3, "actions": {}}
     rewards, reward_from = episode_rewards(summary, Path(spath))
+    scores, score_from = episode_scores(summary, Path(spath))
     tokens = episode_tokens(stats, Path(spath))
     rows = []
     for aid in sorted(set(rewards) | set(stats)):
@@ -182,6 +195,9 @@ def episode_rows(job) -> tuple:
             "steered": steer is not None, "steer_label": steer["label"] if steer else None,
             "role": summary.get("player_roles", {}).get(aid), "team": summary.get("teams", {}).get(aid),
             "reward": rewards.get(aid), "reward_from": reward_from,
+            # the game's own score (tokens, chips, points; TextArena games that have one), next to the reward,
+            # which in TextArena games only says who won
+            "score": scores.get(aid), "score_from": score_from if aid in scores else None,
             "turns": a["turns"], "parse_fallbacks": a["fallbacks"],
             "answer_chars": a["chars"] / a["turns"] if a["turns"] else None,  # mean answer length
             "tokens_in": tokens.get(aid, (None, None))[0], "tokens_out": tokens.get(aid, (None, None))[1],

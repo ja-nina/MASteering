@@ -114,6 +114,7 @@ def load(path, exclude: bool = True) -> list:
             "team_cond": r.get("condition_team") or None, "select": r.get("condition_select") or None,
             "steered": r.get("steered") == "True", "team": r.get("team") or None,
             "reward": num("reward"), "reward_from": r.get("reward_from") or None,
+            "score": num("score"), "win": num("reward"),
             "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
             "tokens_in": num("tokens_in"), "tokens_out": num("tokens_out"),
             "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
@@ -130,6 +131,7 @@ def load(path, exclude: bool = True) -> list:
     for r in rows:
         r["cell"] = (r["group"], r["obs"])  # a game as played: group and observation mode
         r["cluster"] = (r["run_id"], r["episode"])
+    use_scores(rows)
     EXCLUDED_NOTE.clear()
     if dropped:
         EXCLUDED_NOTE.append("Left out (config/excluded_games.yaml): " + ", ".join(
@@ -162,6 +164,34 @@ def last_step_only(rows) -> list:
         return []
     return sorted({cell_name(r["cell"]) for r in rows if r["group"].rsplit("_", 1)[0] in PER_STEP_GAMES
                    and r["reward_from"] in (None, "last_step") and r["reward"] is not None})
+
+
+SCORED_CELLS: dict = {}
+# game group -> what its score is (testbed/envs/textarena/scores.py), for the per-game notes
+SCORE_NAMES = {"public_goods_4p": "tokens", "market_entry_4p": "payoff", "iterated_ipd_2p": "points",
+               "three_player_ipd_3p": "points", "iterated_ultimatum_2p": "money", "negotiation_2p": "value gained",
+               "poker_4p": "chips", "blind_auction_2p": "net worth", "high_society_2p": "prestige",
+               "three_player_gops_3p": "points"}  # {game cell: (agent-episodes with a score, without)}: filled by use_scores
+
+
+def use_scores(rows) -> None:
+    """In the games that have their own score (TextArena: tokens, chips, points; summarize_runs.py's `score`),
+    `reward` becomes that score: every payoff and welfare analysis then measures what the agents earned. TextArena's
+    reward there only ranks the players (+1 best, -1 or 0 the rest), so its sum is not the group's welfare; it is
+    kept as `win`, for who won. In such a game an agent-episode without a score (not backfilled yet) gets no reward
+    rather than the win/lose one, so the two are never mixed. Other games: `win` = `reward`, as before."""
+    SCORED_CELLS.clear()
+    have = defaultdict(lambda: [0, 0])
+    for r in rows:
+        have[r["cell"]][0 if r.get("score") is not None else 1] += 1
+    for cell, (n, missing) in have.items():
+        if n:
+            SCORED_CELLS[cell] = (n, missing)
+    for r in rows:
+        r.setdefault("win", r.get("reward"))
+        if r["cell"] in SCORED_CELLS:
+            r["reward"] = r.get("score")
+            r["reward_from"] = "score"
 
 
 def baselines(rows) -> dict:
@@ -1043,6 +1073,10 @@ def games_section(rows, traits, cells, man, eff, base, scale):
     # per setting: the steered agents' and their unsteered co-players' paired reward over the coefficient
     own_all = paired(rows, base, lambda r: r["steered"] and r["trait"] is not None)
     co_all = paired(rows, base, lambda r: not r["steered"] and r["trait"] is not None)
+    # who won, in the games whose reward is their own score: TextArena's win/lose reward, paired the same way
+    win_rows = [{**r, "reward": r.get("win")} for r in rows if r["cell"] in SCORED_CELLS]
+    win_own = paired(win_rows, baselines(win_rows), lambda r: r["steered"] and r["trait"] is not None
+                     and r["via"] in STEERED_VIA and not r["random"] and r["condition"] != "all")
     out = ["<h2 id=games>Per game</h2><div class=box><b>What you see</b><span>Each game separately, one row per "
            "trait. <b>Readout</b>: the vector's slope on the steered agents' trait readout (SD per unit c; section 2) "
            "and the mean readout with the persona prompt + / − (SD). <b>Outcomes</b>, in the game's own reward units, "
@@ -1067,8 +1101,11 @@ def games_section(rows, traits, cells, man, eff, base, scale):
         has_evil = any(r["team"] == "evil" for r in cr)
         ev_slope = {t: _diff_slope([r for r in evil if r["cell"] == cell and r["trait"] == t], None) for t in traits}
         wel_slope = {t: _diff_slope([r for r in wel if r["cell"] == cell and r["trait"] == t], None) for t in traits}
+        scored = cell in SCORED_CELLS
+        win_slope = {t: _diff_slope([r for r in win_own if r["cell"] == cell and r["trait"] == t], None)
+                     for t in traits} if scored else {}
         cols = [("readout", lambda t: man[t]["per_game"].get(cell)), ("reward", lambda t: eff[t].get(cell)),
-                ("welfare", lambda t: wel_slope[t])] + ([("evil", lambda t: ev_slope[t])] if has_evil else [])
+                ("welfare", lambda t: wel_slope[t])] + ([("evil", lambda t: ev_slope[t])] if has_evil else [])                + ([("win", lambda t: win_slope[t])] if scored else [])
         found = {(name, t): get(t) for name, get in cols for t in traits}
         q = dict(zip(found, bh([s["p"] if s else float("nan") for s in found.values()])))
         pm = lambda rs: mean_ci([v for v, _ in rs], [c for _, c in rs])
@@ -1076,7 +1113,8 @@ def games_section(rows, traits, cells, man, eff, base, scale):
         tab = ["<div class=wrap><table><tr><th class=l>trait</th><th>readout: vector slope</th><th>readout: prompt +</th>"
                "<th>readout: prompt −</th><th>steered agent's reward: vector slope</th><th>prompted agent's reward: +</th>"
                "<th>prompted agent's reward: −</th><th>welfare: vector slope (all steered)</th>"
-               + ("<th>evil side's reward: vector slope</th>" if has_evil else "") + "</tr>"]
+               + ("<th>evil side's reward: vector slope</th>" if has_evil else "")
+               + ("<th>steered agent's win (TextArena's win/lose): vector slope</th>" if scored else "") + "</tr>"]
         hits = []
         for t in traits:
             pr = {sgn: pm([(r["mon"][t], r["cluster"]) for r in cr if r["via"] == "prompt" and r["steered"] and r["trait"] == t
@@ -1086,15 +1124,21 @@ def games_section(rows, traits, cells, man, eff, base, scale):
             tab.append(f"<tr><td class=l>{t}</td>{slope_cell(found[('readout', t)], q[('readout', t)])}{mean_cell(pr[1])}{mean_cell(pr[-1])}"
                        f"{slope_cell(found[('reward', t)], q[('reward', t)])}{mean_cell(rw[1])}{mean_cell(rw[-1])}"
                        f"{slope_cell(found[('welfare', t)], q[('welfare', t)])}"
-                       + (slope_cell(found[("evil", t)], q[("evil", t)]) if has_evil else "") + "</tr>")
-            for name, label in (("reward", "steered agent"), ("welfare", "group"), ("evil", "evil side")):
+                       + (slope_cell(found[("evil", t)], q[("evil", t)]) if has_evil else "")
+                       + (slope_cell(found[("win", t)], q[("win", t)]) if scored else "") + "</tr>")
+            for name, label in (("reward", "steered agent"), ("welfare", "group"), ("evil", "evil side"),
+                                ("win", "steered agent's win")):
                 s = found.get((name, t))
                 if s and sig(s, q[(name, t)]):
                     hits.append(f"{t} → {label} {s['b']:+.2f}/unit c")
         tab.append("</table></div>")
         rew0 = [r["reward"] for r in unst if r["reward"] is not None]
         evil0 = [r["reward"] for r in unst if r["reward"] is not None and r["team"] == "evil"]
-        out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{len({r['cluster'] for r in cr})} episodes "
+        n_sc, n_miss = SCORED_CELLS.get(cell, (0, 0))
+        score_note = (f"Reward here is the game's own score ({html.escape(SCORE_NAMES.get(cell[0], 'score'))}), not "
+                      f"TextArena's win/lose (that is the last column){f'; {n_miss} agent-episodes without a score yet are left out' if n_miss else ''}. "
+                      if scored else "")
+        out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{score_note}{len({r['cluster'] for r in cr})} episodes "
                    f"({len({r['cluster'] for r in unst})} unsteered). Unsteered: mean reward per agent "
                    f"{fmt(float(np.mean(rew0)) if rew0 else float('nan'), 2)} (SD {fmt(scale.get(cell, float('nan')), 2)})"
                    + (f", evil side {fmt(float(np.mean(evil0)), 2)}" if evil0 else "") + ". "
