@@ -199,8 +199,11 @@ def slope(x, y, clusters, fe=None) -> dict:
     scores = np.bincount(g, weights=x * resid)
     k = len(ids)
     var = float((scores ** 2).sum()) / sxx ** 2 * (k / (k - 1) if k > 1 else 1.0)
-    # a perfect fit (e.g. every paired difference 0) leaves only rounding noise: no inference
-    se = math.sqrt(var) if var > 0 and np.abs(resid).max() > 1e-9 else float("nan")
+    # a perfect fit (e.g. every paired difference 0) leaves only rounding noise: no inference. Same when the
+    # residuals cancel within every cluster (a constant-sum game with every agent of the episode in the sample,
+    # e.g. poker with everyone steered): the cluster sums are rounding noise, and a slope of 0 came out '***'
+    cancel = float(np.sqrt((scores ** 2).sum())) <= 1e-9 * float(np.sqrt(((x * resid) ** 2).sum()))
+    se = math.sqrt(var) if var > 0 and np.abs(resid).max() > 1e-9 and not cancel else float("nan")
     p = math.erfc(abs(b / se) / math.sqrt(2)) if se and math.isfinite(se) and se > 0 else float("nan")
     return {"n": n, "clusters": k, "b": b, "se": se, "p": p, **games}
 
@@ -360,13 +363,21 @@ def welfare(rows, base_rows):
     for (g, o, e), s in base_sum.items():
         base_by_cell[(g, o)].append(s)
     sd = {c: (float(np.std(v)) or 1.0) if len(v) > 1 else 1.0 for c, v in base_by_cell.items()}
+    # constant-sum games (poker: chips only change hands) have the same total in every episode: no welfare. Their
+    # sums' SD is rounding noise (1e-16), and dividing by it gave welfare slopes of 1e15
+    size = defaultdict(list)
+    for r in base_rows:
+        if r["reward"] is not None:
+            size[(r["group"], r["obs"])].append(abs(r["reward"]))
+    constant = {c for c, v in base_by_cell.items()
+                if len(v) > 1 and float(np.std(v)) <= 1e-9 * (float(np.mean(size[c])) + 1e-12)}
     out = []
     for cl, s in sums.items():
         r = info[cl]
         if r["condition"] == "none":
             continue
         b = base_sum.get((r["group"], r["obs"], r["episode"]))
-        if b is not None:
+        if b is not None and (r["group"], r["obs"]) not in constant:
             out.append({**r, "diff": (s - b) / sd.get(r["cell"], 1.0)})
     return out
 
