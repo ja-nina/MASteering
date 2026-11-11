@@ -381,6 +381,24 @@ def readout_slope(rows, t, select, readout=None, by_cell=True):
                  [r["cluster"] for r in pts], [r["cell"] for r in pts] if by_cell else None)
 
 
+def constant_sum_cells(base_rows) -> set:
+    """Game cells whose unsteered episodes all have the same total reward (poker's chips, beauty contest's win
+    shares): there a group total says nothing, and with every agent steered the mean paired reward over the agents
+    is 0 by construction."""
+    sums, size = defaultdict(float), defaultdict(list)
+    for r in base_rows:
+        if r["condition"] == "none" and r["reward"] is not None:
+            sums[(r["cell"], r["episode"])] += r["reward"]
+            size[r["cell"]].append(r["reward"])
+    by_cell = defaultdict(list)
+    for (cell, _), v in sums.items():
+        by_cell[cell].append(v)
+    # the total never changes while the agents' own rewards do (all rewards equal, e.g. every game a draw, is not it)
+    return {c for c, v in by_cell.items()
+            if len(v) > 1 and float(np.std(v)) <= 1e-9 * (float(np.mean(np.abs(size[c]))) + 1e-12)
+            and float(np.std(size[c])) > 1e-9}
+
+
 def welfare(rows, base_rows):
     """Per steered episode: the sum of all agents' rewards minus that of the unsteered episode with the same
     seed, in SD units of the unsteered episodes' sums of that game cell."""
@@ -399,12 +417,7 @@ def welfare(rows, base_rows):
     sd = {c: (float(np.std(v)) or 1.0) if len(v) > 1 else 1.0 for c, v in base_by_cell.items()}
     # constant-sum games (poker: chips only change hands) have the same total in every episode: no welfare. Their
     # sums' SD is rounding noise (1e-16), and dividing by it gave welfare slopes of 1e15
-    size = defaultdict(list)
-    for r in base_rows:
-        if r["reward"] is not None:
-            size[(r["group"], r["obs"])].append(abs(r["reward"]))
-    constant = {c for c, v in base_by_cell.items()
-                if len(v) > 1 and float(np.std(v)) <= 1e-9 * (float(np.mean(size[c])) + 1e-12)}
+    constant = constant_sum_cells(base_rows)
     out = []
     for cl, s in sums.items():
         r = info[cl]
@@ -1323,6 +1336,11 @@ def push_section(rows, base, scale, norms):
     vec = [dict(r, x=x_of(r)) for r in paired(rows, base, lambda r: r["steered"] and r["condition"] == "all"
                                                 and r["steer_layer"] is not None)]
     vec = [r for r in vec if r["x"] is not None]
+    # both are everyone-steered settings (all_random, all): in a constant-sum game the agents' paired rewards add up
+    # to 0 in every episode, so their mean is 0 by construction (beauty contest: 1e-17 dots, 2026-11-11)
+    constant = constant_sum_cells(rows)
+    rnd = [r for r in rnd if r["cell"] not in constant]
+    vec = [r for r in vec if r["cell"] not in constant]
     if not rnd:
         return [], ""
     layers = sorted({int(r["steer_layer"]) for r in rnd})
@@ -1463,6 +1481,9 @@ def push_section(rows, base, scale, norms):
     body = (f"<div class=legend>{legend}<span>dots: mean per persona-norm × c, bars: 95% CI; dashed: straight line "
             f"through the dots</span></div>{charts}"
             f"<div class=wrap><table>{head}{trs}</table></div>" + per_game + parse_gain_html
+            + (f"<p class=muted>Left out: {html.escape(', '.join(sorted(cell_name(c) for c in constant)))}, "
+               "constant-sum games (the rewards of an episode always add up to the same total), where every agent "
+               "steered gives a mean paired reward of 0 by construction.</p>" if constant else "")
             + games_note(cells, "Games in these charts"))
     return [], section(26, "Random directions: does the size of the push matter, per layer?",
                        "A random direction of a persona vector's size is the control: how much does pushing the hidden "
