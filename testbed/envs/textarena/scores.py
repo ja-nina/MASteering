@@ -19,7 +19,8 @@ Where it lives, from TextArena's source (envs/<Game>/env.py, 2026-11-10):
   HighSociety                         game_state["player_prestige"][pid]    prestige (what decides the winner)
   ThreePlayerGOPS                     game_state["player_scores"][pid]      prize points
   Taboo                               game_state["score"][team]             words guessed by the agent's team
-                                      (99.98% of main_v2's taboo games were draws: the win/lose reward was 0)
+                                      (99.98% of main_v2's first taboo games were draws at 0-0: right
+                                      guesses in quotes were rejected; rerun with strip_guess_quotes)
 
 No score (the result is only who won): SecretMafia, Debate, TruthAndDeception, LiarsDice. SettlersOfCatan's
 victory points come from board.get_scores(), keyed by colour; its player -> colour map is not read here (None).

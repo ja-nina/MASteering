@@ -77,6 +77,18 @@ _CLUE = re.compile(r"\[(\w+)\s+(\d+)\]")
 CLUE_RULE = ("Rule: your clue must not be a word on the board, contain a board word, or be part of one "
              "(a clue like that loses the game).")
 CLUE_RETRIES = 3
+
+# strip_guess_quotes (Taboo): the game's guesser prompt shows the format as ['elephant'] but it counts a guess only
+# when the text inside the first [...] equals the word (`match.group(1).strip().lower() == word.lower()`), quotes
+# included, so a guesser copying the example never scores (main_v2, scripts/debug_taboo.py 2026-11-11: 30.7% of
+# guesses were the word in quotes, team scores 0 in 17,180 of 17,182 games).
+_GUESS = re.compile(r"\[(.*?)\]", re.S)
+_QUOTES = "'\"`‘’“”"
+
+
+def unquote_guess(action: str) -> str:
+    """The first [...] of the answer without quotes around its text: "['Iron'] I think" -> "[Iron] I think"."""
+    return _GUESS.sub(lambda m: "[" + m.group(1).strip().strip(_QUOTES).strip() + "]", action, count=1)
 GAME_ID = -1  # textarena.GAME_ID: the sender id of game messages
 
 # role names (lower-cased substrings) of the deceiving side in TextArena's hidden-role games
@@ -104,6 +116,9 @@ class TextArenaAdapter:
         # such a clue is not passed on: the spymaster is told why and asked again, as for an invalid move. After
         # CLUE_RETRIES refusals in one turn the clue goes to TextArena, which ends the game as it would have.
         self._clue_rule = bool(env_kwargs.pop("clue_rule", False))
+        # strip_guess_quotes (opt-in, Taboo; off in main and main_v2's first taboo runs): a guesser's answer goes to the
+        # game with the quotes inside its first [...] removed (unquote_guess, above).
+        self._strip_guess_quotes = bool(env_kwargs.pop("strip_guess_quotes", False))
         self.clue_violations = 0          # refused clues this episode (a metric: rule breaking under steering)
         self._clue_refusals = 0           # refused clues this turn
         self._env_kwargs = env_kwargs
@@ -148,6 +163,11 @@ class TextArenaAdapter:
             for pid in SPYMASTERS:
                 self._tell(pid, CLUE_RULE)
 
+    def _role(self, pid: Optional[int]) -> Optional[str]:
+        from testbed.envs.textarena.scores import _unwrap
+        state = getattr(_unwrap(self._env), "state", None)
+        return (getattr(state, "role_mapping", None) or {}).get(pid)
+
     def agent_ids(self) -> List[str]:
         return [self._pid_str(i) for i in range(self.num_players)]
 
@@ -175,6 +195,8 @@ class TextArenaAdapter:
                            f"{CLUE_RULE} Give another clue.")
                 return StepResult(rewards={}, done=False, info={"refused_clue": clue})
             self._clue_refusals = 0
+        if self._strip_guess_quotes and self._role(self._current_pid) == "Guesser":
+            action = unquote_guess(action)
         done, info = self._env.step(action)
         if self._skip_eliminated and not done:
             self._pass_turn_from_eliminated()

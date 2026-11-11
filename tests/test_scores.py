@@ -152,3 +152,52 @@ def test_taboo_team_score_for_both_members():
     env = _env({"score": {0: 3, 1: 5}})
     env.state.num_players = 4
     assert S.game_scores("Taboo-v0", env) == {"player_0": 3.0, "player_1": 3.0, "player_2": 5.0, "player_3": 5.0}
+
+
+# ---- Taboo: quoted guesses (strip_guess_quotes)
+
+class _Taboo:
+    """TextArena Taboo's guess check: the first [...] must equal the word; player 1 guesses, player 0 gives clues."""
+
+    def __init__(self):
+        self.state = _State({"score": {0: 0, 1: 0}})
+        self.state.role_mapping = {0: "Clue Giver", 1: "Guesser"}
+        self.state.num_players = 2
+        self.turn = 0
+
+    def reset(self, num_players, seed=None):
+        pass
+
+    def get_observation(self):
+        return self.turn % 2, "obs"
+
+    def step(self, action):
+        import re
+        if self.turn % 2 == 1:
+            m = re.search(r"\[(.*?)\]", action)
+            if m and m.group(1).strip().lower() == "iron":
+                self.state.game_state["score"][0] += 1
+        self.turn += 1
+        return False, {}
+
+
+def _play(**kw):
+    a = TextArenaAdapter(env_id="Taboo-v0", num_players=2, _env=_Taboo(), **kw)
+    a.reset()
+    for move in ("Pressing clothes, made of metal", "['Iron'] surely"):
+        (agent, _), = a.pending()
+        a.submit({agent: move})
+    return a._env.state.game_state["score"][0]
+
+
+def test_unquote_guess():
+    from testbed.envs.textarena.ta_adapter import unquote_guess
+    assert unquote_guess("['Iron'] surely") == "[Iron] surely"
+    assert unquote_guess('[ "soldering iron" ]') == "[soldering iron]"
+    assert unquote_guess("[‘iron’] then ['x']") == "[iron] then ['x']"  # only the first, which the game reads
+    assert unquote_guess("no guess") == "no guess"
+
+
+def test_quoted_right_guess_counts_only_with_strip_guess_quotes():
+    assert _play() == 0                          # TextArena as is: the example's quotes make a right guess wrong
+    assert _play(strip_guess_quotes=True) == 1
