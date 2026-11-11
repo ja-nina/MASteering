@@ -68,7 +68,7 @@ def episode(run: dict, ep: int, jsonl: Path):
         for r in group:
             pid = int(r["agent_id"].split("_")[1])
             if roles.get(pid) == "Guesser":
-                out.append((gs["word_to_guess"], r["parsed_action"], r.get("completion", "")))
+                out.append((gs["word_to_guess"], str(r["parsed_action"]), r.get("completion", "")))
         step = env.submit({r["agent_id"]: r["parsed_action"] for r in group})
         if step.done:
             break
