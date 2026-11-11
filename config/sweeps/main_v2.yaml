@@ -19,6 +19,12 @@
 #  * cutoff_feedback on (longctx): an answer cut off before 'ACTION:' is continued, not re-asked
 #  * answer_marker ACTION on the six TextArena games that leaked the whole answer (tafix), with skip_eliminated on
 #    public goods and market entry (longctx); codenames dropped (longctx); every other game as in main
+# Dropped 2026-11-11: overcooked_2p, mp_stag_hunt_2p, settlers_of_catan_4p. Episodes too long for the GPU time we have
+#   (overcooked ~100 steps x 2 agents, Melting Pot 200 steps, Catan to max_turns): their arrays were cancelled; the
+#   episodes they had finished stay on disk but are left out of every main_v2 report (config/excluded_games.yaml,
+#   dropped:). The entries were in main.yaml's form: family symbolic id overcooked players [2] max_steps 100
+#   text+image; meltingpot stag_hunt_in_the_matrix__repeated players [2] image max_steps 200 plan_length 4;
+#   textarena SettlersOfCatan-v0 players [4] answer_marker ACTION.
 name: main_v2
 model: qwen3.5-9b                    # PersVecFast model key; vectors from ${PVF_OUT}/persona/<model>/bf16
 episodes: 20
@@ -81,7 +87,7 @@ games:
   werewolf:       {family: symbolic, id: werewolf, players: [8], roles: true, observation: [text, image]}
   avalon:         {family: symbolic, id: avalon, players: [6], roles: true, observation: [text, image]}
   hanabi:         {family: symbolic, id: hanabi, players: [3], observation: [text, image]}
-  overcooked:     {family: symbolic, id: overcooked, players: [2], env_kwargs: {max_steps: 100}, observation: [text, image]}
+  # overcooked: dropped 2026-11-11 (see 'Dropped' above)
   # visual board games (also playable as text)
   tictactoe:      {family: symbolic, id: tictactoe, players: [2], observation: [text, image]}
   connect_four:   {family: symbolic, id: connect_four, players: [2], observation: [text, image]}
@@ -93,8 +99,7 @@ games:
                        env_kwargs: {max_steps: 200, plan_length: 4}}
   mp_prisoners_dilemma: {family: meltingpot, id: prisoners_dilemma_in_the_matrix__repeated, players: [2],
                          observation: image, env_kwargs: {max_steps: 200, plan_length: 4}}
-  mp_stag_hunt:       {family: meltingpot, id: stag_hunt_in_the_matrix__repeated, players: [2], observation: image,
-                       env_kwargs: {max_steps: 200, plan_length: 4}}
+  # mp_stag_hunt: dropped 2026-11-11 (see 'Dropped' above)
   # TextArena
   mafia:               {family: textarena, id: SecretMafia-v0, players: [8], roles: true}
   debate:              {family: textarena, id: Debate-v0, players: [2], env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
@@ -112,4 +117,4 @@ games:
   high_society:        {family: textarena, id: HighSociety-v0, players: [2]}
   taboo:               {family: textarena, id: Taboo-v0, players: [4]}
   three_player_gops:   {family: textarena, id: ThreePlayerGOPS-v0, players: [3]}
-  settlers_of_catan:   {family: textarena, id: SettlersOfCatan-v0, players: [4], env_kwargs: {answer_marker: ACTION}}
+  # settlers_of_catan: dropped 2026-11-11 (see 'Dropped' above)

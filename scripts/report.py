@@ -82,9 +82,13 @@ def excluded_groups(sweep: str = "") -> dict:
     import yaml
     spec = yaml.safe_load(EXCLUDED_FILE.read_text(encoding="utf-8")) or {}
     reruns = spec.pop("reruns", None) or []
-    if any(sweep == s or sweep.startswith(s + "_") for s in reruns):
-        return {}
-    return {g: reason for reason, groups in spec.items() for g in groups or []}
+    dropped = spec.pop("dropped", None) or {}  # {sweep: {reason: [groups]}}: left out of that sweep only
+    mine = lambda s: sweep == s or sweep.startswith(s + "_")
+    out = {g: reason for s, reasons in dropped.items() if mine(s) for reason, groups in (reasons or {}).items()
+           for g in groups or []}
+    if any(mine(s) for s in reruns):
+        return out
+    return {**{g: reason for reason, groups in spec.items() for g in groups or []}, **out}
 
 
 EXCLUDED_NOTE = []  # filled by load(): which groups were left out, for the page
