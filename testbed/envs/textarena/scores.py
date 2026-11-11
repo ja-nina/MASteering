@@ -18,8 +18,10 @@ Where it lives, from TextArena's source (envs/<Game>/env.py, 2026-11-10):
   SimpleBlindAuction                  auction_results["player_net_worth"]   capital left + value of items won
   HighSociety                         game_state["player_prestige"][pid]    prestige (what decides the winner)
   ThreePlayerGOPS                     game_state["player_scores"][pid]      prize points
+  Taboo                               game_state["score"][team]             words guessed by the agent's team
+                                      (99.98% of main_v2's taboo games were draws: the win/lose reward was 0)
 
-No score (the result is only who won): SecretMafia, Debate, Taboo, TruthAndDeception, LiarsDice. SettlersOfCatan's
+No score (the result is only who won): SecretMafia, Debate, TruthAndDeception, LiarsDice. SettlersOfCatan's
 victory points come from board.get_scores(), keyed by colour; its player -> colour map is not read here (None).
 """
 from __future__ import annotations
@@ -38,7 +40,15 @@ SCORES: Dict[str, tuple] = {
     "SimpleBlindAuction": ("net worth", lambda env, gs: _find(env, gs, "auction_results")["player_net_worth"]),
     "HighSociety": ("prestige", "player_prestige"),
     "ThreePlayerGOPS": ("points", "player_scores"),
+    # team score, the same for both members: players 0-1 team 0, 2-3 team 1 (team_id = pid // (players // 2))
+    "Taboo": ("team points", lambda env, gs: _team_scores(env, gs["score"])),
 }
+
+
+def _team_scores(env, team_score: dict) -> dict:
+    n = int(getattr(env.state, "num_players", 0) or 2 * len(team_score))
+    size = max(n // max(len(team_score), 1), 1)
+    return {p: team_score[p // size] for p in range(n)}
 
 
 def base_id(env_id: str) -> str:

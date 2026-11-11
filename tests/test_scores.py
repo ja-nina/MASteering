@@ -146,3 +146,9 @@ def test_report_uses_scores_never_mixed_with_wins():
     assert [r["reward"] for r in rows] == [40.0, None, 1.0]
     assert [r["win"] for r in rows] == [1.0, -1.0, 1.0]
     assert R.SCORED_CELLS == {("pg", "text"): (1, 1)}
+
+
+def test_taboo_team_score_for_both_members():
+    env = _env({"score": {0: 3, 1: 5}})
+    env.state.num_players = 4
+    assert S.game_scores("Taboo-v0", env) == {"player_0": 3.0, "player_1": 3.0, "player_2": 5.0, "player_3": 5.0}

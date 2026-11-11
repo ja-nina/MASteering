@@ -175,7 +175,7 @@ SCORED_CELLS: dict = {}
 SCORE_NAMES = {"public_goods_4p": "tokens", "market_entry_4p": "payoff", "iterated_ipd_2p": "points",
                "three_player_ipd_3p": "points", "iterated_ultimatum_2p": "money", "negotiation_2p": "value gained",
                "poker_4p": "chips", "blind_auction_2p": "net worth", "high_society_2p": "prestige",
-               "three_player_gops_3p": "points"}  # {game cell: (agent-episodes with a score, without)}: filled by use_scores
+               "three_player_gops_3p": "points", "taboo_4p": "team points"}  # {game cell: (agent-episodes with a score, without)}: filled by use_scores
 
 
 def use_scores(rows) -> None:
