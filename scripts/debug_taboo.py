@@ -60,6 +60,9 @@ def episode(run: dict, ep: int, jsonl: Path):
     out = []
     for _, group in groupby(records, key=lambda r: r["turn"]):
         group = list(group)
+        asked = sorted(a for a, _ in env.pending())  # also tells the adapter whose turn it is
+        if asked != sorted(r["agent_id"] for r in group):
+            raise RuntimeError(f"diverged at turn {group[0]['turn']}: game asks {asked}")
         inner = _unwrap(env._env)
         gs, roles = inner.state.game_state, inner.state.role_mapping
         for r in group:
