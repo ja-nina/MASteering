@@ -212,3 +212,17 @@ def test_invalid_out_from_close_info():
     assert episode_invalid(summary) == {"player_0": True, "player_1": False}
     assert episode_invalid({"final_info": {"winner": "good"}}) == {}   # not TextArena: unknown, not False
     assert episode_invalid({}) == {}
+
+
+def test_rule_section_persona_vs_random():
+    from scripts import report as R
+    rows = []
+    for ep in range(40):
+        for cond, rnd, c, bad in [("none", False, None, False)] + [
+                (k, k == "all_random", cc, ep < (cc * 15 if k == "all" else 2)) for k in ("all", "all_random")
+                for cc in (1.0, 2.0)]:
+            rows.append({"cell": ("g", "text"), "cluster": (f"{cond}{c}", ep), "condition": cond, "random": rnd,
+                         "random_fixed": False, "coef": c, "invalid": bad})
+    take, page = R.rule_section(rows, [("g", "text")])
+    assert "27. Rule breaking" in page and "|c| = 0 (unsteered)" in page
+    assert take and "more than a random direction" in take[0]

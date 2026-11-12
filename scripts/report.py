@@ -1191,6 +1191,66 @@ def games_section(rows, traits, cells, man, eff, base, scale):
     return "".join(out)
 
 
+
+def rule_section(rows, cells):
+    """27. Rule breaking: agents whose own invalid move ended their game or eliminated them (TextArena close_info),
+    by steering strength |c|, for the persona vector and a random direction of the same norm (every agent steered:
+    `all` vs `all_random`), with the unsteered agents at |c| = 0."""
+    inv_cells = [c for c in cells if any(r.get("invalid") for r in rows if r["cell"] == c)]
+    take, findings, tabs, diffs = [], [], [], []
+    for cell in inv_cells:
+        cr = [r for r in rows if r["cell"] == cell and r.get("invalid") is not None]
+        unst = [r for r in cr if r["condition"] == "none"]
+        arms = {"persona vector": [r for r in cr if r["condition"] == "all" and not r["random"] and r["coef"]],
+                "random direction": [r for r in cr if r["condition"] == "all_random" and r["random"] and r["coef"]
+                                     and not r["random_fixed"]]}
+        levels = sorted({abs(r["coef"]) for rs in arms.values() for r in rs})
+        if not levels or not all(arms.values()):
+            continue
+        rate = lambda rs: mean_ci([100.0 * r["invalid"] for r in rs], [r["cluster"] for r in rs])
+        fits = {}
+        for name, rs in arms.items():
+            both = unst + rs
+            fits[name] = slope([abs(r["coef"] or 0) for r in both], [100.0 * r["invalid"] for r in both],
+                               [r["cluster"] for r in both])
+        a, b = fits["persona vector"], fits["random direction"]
+        d = a["b"] - b["b"]
+        se = math.sqrt(a["se"] ** 2 + b["se"] ** 2) if math.isfinite(a["se"]) and math.isfinite(b["se"]) else float("nan")
+        pd_ = math.erfc(abs(d / se) / math.sqrt(2)) if se == se and se > 0 else float("nan")
+        diffs.append((cell, a, b, d, se, pd_))
+        head = "<th>|c| = 0 (unsteered)</th>" + "".join(f"<th>|c| = {lv:g}</th>" for lv in levels)
+        body = [f"<tr><td class=l>unsteered</td>{mean_cell(rate(unst))}" + "<td></td>" * len(levels) + "<td></td></tr>"]
+        for name, rs in arms.items():
+            body.append(f"<tr><td class=l>{name}</td><td></td>" + "".join(
+                mean_cell(rate([r for r in rs if abs(r["coef"]) == lv])) for lv in levels)
+                + slope_cell(fits[name]) + "</tr>")
+        tabs.append((cell, f"<h3>{html.escape(cell_name(cell))}</h3><div class=wrap><table><tr><th class=l></th>"
+                           f"{head}<th>slope per unit |c| (points)</th></tr>{''.join(body)}</table></div>"))
+    q = bh([x[5] for x in diffs])
+    for (cell, a, b, d, se, pd_), qq in zip(diffs, q):
+        line = (f"{cell_name(cell)}: {a['b']:+.1f} points per unit |c| with the persona vector, {b['b']:+.1f} with a "
+                f"random direction (difference {d:+.1f} ± {1.96 * se:.1f}{stars(qq)})")
+        findings.append(line)
+        if sig({"b": d}, qq) and d > 0:
+            take.append(f"Rule breaking ({cell_name(cell)}): persona vectors end agents' games by an invalid move "
+                        f"{a['b']:+.1f} points per unit |c|, more than a random direction of the same norm ({b['b']:+.1f}) "
+                        "(section 27).")
+    note = ("<p class=muted>Rates in % of agent-episodes ± 95% CI (clustered by episode). The unsteered rate is the "
+            "|c| = 0 point of both slopes. Persona vector and random direction: every agent of the episode steered "
+            "(settings all and all_random), so the two differ only in the direction.</p>")
+    html_ = section(27, "Rule breaking: does steering make agents break the game's rules?",
+                    "Does steering make an agent's own invalid move end its game (or eliminate it), and is that the "
+                    "persona direction or any push of the same strength?",
+                    "Per game where it happens (TextArena records it: close_info invalid_move): the share of agents "
+                    "whose invalid move ended their game or eliminated them, by |c|, for the persona vector and a random "
+                    "direction of the same norm, every agent steered; slope over |c| with the unsteered agents at 0; the "
+                    "persona-minus-random difference with Benjamini–Hochberg stars over games.",
+                    "A rate rising with |c| for both = steering of any kind breaks play; a persona slope above the "
+                    "random one = the persona direction itself costs rule-following. In games with their own score "
+                    "(blind auction, poker) such games often have none, so the score analyses cover finished games only.",
+                    findings, note + "".join(t for _, t in tabs))
+    return take, html_
+
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
                  "prompt_one", "prompt_all", "evil_team_prompt", "all_random_L16", "all_random_L32")
 
@@ -4705,7 +4765,8 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
                  naming_section(rows, traits), prompt_vector_section(rows, traits, base, scale), length_section(rows, traits),
                  group_section(rows, traits, steered, scale), role_section(rows, traits, base, scale),
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale),
-                 modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms)):
+                 modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms),
+                 rule_section(rows, cells)):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -4731,7 +4792,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
