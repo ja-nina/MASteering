@@ -346,5 +346,27 @@ def test_auc_episodes_and_curves_section():
     eps = auc_episodes(rows, "evil")
     assert len(eps) == 30 and all(e["auc"] == 1.0 and e["others"] == 2 for e in eps)
     page = curves_section(rows, ["evil"], [("g_3p", "text")], baselines(rows))
-    assert "28. Reward and welfare curves" in page and page.count("<svg") == 2
+    assert "28. Reward and welfare curves" in page and page.count("<svg") == 4  # pooled (SD) + the game
     assert "+1.50 ± 0.00" in page  # everyone +0.5 with the persona: the group total gains 1.5
+
+
+def test_every_section_says_which_settings_it_uses():
+    import re
+    from scripts.report import SETTINGS_USED
+    src = open("scripts/report.py", encoding="utf-8").read()
+    nums = set(re.findall(r'section\("?(\d+b?)"?, "', src))
+    assert nums and nums <= set(SETTINGS_USED), sorted(nums - set(SETTINGS_USED))
+    page = build(load_rows_for_settings_test())
+    assert page.count("<b>Settings used</b>") >= 10
+
+
+def load_rows_for_settings_test():
+    import tempfile
+    from pathlib import Path
+    rows = _rows(random.Random(5))
+    path = Path(tempfile.mkdtemp()) / "agents.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for r in rows for k in r)))
+        w.writeheader()
+        w.writerows(rows)
+    return load(path)
