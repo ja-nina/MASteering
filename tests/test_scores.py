@@ -201,3 +201,14 @@ def test_unquote_guess():
 def test_quoted_right_guess_counts_only_with_strip_guess_quotes():
     assert _play() == 0                          # TextArena as is: the example's quotes make a right guess wrong
     assert _play(strip_guess_quotes=True) == 1
+
+
+# ---- invalid-move endings (TextArena close_info)
+
+def test_invalid_out_from_close_info():
+    from scripts.summarize_runs import episode_invalid
+    summary = {"final_info": {"close_info": {"0": {"invalid_move": True, "reason": "Bid amount must be positive."},
+                                             "1": {"invalid_move": False}}}}
+    assert episode_invalid(summary) == {"player_0": True, "player_1": False}
+    assert episode_invalid({"final_info": {"winner": "good"}}) == {}   # not TextArena: unknown, not False
+    assert episode_invalid({}) == {}

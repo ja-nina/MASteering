@@ -119,6 +119,8 @@ def load(path, exclude: bool = True) -> list:
             "steered": r.get("steered") == "True", "team": r.get("team") or None,
             "reward": num("reward"), "reward_from": r.get("reward_from") or None,
             "score": num("score"), "win": num("reward"),
+            # its own invalid move ended its game (TextArena; None where the game does not record it)
+            "invalid": {"True": True, "False": False}.get(r.get("invalid_out")),
             "turns": num("turns") or 0, "fallbacks": num("parse_fallbacks") or 0,
             "tokens_in": num("tokens_in"), "tokens_out": num("tokens_out"),
             "truncated": r.get("truncated") == "True", "chars": num("answer_chars"),
@@ -1094,6 +1096,11 @@ def games_section(rows, traits, cells, man, eff, base, scale):
     win_rows = [{**r, "reward": r.get("win")} for r in rows if r["cell"] in SCORED_CELLS]
     win_own = paired(win_rows, baselines(win_rows), lambda r: r["steered"] and r["trait"] is not None
                      and r["via"] in STEERED_VIA and not r["random"] and r["condition"] != "all")
+    # rule breaking: the games where an invalid move ever ended an agent's game (TextArena), 1 = it did, paired the same way
+    inv_cells = {r["cell"] for r in rows if r.get("invalid")}
+    inv_rows = [{**r, "reward": float(r["invalid"])} for r in rows if r["cell"] in inv_cells and r.get("invalid") is not None]
+    inv_own = paired(inv_rows, baselines(inv_rows), lambda r: r["steered"] and r["trait"] is not None
+                     and r["via"] in STEERED_VIA and not r["random"] and r["condition"] != "all")
     out = ["<h2 id=games>Per game</h2><div class=box><b>What you see</b><span>Each game separately, one row per "
            "trait. <b>Readout</b>: the vector's slope on the steered agents' trait readout (SD per unit c; section 2) "
            "and the mean readout with the persona prompt + / − (SD). <b>Outcomes</b>, in the game's own reward units, "
@@ -1121,8 +1128,11 @@ def games_section(rows, traits, cells, man, eff, base, scale):
         scored = cell in SCORED_CELLS
         win_slope = {t: _diff_slope([r for r in win_own if r["cell"] == cell and r["trait"] == t], None)
                      for t in traits} if scored else {}
+        ruled = cell in inv_cells
+        inv_slope = {t: _diff_slope([r for r in inv_own if r["cell"] == cell and r["trait"] == t], None)
+                     for t in traits} if ruled else {}
         cols = [("readout", lambda t: man[t]["per_game"].get(cell)), ("reward", lambda t: eff[t].get(cell)),
-                ("welfare", lambda t: wel_slope[t])] + ([("evil", lambda t: ev_slope[t])] if has_evil else [])                + ([("win", lambda t: win_slope[t])] if scored else [])
+                ("welfare", lambda t: wel_slope[t])] + ([("evil", lambda t: ev_slope[t])] if has_evil else [])                + ([("win", lambda t: win_slope[t])] if scored else [])                + ([("invalid", lambda t: inv_slope[t])] if ruled else [])
         found = {(name, t): get(t) for name, get in cols for t in traits}
         q = dict(zip(found, bh([s["p"] if s else float("nan") for s in found.values()])))
         pm = lambda rs: mean_ci([v for v, _ in rs], [c for _, c in rs])
@@ -1131,7 +1141,8 @@ def games_section(rows, traits, cells, man, eff, base, scale):
                "<th>readout: prompt −</th><th>steered agent's reward: vector slope</th><th>prompted agent's reward: +</th>"
                "<th>prompted agent's reward: −</th><th>welfare: vector slope (all steered)</th>"
                + ("<th>evil side's reward: vector slope</th>" if has_evil else "")
-               + ("<th>steered agent's win (TextArena's win/lose): vector slope</th>" if scored else "") + "</tr>"]
+               + ("<th>steered agent's win (TextArena's win/lose): vector slope</th>" if scored else "")
+               + ("<th>steered agent's invalid move ended its game (share): vector slope</th>" if ruled else "") + "</tr>"]
         hits = []
         for t in traits:
             pr = {sgn: pm([(r["mon"][t], r["cluster"]) for r in cr if r["via"] == "prompt" and r["steered"] and r["trait"] == t
@@ -1142,9 +1153,10 @@ def games_section(rows, traits, cells, man, eff, base, scale):
                        f"{slope_cell(found[('reward', t)], q[('reward', t)])}{mean_cell(rw[1])}{mean_cell(rw[-1])}"
                        f"{slope_cell(found[('welfare', t)], q[('welfare', t)])}"
                        + (slope_cell(found[("evil", t)], q[("evil", t)]) if has_evil else "")
-                       + (slope_cell(found[("win", t)], q[("win", t)]) if scored else "") + "</tr>")
+                       + (slope_cell(found[("win", t)], q[("win", t)]) if scored else "")
+                       + (slope_cell(found[("invalid", t)], q[("invalid", t)]) if ruled else "") + "</tr>")
             for name, label in (("reward", "steered agent"), ("welfare", "group"), ("evil", "evil side"),
-                                ("win", "steered agent's win")):
+                                ("win", "steered agent's win"), ("invalid", "steered agent's invalid-move ending")):
                 s = found.get((name, t))
                 if s and sig(s, q[(name, t)]):
                     hits.append(f"{t} → {label} {s['b']:+.2f}/unit c")
@@ -1155,7 +1167,19 @@ def games_section(rows, traits, cells, man, eff, base, scale):
         score_note = (f"Reward here is the game's own score ({html.escape(SCORE_NAMES.get(cell[0], 'score'))}), not "
                       f"TextArena's win/lose (that is the last column){f'; {n_miss} agent-episodes without a score yet are left out' if n_miss else ''}. "
                       if scored else "")
-        out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{score_note}{len({r['cluster'] for r in cr})} episodes "
+        inv_note = ""
+        if ruled:
+            st = [r for r in cr if r["steered"] and r["via"] in STEERED_VIA and not r["random"]]
+            def pct(rs):
+                known = [r["invalid"] for r in rs if r.get("invalid") is not None]
+                return f"{100 * sum(known) / len(known):.1f}%" if known else "–"
+            inv_note = (f"Agents whose own invalid move ended their game (they lose; "
+                        f"{'the game then has no score, so the score columns cover finished games only; ' if scored else ''}"
+                        f"last column): unsteered agents {pct(unst)}, vector-steered agents {pct(st)}; by |c| "
+                        + ", ".join(f"{a:g}: {pct([r for r in st if abs(r['coef'] or 0) == a])}"
+                                    for a in sorted({abs(r["coef"]) for r in st if r["coef"]}))
+                        + " (it rises with |c| on both sides, which a slope over c does not show). ")
+        out.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>{score_note}{inv_note}{len({r['cluster'] for r in cr})} episodes "
                    f"({len({r['cluster'] for r in unst})} unsteered). Unsteered: mean reward per agent "
                    f"{fmt(float(np.mean(rew0)) if rew0 else float('nan'), 2)} (SD {fmt(scale.get(cell, float('nan')), 2)})"
                    + (f", evil side {fmt(float(np.mean(evil0)), 2)}" if evil0 else "") + ". "

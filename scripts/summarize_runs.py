@@ -139,6 +139,23 @@ def episode_scores(summary: dict, spath: Path) -> tuple:
     return {}, None
 
 
+def episode_invalid(summary: dict) -> dict:
+    """{agent: whether its own invalid moves ended its game (or eliminated it)}: TextArena's close_info marks the
+    player whose move broke the rules after its retries (blind auction: a bid of 0, bids above the capital; the game
+    then ends and the other player wins). Empty for games without close_info (not TextArena)."""
+    close = (summary.get("final_info") or {}).get("close_info")
+    if not isinstance(close, dict):
+        return {}
+    out = {}
+    for pid, info in close.items():
+        if isinstance(info, dict) and "invalid_move" in info:
+            try:
+                out[f"player_{int(pid)}"] = bool(info["invalid_move"])
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def episode_tokens(stats: dict, spath: Path) -> dict:
     """{agent: (tokens read, tokens generated)}: from the summary's agent_stats, else from the episode_N.tokens.json
     that scripts/backfill_tokens.py writes for episodes logged before the counts; (None, None) when neither has it."""
@@ -177,6 +194,7 @@ def episode_rows(job) -> tuple:
     rewards, reward_from = episode_rewards(summary, Path(spath))
     scores, score_from = episode_scores(summary, Path(spath))
     tokens = episode_tokens(stats, Path(spath))
+    invalid = episode_invalid(summary)
     rows = []
     for aid in sorted(set(rewards) | set(stats)):
         a = stats.get(aid, none)
@@ -198,6 +216,8 @@ def episode_rows(job) -> tuple:
             # the game's own score (tokens, chips, points; TextArena games that have one), next to the reward,
             # which in TextArena games only says who won
             "score": scores.get(aid), "score_from": score_from if aid in scores else None,
+            # its own invalid move ended its game (TextArena's close_info; None: the game does not record it)
+            "invalid_out": invalid.get(aid) if invalid else None,
             "turns": a["turns"], "parse_fallbacks": a["fallbacks"],
             "answer_chars": a["chars"] / a["turns"] if a["turns"] else None,  # mean answer length
             "tokens_in": tokens.get(aid, (None, None))[0], "tokens_out": tokens.get(aid, (None, None))[1],
