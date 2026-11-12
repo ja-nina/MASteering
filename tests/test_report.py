@@ -284,3 +284,67 @@ def test_operating_keeps_unsteered_and_mild_coefficients():
     rows = [{"coef": None}, {"coef": 0.5}, {"coef": -1.0}, {"coef": 1.5}, {"coef": -2.0}]
     assert [r["coef"] for r in operating(rows, 1)] == [None, 0.5, -1.0]
     assert operating(rows, None) == rows
+
+
+def test_examples_add_mild_columns(tmp_path):
+    """The mildest c of each sign is shown next to the strongest, where that episode was played ('missing' otherwise)."""
+    import json
+    from scripts.report import examples_section
+    g = tmp_path / "negotiation_2p"
+    conds = {"none": "I will offer a fair trade of wheat for brick, as planned. " * 3, "all__evil_x-1": "x " * 80,
+             "all__evil_x1": "y " * 80, "all__evil_x-0.5": "A mildly kind offer. " * 8, "all_random__evil_x1": "z " * 80,
+             "prompt_all__evil_x1": "p " * 80, "prompt_all__evil_x-1": "q " * 80}
+    for cond, text in conds.items():
+        d = g / f"negotiation_2p__{cond}"
+        d.mkdir(parents=True)
+        (d / "episode_0.jsonl").write_text(json.dumps({"agent_id": "player_0", "completion": text}) + "\n")
+        (d / "episode_0.summary.json").write_text("{}")
+    page = examples_section(tmp_path, ["evil"], [-1, -0.5, 0.5, 1])
+    assert "<b>vector c=-0.5</b><br>A mildly kind offer." in page
+    assert "<b>vector c=0.5</b><br><span class=muted>missing</span>" in page
+    assert page.index("vector c=-1") < page.index("vector c=-0.5") < page.index("vector c=0.5") < page.index("vector c=1<")
+
+
+def _strength_rows(rng, n=300):
+    """Unsteered agents and persona-vector agents whose readout is 0.8 c + noise; random-direction agents whose
+    readout does not move."""
+    rows = []
+    for ep in range(n):
+        c = rng.choice([-1, -0.5, 0.5, 1])
+        base = dict(cell=("g_2p", "text"), group="g_2p", obs="text", episode=ep, random_fixed=False, team_cond=None,
+                    select="all", reward=None, via="vector", trait="evil")
+        rows.append({**base, "condition": "none", "steered": False, "trait": None, "coef": None, "random": False,
+                     "via": None, "cluster": ("none", ep), "mon": {"evil": rng.gauss(0, 0.3), "kind": rng.gauss(0, 1)}})
+        rows.append({**base, "condition": "all", "steered": True, "coef": c, "random": False, "cluster": ("all", ep),
+                     "mon": {"evil": 0.8 * c + rng.gauss(0, 0.3), "kind": rng.gauss(0, 1)}})
+        rows.append({**base, "condition": "all_random", "steered": True, "coef": c, "random": True,
+                     "cluster": ("rnd", ep), "mon": {"evil": rng.gauss(0, 0.3), "kind": rng.gauss(0, 1)}})
+    return rows
+
+
+def test_strength_section_predicts_c_and_random_does_not():
+    from scripts.report import strength_section
+    take, page = strength_section(_strength_rows(random.Random(3)), ["evil"])
+    assert "29. Reading the strength" in page and take and "random direction" in page
+    r2 = [float(x) for x in __import__("re").findall(r"-?\d+\.\d+", take[0])]
+    assert r2[0] > 0.6 and r2[1] < 0.1  # persona predicted, random not
+
+
+def test_auc_episodes_and_curves_section():
+    from scripts.report import auc_episodes, curves_section
+    rows = []
+    for ep in range(30):
+        for cond, steer in (("none", None), ("one", 1.0), ("all", 1.0), ("all_random", 1.0)):
+            for a in range(3):
+                st = steer is not None and (cond != "one" or a == 0)
+                rows.append({"cell": ("g_3p", "text"), "group": "g_3p", "obs": "text", "episode": ep, "agent": f"p{a}",
+                             "condition": cond, "steered": st, "trait": "evil" if steer else None, "coef": steer,
+                             "via": "vector" if steer else None, "random": cond == "all_random", "random_fixed": False,
+                             "team_cond": None, "select": "one" if cond == "one" else "all", "team": None,
+                             "cluster": (cond, ep), "reward": 1.0 + (0.5 if st and not cond == "all_random" else 0.0),
+                             "mon": {"evil": 2.0 if st and a == 0 else 0.0}})
+    eps = auc_episodes(rows, "evil")
+    assert len(eps) == 30 and all(e["auc"] == 1.0 and e["others"] == 2 for e in eps)
+    page = curves_section(rows, ["evil"], [("g_3p", "text")], baselines(rows))
+    assert "28. Reward and welfare curves" in page and page.count("<svg") == 2
+    assert "+1.50 ± 0.00" in page  # everyone +0.5 with the persona: the group total gains 1.5
