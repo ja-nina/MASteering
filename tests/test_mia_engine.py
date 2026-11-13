@@ -182,6 +182,13 @@ def test_capture_retries_a_lost_delivery_then_skips(tmp_path, monkeypatch):
 
     monkeypatch.setattr(eng, "_read", lambda results: (_ for _ in ()).throw(DeliveryReadTimeout("lost")))
     assert eng.read(turns)[0][2].shape == (0, 4)                        # lost twice: no readout, no crash
+    with pytest.raises(me.MonitorDead):
+        eng.read(turns)                                                 # lost again, right after: the monitor is dead
+    monkeypatch.setattr(eng, "_read", flaky)
+    eng.lost_in_row = 1
+    calls.clear()
+    eng.read(turns)
+    assert eng.lost_in_row == 0                                         # a delivered read resets the count
 
     monkeypatch.setattr(eng, "_read", lambda results: (_ for _ in ()).throw(ValueError("real bug")))
     with pytest.raises(ValueError):

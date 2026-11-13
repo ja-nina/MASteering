@@ -50,6 +50,16 @@ class CaptureMismatch(RuntimeError):
     pass
 
 
+# Give-ups in a row after which the monitor counts as dead: its vLLM engine process crashed (2026-11-13:
+# "RuntimeError: dictionary changed size during iteration" in EngineCore) and every later turn waited 2 x 300 s
+# for nothing, for hours. The task then stops; its unfinished episodes go back to the pool, finished ones are kept.
+CAPTURE_DEAD_AFTER = int(os.environ.get("TESTBED_CAPTURE_DEAD_AFTER", 2))
+
+
+class MonitorDead(RuntimeError):
+    pass
+
+
 def template(tokenizer, spec: ModelSpec, system: str, user: str, n_images: int) -> str:
     if not n_images:
         return chat_prompt(tokenizer, system, user, spec.enable_thinking)
@@ -165,6 +175,7 @@ class CaptureEngine:
     def __init__(self, llm, spec: ModelSpec, layers: List[int], hidden: int, max_tokens: int = CAPTURE_TOKENS) -> None:
         self.llm, self.spec, self.layers, self.hidden = llm, spec, list(layers), hidden
         self.max_tokens = max_tokens
+        self.lost_in_row = 0  # read calls given up one after another (reset by any delivered read)
 
     def read(self, results: List[TurnResult]) -> List[Dict[int, torch.Tensor]]:
         rows: List[Optional[Dict[int, torch.Tensor]]] = [None] * len(results)
@@ -187,7 +198,9 @@ class CaptureEngine:
         again, these turns get no readout (logged without monitor scores) instead of failing every episode."""
         for attempt in (1, 2):
             try:
-                return self._read(results)
+                rows = self._read(results)
+                self.lost_in_row = 0
+                return rows
             except Exception as e:  # noqa: BLE001 - mia's DeliveryReadTimeout; anything else is re-raised
                 if type(e).__name__ != "DeliveryReadTimeout":
                     raise
@@ -195,6 +208,10 @@ class CaptureEngine:
                     f"{str(e).splitlines()[0]}")
                 clear_delivered(os.environ["MIA_APERTURE_DIR"])
         log(f"capture: giving up on {len(results)} turn(s); they are logged without monitor scores")
+        self.lost_in_row += 1
+        if self.lost_in_row >= CAPTURE_DEAD_AFTER:
+            raise MonitorDead(f"capture: {self.lost_in_row} reads in a row lost: the monitor engine is gone (see an "
+                              "EngineCore traceback above); stopping this task so its episodes go back to the pool")
         return [None] * len(results)
 
     def _read(self, results: List[TurnResult]) -> List[Dict[int, torch.Tensor]]:
