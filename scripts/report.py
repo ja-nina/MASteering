@@ -1080,6 +1080,7 @@ SETTINGS_USED = {
     "30": ("GBS games only (gbs, gbs_picking). <b>Every agent steered:</b> all (persona vector alone) and all_random. "
            "<b>One agent steered:</b> one (persona vector alone). Not included: prompt + vector, half, the prompt. "
            + _C0 + "One value per episode (solved is the same for the whole group)."),
+    "31": ("Games with at least 3 players, no hidden roles. <b>Steered:</b> one, half, all (persona vector alone; prompt + vector and the prompt not included); <b>co-players:</b> the unsteered agents of one and half; <b>welfare control:</b> all_random. " + _PAIR),
 }
 
 
@@ -1750,6 +1751,133 @@ def rounds_section(rows, traits, cells):
                    "under each game says how many unsolved games ended earlier (should be 0). The every-agent-steered charts carry the random "
                    "direction (dashed grey) as the control.",
                    findings, legend + ("".join(out) or "<p class=muted>no GBS episodes in this report</p>"))
+
+
+def carriers_section(rows, traits, base, scale, min_players=3):
+    """31. One, half, all, side by side over c, in the games where half is neither one nor all (>= 3 players; half
+    rounds up, so 2 of 3, 2 of 4 and 5, 3 of 6): the steered agents' readout and own reward, the unsteered
+    co-players' readout, and the group's welfare, with the random direction (all_random) as the welfare control."""
+    big = {r["cell"] for r in rows if (r.get("players") or 0) >= min_players} - role_cells(rows)
+    settings = ("one", "half", "all")
+    scol = {"one": "var(--s1)", "half": "var(--s4)", "all": "var(--s6)", "random direction (all)": "var(--rnd)"}
+    steered = [r for r in rows if r["cell"] in big and r["condition"] in settings and is_vector(r)
+               and r["via"] == "vector" and r["coef"] is not None]
+    own = paired(steered, base, lambda r: True)
+    co = [r for r in rows if r["cell"] in big and r["condition"] in ("one", "half") and not r["steered"]
+          and r["via"] == "vector" and not r["random"] and r["coef"] is not None]
+    wel = welfare([r for r in rows if r["cell"] in big and not r["random_fixed"]
+                   and ((r["condition"] in settings and r["via"] == "vector" and not r["random"])
+                        or r["condition"] == "all_random")],
+                  [r for r in rows if r["cell"] in big and r["condition"] == "none"])
+
+    def curve(pts):  # pts: (c, value, cluster); c = 0 is the unsteered baseline (0 by construction)
+        by = defaultdict(lambda: ([], []))
+        for c, v, k in pts:
+            if v is not None and math.isfinite(v):
+                by[c][0].append(v)
+                by[c][1].append(k)
+        return sorted([(c, *mean_ci(*v)[:2]) for c, v in by.items()] + [(0.0, 0.0, float("nan"))])
+
+    def measures(t=None):
+        """{measure: {series: [(c, v, cluster)]}} for one trait (or all traits pooled)."""
+        keep = (lambda r: True) if t is None else (lambda r: r["trait"] == t)
+        own_tr = lambda r: r["trait"]
+        m = {"a. steered agents: readout of their trait (SD)":
+                 {s: [(r["coef"], r["mon"].get(own_tr(r)), r["cluster"]) for r in steered
+                      if r["condition"] == s and keep(r)] for s in settings},
+             "b. steered agents: own reward change (SD)":
+                 {s: [(r["coef"], r["diff"] / scale.get(r["cell"], 1.0), r["cluster"]) for r in own
+                      if r["condition"] == s and keep(r)] for s in settings},
+             "c. unsteered co-players: readout of the steered trait (SD)":
+                 {s: [(r["coef"], r["mon"].get(own_tr(r)), r["cluster"]) for r in co
+                      if r["condition"] == s and keep(r)] for s in ("one", "half")},
+             "d. group welfare change (SD of the unsteered totals)":
+                 {**{s: [(r["coef"], r["diff"], r["cluster"]) for r in wel
+                         if r["condition"] == s and not r["random"] and keep(r)] for s in settings},
+                  "random direction (all)": [(r["coef"], r["diff"], r["cluster"]) for r in wel
+                                             if r["condition"] == "all_random" and keep(r)]}}
+        return m
+
+    def slopes(pts_by_series, cells_of):
+        out = {}
+        for s, pts in pts_by_series.items():
+            pts = [p for p in pts if p[1] is not None and math.isfinite(p[1])]
+            if len(pts) > 20:
+                out[s] = slope([p[0] for p in pts], [p[1] for p in pts], [p[2] for p in pts],
+                               [cells_of[p[2]] for p in pts])
+        return out
+
+    cell_of = {r["cluster"]: r["cell"] for r in rows}
+
+    def panel(m, label):
+        charts = []
+        for name, ser in m.items():
+            cv = {s: curve(p) for s, p in ser.items() if p}
+            cv = {s: v for s, v in cv.items() if len(v) > 1}
+            charts.append(f"<div class=chart><h3>{html.escape(name)}</h3>"
+                          + (line_chart(cv, f"{label} {name}", "change vs unsteered", colours=scol) if cv else
+                             "<p class=muted>no episodes</p>") + "</div>")
+        return "<div class=charts>" + "".join(charts) + "</div>"
+
+    if not big or not steered:
+        body = f"<p class=muted>no games with at least {min_players} players and one / half / all episodes</p>"
+        findings = ["not enough data yet"]
+    else:
+        pooled = measures()
+        tab = ["<div class=wrap><table><tr><th class=l>trait</th><th class=l>measure</th>"
+               + "".join(f"<th>{s}</th>" for s in (*settings, "random direction (all)")) + "</tr>"]
+        sig_count = defaultdict(lambda: defaultdict(int))
+        per_trait = []
+        for t in traits:
+            m = measures(t)
+            for name, ser in m.items():
+                sl = slopes(ser, cell_of)
+                for s, v in sl.items():
+                    sig_count[name][s] += sig(v)
+                tab.append(f"<tr><td class=l>{t}</td><td class=l>{html.escape(name[:2])}</td>" + "".join(
+                    (f"<td>{sl[s]['b']:+.2f}<span class=sig>{stars(sl[s].get('p', float('nan')))}</span></td>"
+                     if s in sl else "<td>–</td>") for s in (*settings, "random direction (all)")) + "</tr>")
+            per_trait.append(f"<h3>{html.escape(t)}</h3>" + panel(m, t))
+        tab.append("</table></div>")
+        pl = {name: slopes(ser, cell_of) for name, ser in pooled.items()}
+        names = list(pooled)
+        f = lambda name, s: (f"{pl[name][s]['b']:+.2f}" if s in pl[name] else "–")
+        findings = [
+            "Steered agents' readout per unit c, pooled over traits: " + ", ".join(
+                f"{s} {f(names[0], s)}" for s in settings) + " SD (the own persona hardly depends on how many carry it)"
+            if pl[names[0]] else "no readout",
+            "Unsteered co-players' readout of the steered trait: " + ", ".join(
+                f"{s} {f(names[2], s)}" for s in ("one", "half")) + " SD per unit c: more carriers, more contagion"
+            if pl[names[2]] else "no co-players",
+            "Traits with a significant slope (of " + str(len(traits)) + "), own reward: " + ", ".join(
+                f"{s} {sig_count[names[1]][s]}" for s in settings) + "; group welfare: " + ", ".join(
+                f"{s} {sig_count[names[3]][s]}" for s in (*settings, "random direction (all)")),
+        ]
+        games = ", ".join(sorted(cell_name(c) for c in big))
+        body = (f"<p class=muted>Games ({len(big)} cells, at least {min_players} players, no hidden roles): "
+                f"{html.escape(games)}.</p><div class=legend>"
+                + "".join(f"<span><i style='background:{c}'></i>{html.escape(s)}</span>" for s, c in scol.items())
+                + "<span>bars: 95% CI</span></div>"
+                + "<h3>All traits pooled</h3>" + panel(pooled, "pooled")
+                + "<details><summary>slopes per unit c, trait by trait (* q-free p &lt; .05)</summary>"
+                + "".join(tab) + "</details><details><summary>the curves, trait by trait</summary>"
+                + "".join(per_trait) + "</details>")
+    return section(31, "One, half, all: how effects scale with the share of carriers",
+                   "In the games with at least three players, where half is neither one nor all, how do the steered "
+                   "agents, their unsteered co-players and the group respond along c when one agent, half of them or "
+                   "everyone carries the persona?",
+                   "Games with at least three players (two-player games are left out: there half is one agent, the "
+                   "same as one). Half rounds up: 2 of 3, 2 of 4 or 5, 3 of 6. a: the steered agents' readout of the "
+                   "steered trait, in SD of the game's unsteered agents. b: their reward minus the same seat's in the "
+                   "unsteered episode with the same seed, in SD of the game's unsteered rewards. c: the same readout "
+                   "for the unsteered co-players of one and half. d: the episode's total reward minus the unsteered "
+                   "episode's, in SD of the unsteered totals (constant-sum games have no welfare), with all_random as "
+                   "the control. c = 0 is the unsteered episode (0 by construction).",
+                   "Lines that coincide in a: the own persona does not depend on the share of carriers. A higher "
+                   "half than one line in c: more carriers, more contagion. In d, a setting's line that leaves the "
+                   "dashed random line behind is a persona effect on the group. The pooled charts average over traits "
+                   "whose reward effects have different signs, so b and d are read trait by trait (below).",
+                   findings, body)
 
 
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
@@ -5303,7 +5431,8 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale),
                  modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms),
                  rule_section(rows, cells), ([], curves_section(rows, traits, cells, base, scale)),
-                 strength_section(rows, traits), ([], rounds_section(rows, traits, cells))):
+                 strength_section(rows, traits), ([], rounds_section(rows, traits, cells)),
+                 ([], carriers_section(rows, traits, base, scale))):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -5329,7 +5458,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"

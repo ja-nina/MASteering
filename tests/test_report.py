@@ -408,3 +408,13 @@ def test_turns_tolerates_control_characters_and_cut_lines(tmp_path):
     p.write_text('{"a": "x\x01y"}\n{"b": 1}\n{"c": "cut off\n', encoding="utf-8")
     assert _turns(p) == [{"a": "x\x01y"}, {"b": 1}]
     assert _turns(tmp_path / "missing.jsonl") == []
+
+
+def test_carriers_section_leaves_out_two_player_games():
+    from scripts.report import carriers_section
+    row = {"cell": ("negotiation_2p", "text"), "players": 2, "condition": "one", "steered": True, "via": "vector",
+           "random": False, "random_fixed": False, "coef": 1.0, "trait": "evil", "mon": {"evil": 1.0},
+           "reward": 1.0, "group": "negotiation_2p", "obs": "text", "episode": 0, "agent": "a", "cluster": ("r", 0),
+           "team_cond": None, "run_id": "negotiation_2p__one__evil"}
+    page = carriers_section([row], ["evil"], {}, {})
+    assert "no games with at least 3 players" in page
