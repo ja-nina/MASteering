@@ -418,3 +418,19 @@ def test_carriers_section_leaves_out_two_player_games():
            "team_cond": None, "team": None, "run_id": "negotiation_2p__one__evil"}
     page = carriers_section([row], ["evil"], {}, {})
     assert "no games with at least 3 players" in page
+
+
+def test_tempo_section_shows_the_unsteered_length_at_c0():
+    from scripts.report import tempo_section
+
+    def ep(cond, e, turns, steered_wins, coef=None):
+        base = {"cell": ("gomoku_2p", "text"), "group": "gomoku_2p", "obs": "text", "condition": cond,
+                "episode_turns": turns, "cluster": (cond, e), "via": "vector" if coef else None, "random": False,
+                "random_fixed": False, "trait": "evil" if coef else None, "coef": coef, "team": None, "players": 2}
+        return [dict(base, agent=a, steered=bool(coef) and a == 0,
+                     reward=1.0 if (a == 0) == steered_wins else 0.0) for a in range(2)]
+    rows = [r for e in range(10) for r in ep("none", e, 20, e % 2 == 0)]
+    rows += [r for e in range(10) for r in ep("one", e, 10, e < 2, 1.0)]
+    page = tempo_section(rows, ["evil"])
+    assert "Unsteered (c = 0): 20.0 turns per game" in page
+    assert "the steered agent wins 20%" in page

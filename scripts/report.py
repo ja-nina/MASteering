@@ -1081,6 +1081,7 @@ SETTINGS_USED = {
            "<b>One agent steered:</b> one (persona vector alone). Not included: prompt + vector, half, the prompt. "
            + _C0 + "One value per episode (solved is the same for the whole group)."),
     "31": ("Games with at least 3 players, no hidden roles. <b>Steered:</b> one, half, all (persona vector alone; prompt + vector and the prompt not included); <b>co-players:</b> the unsteered agents of one and half; <b>welfare control:</b> all_random. " + _PAIR),
+    "32": ("<b>Board games:</b> " + _ONE + "<b>Harvest:</b> all (every agent steered by the vector) and all_random. <b>c = 0:</b> the unsteered episodes of the same game (their own win rate and length)."),
 }
 
 
@@ -1878,6 +1879,154 @@ def carriers_section(rows, traits, base, scale, min_players=3):
                    "dashed random line behind is a persona effect on the group. The pooled charts average over traits "
                    "whose reward effects have different signs, so b and d are read trait by trait (below).",
                    findings, body)
+
+
+WIN_ENDS = ("connect_four_2p", "gomoku_2p", "tictactoe_2p")  # the game ends the turn someone wins
+COLLAPSE_ENDS = ("harvest_5p",)                               # the game ends early when the stock collapses
+
+
+def tempo_section(rows, traits):
+    """32. How fast games are won or lost. Board games (they end the turn someone wins): the steered agent's win rate
+    and the turns to its win or loss over c, one agent steered. Harvest (it ends early when the lake collapses): the
+    turns played over c, everyone steered, with the random direction. c = 0 is the unsteered episodes' own values."""
+    tcol = {t: TRAIT_COLOURS[i % len(TRAIT_COLOURS)] for i, t in enumerate(traits)}
+    rnd = "random direction"
+    board = sorted({r["cell"] for r in rows if r["group"] in WIN_ENDS})
+    harvest = sorted({r["cell"] for r in rows if r["group"] in COLLAPSE_ENDS})
+    unst = [r for r in rows if r["condition"] == "none" and r["reward"] is not None and r.get("episode_turns")]
+    base_turns = {c: float(np.mean([r["episode_turns"] for r in unst if r["cell"] == c] or [float("nan")]))
+                  for c in board + harvest}
+    one = [r for r in rows if r["cell"] in board and r["condition"] == "one" and is_vector(r) and r["via"] == "vector"
+           and r["coef"] is not None and r["reward"] is not None and r.get("episode_turns")]
+
+    def curve(pts, zero):
+        by = defaultdict(lambda: ([], []))
+        for c, v, k in pts:
+            if v is not None and math.isfinite(v):
+                by[c][0].append(v)
+                by[c][1].append(k)
+        out = [(c, *mean_ci(*v)[:2]) for c, v in by.items()]
+        if zero:
+            out.append((0.0, *mean_ci(*zero)[:2]))
+        return sorted(out)
+
+    def zero_of(rs, f):
+        vs = [(f(r), r["cluster"]) for r in rs]
+        vs = [(v, k) for v, k in vs if v is not None]
+        return ([v for v, _ in vs], [k for _, k in vs]) if vs else None
+
+    win = lambda r: 100.0 * (r["reward"] > 0.5)
+    rel = lambda r: r["episode_turns"] / base_turns.get(r["cell"], float("nan"))
+    rel_win = lambda r: rel(r) if r["reward"] > 0.5 else None
+    rel_lose = lambda r: rel(r) if r["reward"] < 0.5 else None
+    raw_win = lambda r: r["episode_turns"] if r["reward"] > 0.5 else None
+    raw_lose = lambda r: r["episode_turns"] if r["reward"] < 0.5 else None
+
+    def table(series, coefs, digits=1):
+        def cell(v, c):
+            for x, m, h in v:
+                if x == c:
+                    return f"<td>{m:.{digits}f}{f' ± {h:.{digits}f}' if math.isfinite(h) else ''}</td>"
+            return "<td>–</td>"
+        head = "".join(f"<th>c = {c:g}</th>" for c in coefs)
+        body = "".join(f"<tr><td class=l>{html.escape(k)}</td>" + "".join(cell(v, c) for c in coefs) + "</tr>"
+                       for k, v in series.items())
+        return f"<div class=wrap><table><tr><th class=l></th>{head}</tr>{body}</table></div>"
+
+    def charts(spec, label):
+        out = []
+        for name, (series, ylabel) in spec.items():
+            s = {k: v for k, v in series.items() if len(v) > 1}
+            out.append(f"<div class=chart><h3>{html.escape(name)}</h3>"
+                       + (line_chart(s, f"{label} {name}", ylabel, colours={**tcol, rnd: "var(--rnd)"}) if s else
+                          "<p class=muted>no episodes</p>") + "</div>")
+        return "<div class=charts>" + "".join(out) + "</div>"
+
+    body, findings = [], []
+    if board and one:
+        ub = [r for r in unst if r["cell"] in board]
+        pooled = {
+            "a. steered agent's win rate (%)": (
+                {t: curve([(r["coef"], win(r), r["cluster"]) for r in one if r["trait"] == t], zero_of(ub, win))
+                 for t in traits}, "wins (%)"),
+            "b. turns to its win, relative to the game's unsteered length": (
+                {t: curve([(r["coef"], rel_win(r), r["cluster"]) for r in one if r["trait"] == t],
+                          zero_of(ub, rel_win)) for t in traits}, "turns / unsteered turns"),
+            "c. turns to its loss, relative": (
+                {t: curve([(r["coef"], rel_lose(r), r["cluster"]) for r in one if r["trait"] == t],
+                          zero_of(ub, rel_lose)) for t in traits}, "turns / unsteered turns")}
+        z_win = mean_ci(*zero_of(ub, win))[0]
+        for t in traits:
+            pts = pooled["a. steered agent's win rate (%)"][0][t]
+            ext = [p for p in pts if p[0]]
+            if ext:
+                lo = min(ext, key=lambda p: p[1])
+                hi = max(ext, key=lambda p: p[1])
+                if abs(lo[1] - z_win) > 10 or abs(hi[1] - z_win) > 10:
+                    far = lo if abs(lo[1] - z_win) >= abs(hi[1] - z_win) else hi
+                    findings.append(f"Board games, {t}: the steered agent wins {far[1]:.0f}% ± {far[2]:.0f} at "
+                                    f"c = {far[0]:g} (unsteered {z_win:.0f}%)")
+        per_game = []
+        for cell in board:
+            uc = [r for r in ub if r["cell"] == cell]
+            oc = [r for r in one if r["cell"] == cell]
+            coefs = sorted({r["coef"] for r in oc} | {0.0})
+            wr = {t: curve([(r["coef"], win(r), r["cluster"]) for r in oc if r["trait"] == t], zero_of(uc, win))
+                  for t in traits}
+            tw = {t: curve([(r["coef"], raw_win(r), r["cluster"]) for r in oc if r["trait"] == t],
+                           zero_of(uc, raw_win)) for t in traits}
+            tl = {t: curve([(r["coef"], raw_lose(r), r["cluster"]) for r in oc if r["trait"] == t],
+                           zero_of(uc, raw_lose)) for t in traits}
+            per_game.append(f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>Unsteered (c = 0): "
+                            f"{base_turns[cell]:.1f} turns per game, {len({r['cluster'] for r in uc})} episodes.</p>"
+                            f"<p class=muted>win rate (%)</p>{table(wr, coefs, 0)}"
+                            f"<p class=muted>turns when the steered agent wins</p>{table(tw, coefs)}"
+                            f"<p class=muted>turns when it loses</p>{table(tl, coefs)}")
+        body.append("<h3>Board games, one agent steered (pooled over "
+                    + ", ".join(html.escape(cell_name(c)) for c in board) + ")</h3>"
+                    + "<p class=muted>Unsteered game length (c = 0): "
+                    + ", ".join(f"{html.escape(cell_name(c))} {base_turns[c]:.1f}" for c in board)
+                    + " turns.</p>" + charts(pooled, "board")
+                    + "<details><summary>per game: win rate and turns, c = 0 included (mean ± 95% CI)</summary>"
+                    + "".join(per_game) + "</details>")
+    if harvest:
+        allr = [r for r in rows if r["cell"] in harvest and r.get("episode_turns") and r["coef"] is not None
+                and ((r["condition"] == "all" and r["via"] == "vector" and not r["random"])
+                     or (r["condition"] == "all_random" and not r["random_fixed"]))]
+        eps = {r["cluster"]: r for r in allr}.values()  # one value per episode
+        ue = {r["cluster"]: r for r in unst if r["cell"] in harvest}.values()
+        for cell in harvest:
+            ec = [e for e in eps if e["cell"] == cell]
+            zc = zero_of([e for e in ue if e["cell"] == cell], lambda r: r["episode_turns"])
+            ser = {t: curve([(e["coef"], e["episode_turns"], e["cluster"]) for e in ec
+                             if e["trait"] == t and not e["random"]], zc) for t in traits}
+            ser[rnd] = curve([(e["coef"], e["episode_turns"], e["cluster"]) for e in ec if e["random"]], zc)
+            coefs = sorted({e["coef"] for e in ec} | {0.0})
+            body.append(f"<h3>{html.escape(cell_name(cell))}, everyone steered: turns played (the lake collapses "
+                        f"earlier = fewer)</h3><p class=muted>Unsteered (c = 0): {base_turns[cell]:.1f} turns.</p>"
+                        + charts({"turns played": (ser, "turns")}, cell_name(cell))
+                        + f"<details><summary>the numbers, c = 0 included</summary>{table(ser, coefs)}</details>")
+            short = [(t, p) for t, v in ser.items() if t != rnd for p in v if p[0]]
+            if short:
+                t_, (c_, m_, h_) = min(short, key=lambda tp: tp[1][1])
+                findings.append(f"{cell_name(cell)}: shortest games with everyone steered toward {t_} at c = {c_:g}: "
+                                f"{m_:.1f} ± {h_:.1f} turns (unsteered {base_turns[cell]:.1f})")
+    legend = ("<div class=legend>" + "".join(f"<span><i style='background:{c}'></i>{html.escape(t)}</span>"
+                                             for t, c in tcol.items())
+              + "<span><i style='background:var(--rnd)'></i>random direction (dashed)</span><span>bars: 95% CI</span>"
+              + "<span>c = 0: the unsteered episodes</span></div>")
+    return section(32, "Tempo: how fast games are won, lost or used up",
+                   "Does a persona change how quickly a game is decided: does the steered agent win more often, and "
+                   "faster or slower; does a steered group use up a shared resource sooner?",
+                   "Board games (Connect Four, Gomoku, tic-tac-toe; they end the turn a player wins): the steered "
+                   "agent's win rate with one agent steered, and the turns to its win or loss; pooled over games as a "
+                   "ratio to each game's unsteered length, per game in turns. Harvest (it ends early when the lake "
+                   "collapses): turns played with everyone steered, with the random direction (all_random). c = 0 is "
+                   "the unsteered episodes' own value (not 0), shown as a point and as a column.",
+                   "Win rate above the c = 0 point: the persona helps the agent win. A relative length below 1: the "
+                   "game is decided faster than unsteered. Fewer Harvest turns than at c = 0: the group used the "
+                   "lake up sooner. Draws count as neither win nor loss.",
+                   findings or ["not enough data yet"], legend + ("".join(body) or "<p class=muted>no such games</p>"))
 
 
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
@@ -5432,7 +5581,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
                  modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms),
                  rule_section(rows, cells), ([], curves_section(rows, traits, cells, base, scale)),
                  strength_section(rows, traits), ([], rounds_section(rows, traits, cells)),
-                 ([], carriers_section(rows, traits, base, scale))):
+                 ([], carriers_section(rows, traits, base, scale)), ([], tempo_section(rows, traits))):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -5458,7 +5607,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
