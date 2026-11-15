@@ -8,6 +8,9 @@
 #SBATCH --output=slurm-logs/report-%j.out
 # Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main] [sweep file] [model key]
 #   another model's logs: sbatch scripts/slurm/report.sbatch main_qwen3.8-27b config/sweeps/focus.yaml qwen3.8-27b
+#   MIN_DONE=0.7 sbatch ...: leave out game groups with under 70% of their planned episodes (config/runs/<sweep>)
+#   done (default 0.5; 0 keeps every group). CUTOFFS=1: rebuild cut-off stats of older episodes from the JSONL.
+#   Writes report.html (every c) and report_c1.html (|c| <= 1, the range the findings are read in).
 # Summary CSV + HTML report of a sweep, on a compute node: the first pass over older episodes reads their
 # JSONLs and needs more memory and time than the submit node allows. The partition only takes GPU jobs
 # (and at most 10 CPUs per GPU);
@@ -31,11 +34,15 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 # (optional: if it fails, the report shows the counted episodes and '–' for the rest)
 "$PYTHON" scripts/backfill_tokens.py "$LOGS" "$FALLBACK" --jobs "${SLURM_CPUS_PER_TASK:-8}" \
     || echo "token backfill incomplete: rerun to count the rest"
-"$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"
+"$PYTHON" scripts/summarize_runs.py "$LOGS" "$FALLBACK" --out "$OUT/agents.csv.gz" --jobs "${SLURM_CPUS_PER_TASK:-8}"     ${CUTOFFS:+--cutoffs}
 # norms of the persona vectors per layer, for the push size of the random directions (report section 26)
 "$PYTHON" scripts/vector_norms.py --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --out "$OUT/vector_norms.json" \
     || echo "vector norms unavailable: section 26 plots over c instead of the push size"
-"$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK" --out "$OUT/report.html"
+DONE_ARGS=()
+[ -d "config/runs/$SWEEP" ] && DONE_ARGS=(--configs "config/runs/$SWEEP" --min-done "${MIN_DONE:-0.5}")
+for C in "" 1; do
+  "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK"       ${DONE_ARGS[@]+"${DONE_ARGS[@]}"} ${C:+--max-c $C} --out "$OUT/report${C:+_c$C}.html"
+done
 "$PYTHON" scripts/steering_mini_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/steering_mini_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
 echo "$(date)  done: git add $OUT && git commit -m 'Report: $SWEEP' && git push"
