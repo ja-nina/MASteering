@@ -385,3 +385,18 @@ def test_complete_enough_leaves_out_half_played_games(tmp_path):
     kept = complete_enough(rows, tmp_path, 0.5)
     assert {r["group"] for r in kept} == {"full_2p"}
     assert "half_2p (40%)" in EXCLUDED_NOTE[-1]
+
+
+def test_rounds_section_counts_solved_games_and_their_rounds():
+    from scripts.report import rounds_section
+
+    def ep(cond, e, rounds, solved, coef=None):
+        base = {"cell": ("gbs_3p", "text"), "condition": cond, "episode_turns": rounds, "cluster": (cond, e),
+                "truncated": False, "random_fixed": False}
+        return [dict(base, reward=1.0 if solved else 0.0, steered=cond != "none" and a == 0, trait="evil" if coef else None,
+                     coef=coef, via="vector" if coef else None, random=False) for a in range(3)]
+    rows = [r for e in range(10) for r in ep("none", e, 4 if e < 8 else 10, e < 8)]
+    rows += [r for c in (-1.0, 1.0) for e in range(10) for r in ep("all", e + 100 * c, 7 if e < 3 else 10, e < 3, c)]
+    page = rounds_section(rows, ["evil"], [("gbs_3p", "text")])
+    assert "solved in 80% of 10 episodes, in 4.0 rounds" in page
+    assert "30.0 ± " in page and "7.0" in page and "0 of 16" in page

@@ -1077,6 +1077,9 @@ SETTINGS_USED = {
            "all_random. " + _PAIR),
     "29": (_VEC + "<b>c = 0:</b> every agent of the unsteered episodes. <b>Random:</b> all_random agents with the "
            "unsteered ones."),
+    "30": ("GBS games only (gbs, gbs_picking). <b>Every agent steered:</b> all (persona vector alone) and all_random. "
+           "<b>One agent steered:</b> one (persona vector alone). Not included: prompt + vector, half, the prompt. "
+           + _C0 + "One value per episode (solved is the same for the whole group)."),
 }
 
 
@@ -1619,6 +1622,124 @@ def strength_section(rows, traits):
                          "the shape: a rising row = the readout orders the strengths; flat on one side = that side is "
                          "invisible. A persona R² well above the random one = the monitor reads the persona, not the "
                          "size of the push.", findings, "".join(tab))
+
+
+def rounds_section(rows, traits, cells):
+    """30. GBS games (the group must hit a hidden sum; the game ends the round it is hit, or at the round limit):
+    whether the group solves it and in how many rounds, over c, when one agent or every agent is steered."""
+    tcol = {t: TRAIT_COLOURS[i % len(TRAIT_COLOURS)] for i, t in enumerate(traits)}
+    rnd_name = "random direction"
+    gbs = [c for c in cells if c[0].startswith("gbs")]
+    eps = {}
+    for r in rows:
+        if r["cell"] not in gbs or not r.get("episode_turns"):
+            continue
+        e = eps.setdefault(r["cluster"], {"cell": r["cell"], "condition": r["condition"], "rounds": r["episode_turns"],
+                                          "solved": None, "trait": None, "coef": None, "via": None, "random": False,
+                                          "random_fixed": False})
+        if r["reward"] is not None:
+            e["solved"] = bool(e["solved"]) or r["reward"] > 0
+        if r["steered"]:
+            e.update(trait=r["trait"], coef=r["coef"], via=r["via"], random=r["random"], random_fixed=r["random_fixed"])
+    eps = [dict(e, cluster=k) for k, e in eps.items() if e["solved"] is not None]
+    pick = {"one": lambda e: e["condition"] == "one" and e["via"] == "vector" and not e["random"],
+            "all": lambda e: e["condition"] == "all" and e["via"] == "vector" and not e["random"],
+            "random": lambda e: e["condition"] == "all_random" and not e["random_fixed"]}
+
+    def curve(es, base, measure):
+        pts = defaultdict(list)
+        for e in es:
+            if e["coef"] is not None:
+                pts[e["coef"]].append(e)
+        if not pts:
+            return []
+        pts[0.0] = base
+        out = []
+        for c, group in sorted(pts.items()):
+            vals = [(measure(e), e["cluster"]) for e in group]
+            vals = [(v, k) for v, k in vals if v is not None]
+            if vals:
+                m, h, _ = mean_ci([v for v, _ in vals], [k for _, k in vals])
+                out.append((c, m, h))
+        return out
+
+    measures = (("solved (% of episodes)", lambda e: 100.0 * e["solved"]),
+                ("rounds to solve (solved episodes)", lambda e: e["rounds"] if e["solved"] else None))
+    out, findings = [], []
+    for cell in gbs:
+        ce = [e for e in eps if e["cell"] == cell]
+        base = [e for e in ce if e["condition"] == "none"]
+        if not base:
+            continue
+        b_won = [e["rounds"] for e in base if e["solved"]]
+        b_lost = [e["rounds"] for e in base if not e["solved"]]
+        b_rate = 100 * len(b_won) / len(base)
+        limit = max(e["rounds"] for e in ce)
+        head = (f"<h3>{html.escape(cell_name(cell))}</h3><p class=muted>Unsteered: solved in {b_rate:.0f}% of "
+                f"{len(base)} episodes"
+                + (f", in {np.mean(b_won):.1f} rounds on average when solved" if b_won else "")
+                + (f"; unsolved games ran {np.mean(b_lost):.1f} rounds" if b_lost else "")
+                + f". Round limit: {limit:g}; unsolved games that ended before it (any setting): "
+                f"{sum(1 for e in ce if not e['solved'] and e['rounds'] < limit)} of "
+                f"{sum(1 for e in ce if not e['solved'])}.</p>")
+        charts, tables = [], []
+        for setting, label in (("all", "every agent steered"), ("one", "one agent steered")):
+            series_by_m = {}
+            for mname, fn in measures:
+                s = {t: curve([e for e in ce if pick[setting](e) and e["trait"] == t], base, fn) for t in traits}
+                s = {t: v for t, v in s.items() if len(v) > 1}
+                if setting == "all":
+                    rv = curve([e for e in ce if pick["random"](e)], base, fn)
+                    if len(rv) > 1:
+                        s[rnd_name] = rv
+                series_by_m[mname] = s
+            if not any(series_by_m.values()):
+                continue
+            charts.append(f"<h3>{label}</h3><div class=charts>" + "".join(
+                f"<div class=chart><h3>{html.escape(m)}</h3>"
+                + (line_chart(s, f"{cell_name(cell)} {label} {m}", m, colours={**tcol, rnd_name: "var(--rnd)"})
+                   if s else "<p class=muted>no episodes yet</p>") + "</div>"
+                for m, s in series_by_m.items()) + "</div>")
+            coefs = sorted({c for s in series_by_m.values() for v in s.values() for c, *_ in v})
+
+            def cell_of(v, c):
+                for x, m, h in v:
+                    if x == c:
+                        return f"{m:.1f}" + (f" ± {h:.1f}" if math.isfinite(h) else "")
+                return "–"
+            body = "".join(f"<tr><td class=l>{html.escape(t)}</td><td class=l>{html.escape(m)}</td>"
+                           + "".join(f"<td>{cell_of(v, c)}</td>" for c in coefs) + "</tr>"
+                           for m, s in series_by_m.items() for t, v in s.items())
+            tables.append(f"<p class=muted>{label}</p><div class=wrap><table><tr><th class=l>pushed by</th>"
+                          "<th class=l>measure</th>" + "".join(f"<th>c = {c:g}</th>" for c in coefs)
+                          + f"</tr>{body}</table></div>")
+            if setting == "all":
+                ext = [(t, p) for t, v in series_by_m["solved (% of episodes)"].items() if t != rnd_name
+                       for p in v if p[0]]
+                if ext:
+                    t_, (c_, m_, h_) = max(ext, key=lambda tp: abs(tp[1][1] - b_rate))
+                    findings.append(f"{cell_name(cell)}: unsteered groups solve {b_rate:.0f}%"
+                                    + (f" in {np.mean(b_won):.1f} rounds" if b_won else "")
+                                    + f"; the largest change with every agent steered is {t_} at c = {c_:g}: "
+                                    f"{m_:.0f}% ± {h_:.0f} solved")
+        out.append(head + "".join(charts) + "<details><summary>the numbers (mean ± 95% CI)</summary>"
+                   + "".join(tables) + "</details>")
+    legend = ("<div class=legend>" + "".join(f"<span><i style='background:{c}'></i>{html.escape(t)}</span>"
+                                             for t, c in tcol.items())
+              + "<span><i style='background:var(--rnd)'></i>random direction (dashed)</span><span>bars: 95% CI</span></div>")
+    return section(30, "GBS: solved or not, and how many rounds it took",
+                   "In the group-sum games, does steering change whether the group hits the hidden target, and how "
+                   "fast?",
+                   "Per episode: solved (the group hit the target in some round; every agent then gets reward 1) and "
+                   "the rounds played. A solved game ends the round the target is hit, so its length is the rounds it "
+                   "took to win; an unsolved game runs until the round limit. c = 0 is the unsteered episodes of the "
+                   "same game. Raw values (not changes), one CI per point from the spread over episodes.",
+                   "Fewer rounds to solve = faster coordination. Read 'rounds to solve' together with 'solved': if "
+                   "steering makes only the easy deals get solved, the solved games get shorter while fewer are "
+                   "solved. An unsolved game runs to the round limit, so 'rounds to lose' is the limit itself; the line "
+                   "under each game says how many unsolved games ended earlier (should be 0). The every-agent-steered charts carry the random "
+                   "direction (dashed grey) as the control.",
+                   findings, legend + ("".join(out) or "<p class=muted>no GBS episodes in this report</p>"))
 
 
 SETTING_ORDER = ("one", "half", "all", "both_one", "good_one", "evil_one", "evil_team", "good_team", "all_random",
@@ -5172,7 +5293,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
                  natural_section(rows, traits, steered, scale), risk_tempo_section(rows, traits, steered, scale),
                  modality_channel_section(rows, traits, base, scale, steered), push_section(rows, base, scale, norms),
                  rule_section(rows, cells), ([], curves_section(rows, traits, cells, base, scale)),
-                 strength_section(rows, traits)):
+                 strength_section(rows, traits), ([], rounds_section(rows, traits, cells))):
         late_take += part[0]
         body.append(part[1])
     pages = setting_pages(rows, traits, base, scale)  # each section's measure per setting, right under it
@@ -5198,7 +5319,7 @@ def build(rows, sweep=None, logs_dir=None, norms=None) -> str:
             f"<div class=result><b>Key findings</b><ul>{''.join(f'<li>{k}</li>' for k in key)}</ul>"
             f"<span class=muted>Generated from the numbers below; each section explains its measure.</span></div>")
     toc = ("<p class=muted>Sections: <a href=#takeaways>takeaways</a> · <a href=#setup>setup</a> · <a href=#examples>examples</a> · " + " · ".join(
-        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29)) + " · <a href=#games>per game</a></p>")
+        f"<a href=#s{n}>{n}</a>" for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, "11b", 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)) + " · <a href=#games>per game</a></p>")
     coefs = sorted({r["coef"] for r in rows if r["coef"] is not None and r["via"] != "prompt"})
     ex = examples_section(logs_dir, traits, coefs) if logs_dir else ""
     return head + toc + take_html + setup_section(rows, sweep, traits, cells) + ex + "".join(body) + "</body></html>"
