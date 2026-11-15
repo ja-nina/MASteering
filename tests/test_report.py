@@ -400,3 +400,11 @@ def test_rounds_section_counts_solved_games_and_their_rounds():
     page = rounds_section(rows, ["evil"], [("gbs_3p", "text")])
     assert "solved in 80% of 10 episodes, in 4.0 rounds" in page
     assert "30.0 ± " in page and "7.0" in page and "0 of 16" in page
+
+
+def test_turns_tolerates_control_characters_and_cut_lines(tmp_path):
+    from scripts.report import _turns
+    p = tmp_path / "episode_0.jsonl"
+    p.write_text('{"a": "x\x01y"}\n{"b": 1}\n{"c": "cut off\n', encoding="utf-8")
+    assert _turns(p) == [{"a": "x\x01y"}, {"b": 1}]
+    assert _turns(tmp_path / "missing.jsonl") == []

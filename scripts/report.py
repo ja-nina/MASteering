@@ -1239,10 +1239,20 @@ def setup_section(rows, sweep, traits, cells):
 
 
 def _turns(path):
+    """The turn records of one episode log. strict=False: a model's answer can hold a raw control character, which the
+    logger wrote unescaped; a line that still does not parse (an episode being written, a cut-off line) is skipped, so
+    one bad log costs one example, not the report."""
+    out = []
     try:
-        return [json.loads(line) for line in open(path, encoding="utf-8")]
+        for line in open(path, encoding="utf-8", errors="replace"):
+            if line.strip():
+                try:
+                    out.append(json.loads(line, strict=False))
+                except ValueError:
+                    pass
     except OSError:
-        return []
+        pass
+    return out
 
 
 def games_section(rows, traits, cells, man, eff, base, scale):
