@@ -146,6 +146,37 @@ def load(path, exclude: bool = True) -> list:
     return rows
 
 
+def planned_episodes(configs) -> dict:
+    """{game group: {run_id: episodes}} from a generated sweep (config/runs/NAME)."""
+    out = {}
+    for g in sorted(Path(configs).iterdir()):
+        if g.is_dir():
+            out[g.name] = {}
+            for f in g.glob("*.yaml"):
+                text = f.read_text(encoding="utf-8")
+                run = re.search(r"^run_id: *(.+?) *$", text, re.M).group(1).strip("'\"")
+                out[g.name][run] = int(re.search(r"^episodes: (\d+)$", text, re.M).group(1))
+    return out
+
+
+def complete_enough(rows, configs, min_done) -> list:
+    """Only the game groups with at least `min_done` of their planned episodes (that sweep's runs and episode
+    numbers only) finished, so a half-played game's early episodes do not stand for the whole game."""
+    plan = planned_episodes(configs)
+    done = defaultdict(set)
+    for r in rows:
+        runs = plan.get(r["group"], {})
+        if r["run_id"] in runs and r["episode"] < runs[r["run_id"]]:
+            done[r["group"]].add((r["run_id"], r["episode"]))
+    share = {g: len(done[g]) / max(sum(runs.values()), 1) for g, runs in plan.items()}
+    low = {g for g in {r["group"] for r in rows} if share.get(g, 0.0) < min_done}
+    if low:
+        EXCLUDED_NOTE.append(f"Left out, under {100 * min_done:.0f}% of their episodes done: " + ", ".join(
+            f"{g} ({100 * share.get(g, 0.0):.0f}%)" for g in sorted(low)))
+        print(EXCLUDED_NOTE[-1])
+    return [r for r in rows if r["group"] not in low]
+
+
 def operating(rows, max_c=None) -> list:
     """Only the rows with |c| <= max_c (unsteered rows, c = None, kept); None keeps every row. With max_c = 1 the
     report describes the operating range only: sections that need the strong ends (curve shapes, 'at max c') then
@@ -5183,8 +5214,14 @@ def main(argv=None) -> int:
     p.add_argument("--logs", nargs="+", help="the sweep's log dir(s) (<logging_dir>/<name>, and its fallback): adds "
                    "matched example answers")
     p.add_argument("--max-c", type=float, help="only |c| <= this (unsteered rows kept), e.g. 1 for the operating range")
+    p.add_argument("--configs", help="the generated sweep (config/runs/NAME), for --min-done")
+    p.add_argument("--min-done", type=float, default=0.5, help="with --configs: leave out game groups with less "
+                   "than this share of their planned episodes finished (default 0.5; 0 keeps every group)")
     args = p.parse_args(argv)
-    rows = operating(load(args.agents_csv), args.max_c)
+    rows = load(args.agents_csv)
+    if args.configs and args.min_done > 0:
+        rows = complete_enough(rows, args.configs, args.min_done)
+    rows = operating(rows, args.max_c)
     if not rows:
         print("no rows")
         return 1

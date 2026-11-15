@@ -370,3 +370,18 @@ def load_rows_for_settings_test():
         w.writeheader()
         w.writerows(rows)
     return load(path)
+
+
+def test_complete_enough_leaves_out_half_played_games(tmp_path):
+    from scripts.report import EXCLUDED_NOTE, complete_enough
+    for group, run in (("full_2p", "full_2p__none"), ("half_2p", "half_2p__none")):
+        (tmp_path / group).mkdir()
+        (tmp_path / group / f"{run}.yaml").write_text(f"run_id: {run}\nepisodes: 10\n", encoding="utf-8")
+    rows = ([{"group": "full_2p", "run_id": "full_2p__none", "episode": e} for e in range(6)]
+            + [{"group": "half_2p", "run_id": "half_2p__none", "episode": e} for e in range(4)]
+            + [{"group": "half_2p", "run_id": "half_2p__none", "episode": 12}]  # past this sweep's episodes
+            + [{"group": "half_2p", "run_id": "other__none", "episode": 5}])  # another sweep's run
+    EXCLUDED_NOTE.clear()
+    kept = complete_enough(rows, tmp_path, 0.5)
+    assert {r["group"] for r in kept} == {"full_2p"}
+    assert "half_2p (40%)" in EXCLUDED_NOTE[-1]
