@@ -1756,7 +1756,7 @@ def rounds_section(rows, traits, cells):
 
 def carriers_section(rows, traits, base, scale, min_players=3):
     """31. One, half, all, side by side over c, in the games where half is neither one nor all (>= 3 players; half
-    rounds up, so 2 of 3, 2 of 4 and 5, 3 of 6): the steered agents' readout and own reward, the unsteered
+    is round(n / 2) with ties to even: 2 of 3, 4 or 5, 3 of 6): the steered agents' readout and own reward, the unsteered
     co-players' readout, and the group's welfare, with the random direction (all_random) as the welfare control."""
     big = {r["cell"] for r in rows if (r.get("players") or 0) >= min_players} - role_cells(rows)
     settings = ("one", "half", "all")
@@ -1868,7 +1868,7 @@ def carriers_section(rows, traits, base, scale, min_players=3):
                    "agents, their unsteered co-players and the group respond along c when one agent, half of them or "
                    "everyone carries the persona?",
                    "Games with at least three players (two-player games are left out: there half is one agent, the "
-                   "same as one). Half rounds up: 2 of 3, 2 of 4 or 5, 3 of 6. a: the steered agents' readout of the "
+                   "same as one). Half is round(n / 2), ties to even: 2 of 3, 4 or 5, 3 of 6. a: the steered agents' readout of the "
                    "steered trait, in SD of the game's unsteered agents. b: their reward minus the same seat's in the "
                    "unsteered episode with the same seed, in SD of the game's unsteered rewards. c: the same readout "
                    "for the unsteered co-players of one and half. d: the episode's total reward minus the unsteered "
