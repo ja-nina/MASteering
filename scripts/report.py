@@ -5631,6 +5631,10 @@ def main(argv=None) -> int:
                         "stays among the monitored personas")
     args = p.parse_args(argv)
     rows = load(args.agents_csv)
+    # completion first: the planned episodes include every trait, so dropping a trait before would lower every
+    # game's share
+    if args.configs and args.min_done > 0:
+        rows = complete_enough(rows, args.configs, args.min_done)
     if args.drop_traits:
         drop = set(args.drop_traits)
         n = len(rows)
@@ -5638,8 +5642,6 @@ def main(argv=None) -> int:
         EXCLUDED_NOTE.append(f"Left out, steered trait(s) dropped: {', '.join(sorted(drop))} ({n - len(rows)} "
                              f"agent-episodes); their readouts stay among the monitored personas.")
         print(EXCLUDED_NOTE[-1])
-    if args.configs and args.min_done > 0:
-        rows = complete_enough(rows, args.configs, args.min_done)
     rows = operating(rows, args.max_c)
     if not rows:
         print("no rows")
