@@ -5626,8 +5626,18 @@ def main(argv=None) -> int:
     p.add_argument("--configs", help="the generated sweep (config/runs/NAME), for --min-done")
     p.add_argument("--min-done", type=float, default=0.5, help="with --configs: leave out game groups with less "
                    "than this share of their planned episodes finished (default 0.5; 0 keeps every group)")
+    p.add_argument("--drop-traits", nargs="*", default=None,
+                   help="leave out every run steering these traits (vector, prompt and random); the trait's readout "
+                        "stays among the monitored personas")
     args = p.parse_args(argv)
     rows = load(args.agents_csv)
+    if args.drop_traits:
+        drop = set(args.drop_traits)
+        n = len(rows)
+        rows = [r for r in rows if r["trait"] not in drop]
+        EXCLUDED_NOTE.append(f"Left out, steered trait(s) dropped: {', '.join(sorted(drop))} ({n - len(rows)} "
+                             f"agent-episodes); their readouts stay among the monitored personas.")
+        print(EXCLUDED_NOTE[-1])
     if args.configs and args.min_done > 0:
         rows = complete_enough(rows, args.configs, args.min_done)
     rows = operating(rows, args.max_c)

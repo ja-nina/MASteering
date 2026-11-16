@@ -8,6 +8,7 @@
 #SBATCH --output=slurm-logs/report-%j.out
 # Usage: sbatch scripts/slurm/report.sbatch [sweep name, default main] [sweep file] [model key]
 #   another model's logs: sbatch scripts/slurm/report.sbatch main_qwen3.8-27b config/sweeps/focus.yaml qwen3.8-27b
+#   DROP_TRAITS=trustworthiness sbatch ...: leave out every run steering these traits.
 #   MIN_DONE=0.7 sbatch ...: leave out game groups with under 70% of their planned episodes (config/runs/<sweep>)
 #   done (default 0.5; 0 keeps every group). CUTOFFS=1: rebuild cut-off stats of older episodes from the JSONL.
 #   Writes report.html (every c) and report_c1.html (|c| <= 1, the range the findings are read in).
@@ -41,7 +42,7 @@ echo "$(date)  $(hostname)  job=${SLURM_JOB_ID:-local}  $LOGS (+ $FALLBACK) -> $
 DONE_ARGS=()
 [ -d "config/runs/$SWEEP" ] && DONE_ARGS=(--configs "config/runs/$SWEEP" --min-done "${MIN_DONE:-0.5}")
 for C in "" 1; do
-  "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK"       ${DONE_ARGS[@]+"${DONE_ARGS[@]}"} ${C:+--max-c $C} --out "$OUT/report${C:+_c$C}.html"
+  "$PYTHON" scripts/report.py "$OUT/agents.csv.gz" --sweep "$SWEEP_FILE" ${MODEL:+--model "$MODEL"} --logs "$LOGS" "$FALLBACK"       ${DONE_ARGS[@]+"${DONE_ARGS[@]}"} ${DROP_TRAITS:+--drop-traits $DROP_TRAITS} ${C:+--max-c $C} --out "$OUT/report${C:+_c$C}.html"
 done
 "$PYTHON" scripts/steering_mini_report.py "$OUT/agents.csv.gz" --logs "$LOGS" "$FALLBACK" --out "$OUT/steering_mini_report.html"
 grep -o "[0-9]* episodes in this report" "$OUT/report.html"
