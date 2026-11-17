@@ -25,9 +25,13 @@ def episode(path: Path):
     if not path.with_suffix(".summary.json").exists():
         return None
     turns, steered, lines, fallback, cut = {}, set(), 0, 0, 0
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
-            r = json.loads(line)
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:  # a damaged line (e.g. NUL bytes left by the file system): skipped, counted
+                BAD[str(path)] += 1
+                continue
             lines += 1
             fallback += not r.get("parse_ok", True)
             cut += r.get("finish_reason") == "length"
