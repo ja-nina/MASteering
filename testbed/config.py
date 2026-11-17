@@ -193,7 +193,7 @@ def _job(cfg: RunConfig, index: int, ep: int, plan: SteeringPlan, info: Dict[str
 
     def make_env():
         env, renderer, parser = build_game(family=cfg.game_family, game_id=cfg.game_id,
-                                           num_players=cfg.players, env_kwargs={"seed": seed, **cfg.env_kwargs})
+                                           num_players=cfg.players, env_kwargs={"seed": seed, "episode": ep, **cfg.env_kwargs})
         env.reset()
         return env, renderer, parser
 

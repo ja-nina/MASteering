@@ -42,6 +42,10 @@ def reply(request) -> str:
     """A plausible move for any of the symbolic games, chosen by the prompt's instructions."""
     rng = random.Random(request.seed)
     user = request.user
+    if "ANSWER: <letter>" in user:
+        return f"I think so.\nANSWER: {rng.choice('ABCD')}"
+    if "ANSWER: <number>" in user:
+        return f"Adding up.\nANSWER: {rng.randint(0, 100)}"
     if "FINAL GUESS" in user or "NUMBER:" in user:
         return f"NUMBER: {rng.randint(0, 60)}"
     if "CHOICE:" in user:

@@ -20,6 +20,7 @@ from testbed.envs.symbolic.gbs import GBSAdapter
 from testbed.envs.symbolic.hanabi import HanabiAdapter
 from testbed.envs.symbolic.harvest import HarvestAdapter
 from testbed.envs.symbolic.overcooked import OvercookedAdapter
+from testbed.envs.symbolic.qa_debate import QADebateAdapter
 from testbed.envs.symbolic.werewolf import WerewolfAdapter
 from testbed.envs.textarena.ta_adapter import TextArenaAdapter
 from testbed.parsers.symbolic.avalon import AvalonParser
@@ -29,6 +30,7 @@ from testbed.parsers.symbolic.gbs import GBSParser
 from testbed.parsers.symbolic.hanabi import HanabiParser
 from testbed.parsers.symbolic.harvest import HarvestParser
 from testbed.parsers.symbolic.overcooked import OvercookedParser
+from testbed.parsers.symbolic.qa_debate import QADebateParser
 from testbed.parsers.symbolic.werewolf import WerewolfParser
 from testbed.parsers.textarena import TextArenaParser
 from testbed.renderers.symbolic.avalon import AvalonRenderer
@@ -38,6 +40,7 @@ from testbed.renderers.symbolic.gbs import GBSRenderer
 from testbed.renderers.symbolic.hanabi import HanabiRenderer
 from testbed.renderers.symbolic.harvest import HarvestRenderer
 from testbed.renderers.symbolic.overcooked import OvercookedRenderer
+from testbed.renderers.symbolic.qa_debate import QADebateRenderer
 from testbed.renderers.symbolic.werewolf import WerewolfRenderer
 from testbed.renderers.textarena import TextArenaRenderer
 
@@ -49,6 +52,7 @@ _SYMBOLIC = {
     "hanabi":    (HanabiAdapter,    HanabiRenderer,    HanabiParser),
     "werewolf":  (WerewolfAdapter,  WerewolfRenderer,  WerewolfParser),
     "overcooked": (OvercookedAdapter, OvercookedRenderer, OvercookedParser),
+    "qa_debate": (QADebateAdapter, QADebateRenderer, QADebateParser),
     **{variant: (partial(BoardAdapter, variant=variant), BoardRenderer, BoardParser)
        for variant in ("tictactoe", "connect_four", "gomoku")},
 }
@@ -59,6 +63,9 @@ def build_game(*, family: str, game_id: str, num_players: int,
     # num_players may appear in env_kwargs when it duplicates agents.count in the
     # YAML; strip it so we don't pass it twice to the adapter constructor.
     env_kwargs = {k: v for k, v in env_kwargs.items() if k != "num_players"}
+    # episode: the episode index (config._job); only for adapters that ask for it (uses_episode), so every
+    # other game's arguments are unchanged
+    episode = env_kwargs.pop("episode", None)
 
     if family == "symbolic":
         if game_id not in _SYMBOLIC:
@@ -67,6 +74,8 @@ def build_game(*, family: str, game_id: str, num_players: int,
                 f"Available: {sorted(_SYMBOLIC)}"
             )
         AdapterCls, RendererCls, ParserCls = _SYMBOLIC[game_id]
+        if getattr(AdapterCls, "uses_episode", False):
+            env_kwargs["episode"] = episode
         env = AdapterCls(num_players=num_players, **env_kwargs)
         return env, RendererCls(), ParserCls()
 

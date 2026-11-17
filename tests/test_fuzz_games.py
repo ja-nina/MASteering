@@ -9,13 +9,14 @@ import random
 import pytest
 
 from testbed.registry import build_game
-from testbed.visual import observe
+from testbed.visual import modes, observe
 
 GAMES = [("gbs", 3, {"num_rounds": 4}), ("gbs", 5, {"hide_group_size": True, "feedback": "directional"}),
          ("beauty_contest", 3, {"num_rounds": 3}), ("harvest", 4, {"num_rounds": 3}),
          ("werewolf", 6, {}), ("werewolf", 8, {}), ("avalon", 5, {}), ("avalon", 6, {}), ("avalon", 8, {}),
          ("hanabi", 3, {}), ("overcooked", 2, {"max_steps": 30}),
-         ("tictactoe", 2, {}), ("connect_four", 2, {}), ("gomoku", 2, {})]
+         ("tictactoe", 2, {}), ("connect_four", 2, {}), ("gomoku", 2, {}),
+         ("qa_debate", 1, {}), ("qa_debate", 4, {}), ("qa_debate", 5, {"dataset": "mmlu_pro"})]
 EPISODES = 25
 MAX_STEPS = 400
 
@@ -23,6 +24,8 @@ MAX_STEPS = 400
 def random_action(game, rng, ids, env, obs):
     if rng.random() < 0.15:
         return 0  # the runner's fallback after unparseable answers
+    if game == "qa_debate":
+        return {"answer": rng.choice(["A", "c", "J", "7", "-2.5", "1,000", "x", None]), "text": "because"}
     if game in ("gbs", "beauty_contest"):
         return rng.randint(0, 120)  # the parsers reject negative numbers
     if game == "harvest":
@@ -60,7 +63,7 @@ def test_random_play_never_crashes(game, players, kwargs):
     for ep in range(EPISODES):
         rng = random.Random(f"{game}{players}{ep}")
         env, renderer, _ = build_game(family="symbolic", game_id=game, num_players=players,
-                                      env_kwargs={"seed": ep, **kwargs})
+                                      env_kwargs={"seed": ep, "episode": ep, **kwargs})
         env.reset()
         ids = list(env.agent_ids())
         for step in range(MAX_STEPS):
@@ -69,7 +72,7 @@ def test_random_play_never_crashes(game, players, kwargs):
                 break
             for aid, obs in pending:
                 observe(renderer, "text", obs, aid, env.context)
-                if step % 7 == 0:
+                if step % 7 == 0 and "image" in modes(renderer):
                     observe(renderer, "image", obs, aid, env.context)
             result = env.submit({aid: random_action(game, rng, ids, env, obs) for aid, obs in pending})
             if result.done:

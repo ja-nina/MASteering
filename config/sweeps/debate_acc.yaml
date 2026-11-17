@@ -1,0 +1,40 @@
+# Accuracy debate (2026-11-17): does persona steering make a group of agents better or worse at getting a question
+# right, and how does that change with group size? N agents answer the same question, read each other's answers and
+# reasoning, revise over 3 rounds; scored on correctness (testbed/envs/symbolic/qa_debate.py, Du et al. 2023).
+# N = 1 is the no-debate baseline (the same 3 rounds, alone). Two question sets: GSM8K (math, numeric answer) and
+# MMLU-Pro (14 subjects, up to 10 options). Episode i plays question i in every run and at every N (uses_episode),
+# so all conditions and group sizes answer the same 50 questions per set.
+# Settings as main_v2 (model, vectors, monitor, engine, token budget), except: traits without trustworthiness
+# (dropped from the thesis), |c| <= 1 only, conditions none / one / all / all_random / prompt_one / prompt_all.
+#   1. python scripts/make_configs.py config/sweeps/debate_acc.yaml
+#   2. bash scripts/slurm/submit_sweep.sh config/runs/debate_acc 400      (gpu-a40, 2 GPUs: run_games.sbatch)
+name: debate_acc
+model: qwen3.5-9b
+episodes: 50
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]
+coefficients: [-1, -0.5, 0.5, 1]
+
+conditions:
+  none: null
+  one: {select: one}
+  all: {select: all}
+  all_random: {select: all, random_control: true}
+  prompt_one: {select: one, via: prompt}
+  prompt_all: {select: all, via: prompt}
+
+games:
+  qa_debate:    {family: symbolic, id: qa_debate, players: [1, 2, 3, 4, 5], env_kwargs: {dataset: gsm8k, num_rounds: 3}}
+  qa_debate_mc: {family: symbolic, id: qa_debate, players: [1, 2, 3, 4, 5], env_kwargs: {dataset: mmlu_pro, num_rounds: 3}}
