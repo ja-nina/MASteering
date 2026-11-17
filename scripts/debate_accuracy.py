@@ -17,6 +17,7 @@ import math
 import re
 from pathlib import Path
 
+BAD = collections.Counter()  # episode log -> damaged lines skipped
 RUN = re.compile(r"^(?P<group>.+?)__(?P<cond>[a-z_]+?)(?:__(?P<trait>[a-z]+)_x(?P<c>-?\d+(?:\.\d+)?))?$")
 
 
@@ -131,6 +132,9 @@ def main():
             for g in gs:
                 rows([(f"{cond} {trait} c={c:+g}", paired(g, cond, trait, c)) for cond, trait, c in steered],
                      f"   {g}: steered minus unsteered")
+    if BAD:
+        say("")
+        say(f"Skipped {sum(BAD.values())} damaged log line(s) in {len(BAD)} episode file(s), e.g. {next(iter(BAD))}")
     text = "\n".join(out)
     print(text)
     if a.out:
