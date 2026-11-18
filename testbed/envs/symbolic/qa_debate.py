@@ -20,14 +20,17 @@ from testbed.envs.symbolic.base import SymbolicAdapter
 from testbed.types import Action, RawObs, StepResult
 
 DATA = Path(__file__).resolve().parents[2] / "data"
-LETTERS = "ABCDEFGHIJ"
-MULTIPLE_CHOICE = ("mmlu_pro", "supergpqa")  # letter answers; gsm8k: a number
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+MULTIPLE_CHOICE = ("mmlu_pro", "supergpqa", "hle")  # letter answers; gsm8k: a number
 DATASETS = ("gsm8k",) + MULTIPLE_CHOICE
 
 
 @lru_cache(maxsize=None)
 def questions(dataset: str) -> tuple:
-    with open(DATA / f"{dataset}.jsonl", encoding="utf-8") as f:
+    path = DATA / f"{dataset}.jsonl"
+    if not path.exists():  # hle.jsonl is not in git (HLE asks not to redistribute it): built on each machine
+        raise FileNotFoundError(f"{path} is missing: build it with scripts/make_debate_data.py (see its docstring)")
+    with open(path, encoding="utf-8") as f:
         return tuple(json.loads(line) for line in f)
 
 
@@ -37,7 +40,7 @@ def normalize(answer: Optional[str], dataset: str) -> Optional[str]:
         return None
     a = str(answer).strip()
     if dataset in MULTIPLE_CHOICE:
-        return a.upper() if re.fullmatch(r"[A-Ja-j]", a) else None
+        return a.upper() if re.fullmatch(r"[A-Za-z]", a) else None
     a = a.replace(",", "").replace("$", "").strip().rstrip(".")
     try:
         x = float(a)

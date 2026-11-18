@@ -33,7 +33,7 @@ class QADebateRenderer:
         rnd = raw_obs["round_index"] + 1
         lines = [f"Round {rnd} of {raw_obs['num_rounds']}.", "", "QUESTION", raw_obs["question"]]
         if raw_obs["options"]:
-            lines += [""] + [f"{'ABCDEFGHIJ'[i]}. {o}" for i, o in enumerate(raw_obs["options"])]
+            lines += [""] + [f"{'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i]}. {o}" for i, o in enumerate(raw_obs["options"])]
         hist = raw_obs["history"]
         if hist:
             last, k = hist[-1], raw_obs["show_chars"]

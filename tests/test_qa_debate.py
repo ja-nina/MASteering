@@ -1,4 +1,8 @@
+from pathlib import Path
+
 import pytest
+
+from scripts.make_debate_data import hle_item
 
 from testbed.envs.symbolic.qa_debate import normalize, questions
 from testbed.registry import build_game
@@ -12,6 +16,17 @@ def game(n, dataset="gsm8k", episode=0):
     return env, renderer, parser
 
 
+def test_hle_item_splits_choices_off_the_question():
+    row = {"id": "x1", "category": "Math", "answer": "B",
+           "question": "Which is prime?\n\nAnswer Choices:\nA. 4\nB. 7\nC. 9\n  which is odd\nD. 10"}
+    it = hle_item(row)
+    assert it == {"id": "hle_x1", "question": "Which is prime?", "options": ["4", "7", "9\nwhich is odd", "10"],
+                  "answer": "B", "category": "Math"}
+    assert hle_item({**row, "answer": "E"}) is None  # answer not among the options
+    assert hle_item({**row, "question": "Which is prime? 7"}) is None  # no choices block
+    assert hle_item({**row, "question": row["question"].replace("B. 7", "C. 7")}) is None  # letters out of order
+
+
 def test_question_follows_episode_not_players_or_seed():
     a, _, _ = game(2, episode=7)
     b, _, _ = game(5, episode=7)
@@ -19,8 +34,10 @@ def test_question_follows_episode_not_players_or_seed():
 
 
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
-@pytest.mark.parametrize("dataset", ["gsm8k", "mmlu_pro", "supergpqa"])
+@pytest.mark.parametrize("dataset", ["gsm8k", "mmlu_pro", "supergpqa", "hle"])
 def test_full_episode(n, dataset):
+    if dataset == "hle" and not (Path(__file__).resolve().parents[1] / "testbed/data/hle.jsonl").exists():
+        pytest.skip("testbed/data/hle.jsonl is built locally (not in git): scripts/make_debate_data.py --hle")
     env, renderer, parser = game(n, dataset)
     right = env.correct
     wrong = "B" if right == "A" else "A" if dataset != "gsm8k" else str(int(right) + 1)

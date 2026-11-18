@@ -15,7 +15,7 @@ class QADebateParser:
               context: RenderContext) -> ParseResult:
         text = completion or ""
         if raw_obs["options"]:  # multiple choice (mmlu_pro, supergpqa)
-            letters = "ABCDEFGHIJ"[:len(raw_obs["options"])]
+            letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:len(raw_obs["options"])]
             m = keyword_value(text, "ANSWER", rf"[{letters}{letters.lower()}](?![A-Za-z])")
             if m is None:
                 return ParseError(feedback=f"End your reply with 'ANSWER: <letter>', one of {', '.join(letters)}.")
