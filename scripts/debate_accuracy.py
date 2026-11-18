@@ -7,6 +7,8 @@
    that could not be parsed (fallback) and answers cut off at the token limit.
 2. Steered vs unsteered on the same questions (episode i = question i in every run): final majority accuracy and
    agent accuracy minus unsteered, mean +- SE over questions; pooled over N per dataset (--by-n: per group too).
+   Pooled cells meet each question once per N; those copies are not independent, so each question's differences
+   are averaged over N first and the mean and SE are over distinct questions ('qs' counts them).
    For 'one'-agent conditions, the steered agent's own accuracy is shown next to the other agents'.
    Every cell is compared with the same unsteered run, so that run's sampling luck shifts all cells alike (the SE
    does not include it). Two remedies: --extra-baseline adds the unsteered runs of another sweep with the same game
@@ -91,6 +93,16 @@ def se(xs):
     return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1) / len(xs))
 
 
+def by_question(diffs):
+    """Mean +- SE of (question, difference) pairs with the question as the unit: a question met at several N
+    (pooled cells) is averaged over them first, so its N copies count once and the SE is over distinct questions."""
+    per_q = collections.defaultdict(list)
+    for i, d in diffs:
+        per_q[i].append(d)
+    qs = [mean(v) for v in per_q.values()]
+    return mean(qs), se(qs)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("logs")
@@ -150,23 +162,24 @@ def main():
         for name, pairs, rnd in cells:
             if not pairs:
                 continue
-            dm = [s["maj"] - b["maj"] for s, b in pairs]
-            da = [s["final"] - b["final"] for s, b in pairs]
-            dr = [s["maj"] - r["maj"] for s, r in rnd]
-            say(f"{name:44}{len(pairs):>5}{mean(dm):>+8.3f}{se(dm):>7.3f}{mean(da):>+8.3f}{se(da):>7.3f}"
-                f"{mean([s['steered_acc'] for s, _ in pairs]):>9.3f}{mean([s['other_acc'] for s, _ in pairs]):>8.3f}"
-                f"{100 * mean([s['fallback'] for s, _ in pairs]):>7.1f}%"
-                + (f"{mean(dr):>+8.3f}{se(dr):>7.3f}" if dr else ""))
+            dm, sm = by_question([(i, s["maj"] - b["maj"]) for i, s, b in pairs])
+            da, sa = by_question([(i, s["final"] - b["final"]) for i, s, b in pairs])
+            dr, sr = by_question([(i, s["maj"] - r["maj"]) for i, s, r in rnd])
+            say(f"{name:44}{len({i for i, _, _ in pairs}):>5}{dm:>+8.3f}{sm:>7.3f}{da:>+8.3f}{sa:>7.3f}"
+                f"{mean([s['steered_acc'] for _, s, _ in pairs]):>9.3f}"
+                f"{mean([s['other_acc'] for _, s, _ in pairs]):>8.3f}"
+                f"{100 * mean([s['fallback'] for _, s, _ in pairs]):>7.1f}%"
+                + (f"{dr:>+8.3f}{sr:>7.3f}" if rnd else ""))
 
     def paired(g, cond, trait, c):
         eps, b = runs.get((g, cond, trait, c), {}), base.get(g, {})
-        return [(eps[i], b[i]) for i in sorted(eps) if i in b]
+        return [(i, eps[i], b[i]) for i in sorted(eps) if i in b]
 
     def vs_random(g, cond, trait, c):  # 'all' only: all_random is its control (every agent, same size)
         if cond != "all":
             return []
         eps, r = runs.get((g, cond, trait, c), {}), runs.get((g, "all_random", trait, c), {})
-        return [(eps[i], r[i]) for i in sorted(eps) if i in r]
+        return [(i, eps[i], r[i]) for i in sorted(eps) if i in r]
 
     steered = sorted({k[1:] for k in runs if k[1] != "none"}, key=lambda k: (k[0], k[1], k[2]))
     for ds in sorted({nkey(g)[0] for g in groups}):

@@ -37,3 +37,10 @@ def test_debate_accuracy_tables(tmp_path, monkeypatch, capsys):
     assert len(row.split()) == 13  # 'all' cells carry d rnd and its SE
     row = next(line for line in text.splitlines() if line.startswith("one evil c=+1"))
     assert len(row.split()) == 11  # no random control for 'one'
+
+
+def test_by_question_counts_each_question_once():
+    from scripts.debate_accuracy import by_question
+    # question 0 met at three N (all +1), question 1 once (-1): per question +1 and -1, so mean 0, not +0.5
+    m, s = by_question([(0, 1.0), (0, 1.0), (0, 1.0), (1, -1.0)])
+    assert m == 0.0 and abs(s - 1.0) < 1e-12  # SE over 2 questions: sd sqrt(2) / sqrt(2)
