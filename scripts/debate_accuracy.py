@@ -72,7 +72,9 @@ def main():
     ap.add_argument("--by-n", action="store_true", help="also every steered cell per group, not only pooled over N")
     ap.add_argument("--out")
     a = ap.parse_args()
-    runs = collections.defaultdict(dict)  # (group, cond, trait, c) -> {episode: metrics}
+    if not Path(a.logs).is_dir():
+        raise SystemExit(f"no logs at {a.logs} yet: no episode of this sweep has started (squeue / sacct)")
+    runs =collections.defaultdict(dict)  # (group, cond, trait, c) -> {episode: metrics}
     for run_dir in sorted(p for g in Path(a.logs).iterdir() if g.is_dir() for p in g.iterdir() if p.is_dir()):
         m = RUN.match(run_dir.name)
         if not m:
