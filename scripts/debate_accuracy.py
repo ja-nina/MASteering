@@ -1,6 +1,6 @@
 """How well the accuracy-debate agents do (qa_debate, config/sweeps/debate_acc.yaml), from the step logs.
 
-    python scripts/debate_accuracy.py <log dir>/debate_acc [--by-n] [--out FILE]
+    python scripts/debate_accuracy.py <log dir>/debate_acc [--by-n] [--out FILE] [--extra-baseline <log dir>/OTHER]
 
 1. Unsteered, per game group (dataset x N): agent accuracy in round 1 and in the final round, the group's majority
    accuracy, answer switches between round 1 and the final round (right->wrong, wrong->right, per agent), answers
@@ -8,6 +8,11 @@
 2. Steered vs unsteered on the same questions (episode i = question i in every run): final majority accuracy and
    agent accuracy minus unsteered, mean +- SE over questions; pooled over N per dataset (--by-n: per group too).
    For 'one'-agent conditions, the steered agent's own accuracy is shown next to the other agents'.
+   Every cell is compared with the same unsteered run, so that run's sampling luck shifts all cells alike (the SE
+   does not include it). Two remedies: --extra-baseline adds the unsteered runs of another sweep with the same game
+   groups and questions (e.g. a pilot) as more samples per question, averaged; and for 'all' cells, 'd rnd' is the
+   majority accuracy minus that of all_random at the same trait and coefficient (a random direction of the same
+   size, on the same questions), which needs no unsteered baseline at all.
 Reads only the logs; changes nothing.
 """
 import argparse
@@ -53,6 +58,26 @@ def episode(path: Path):
             "fallback": fallback / lines, "cut": cut / lines}
 
 
+def load(logs):
+    """(group, cond, trait, c) -> {episode: metrics} of every finished episode under a sweep's log dir."""
+    runs = collections.defaultdict(dict)
+    for run_dir in sorted(p for g in Path(logs).iterdir() if g.is_dir() for p in g.iterdir() if p.is_dir()):
+        m = RUN.match(run_dir.name)
+        if not m:
+            continue
+        key = (m["group"], m["cond"], m["trait"], float(m["c"]) if m["c"] else None)
+        for f in run_dir.glob("episode_*.jsonl"):
+            ep = episode(f)
+            if ep is not None:
+                runs[key][int(f.stem.split("_")[1])] = ep
+    return runs
+
+
+def average(samples):
+    """One question's metrics averaged over several unsteered samples of it."""
+    return {k: (mean([s[k] for s in samples]) if samples[0][k] is not None else None) for k in samples[0]}
+
+
 def mean(xs):
     xs = [float(x) for x in xs if x is not None]
     return sum(xs) / len(xs) if xs else float("nan")
@@ -71,19 +96,20 @@ def main():
     ap.add_argument("logs")
     ap.add_argument("--by-n", action="store_true", help="also every steered cell per group, not only pooled over N")
     ap.add_argument("--out")
+    ap.add_argument("--extra-baseline", action="append", default=[],
+                    help="another sweep's log dir: its unsteered runs (same groups, same questions) join the baseline")
     a = ap.parse_args()
     if not Path(a.logs).is_dir():
         raise SystemExit(f"no logs at {a.logs} yet: no episode of this sweep has started (squeue / sacct)")
-    runs =collections.defaultdict(dict)  # (group, cond, trait, c) -> {episode: metrics}
-    for run_dir in sorted(p for g in Path(a.logs).iterdir() if g.is_dir() for p in g.iterdir() if p.is_dir()):
-        m = RUN.match(run_dir.name)
-        if not m:
-            continue
-        key = (m["group"], m["cond"], m["trait"], float(m["c"]) if m["c"] else None)
-        for f in run_dir.glob("episode_*.jsonl"):
-            ep = episode(f)
-            if ep is not None:
-                runs[key][int(f.stem.split("_")[1])] = ep
+    runs = load(a.logs)
+    extra = collections.defaultdict(lambda: collections.defaultdict(list))  # group -> episode -> [metrics]
+    for d in a.extra_baseline:
+        if not Path(d).is_dir():
+            raise SystemExit(f"no logs at {d}")
+        for (g, cond, _, _), eps in load(d).items():
+            if cond == "none":
+                for i, e in eps.items():
+                    extra[g][i].append(e)
     out = []
     say = out.append
 
@@ -95,10 +121,14 @@ def main():
     say("1. Unsteered (mean over questions; switches and fallbacks per agent answer)")
     say(f"{'group':18}{'eps':>5}{'acc r1':>8}{'acc fin':>9}{'maj r1':>8}{'maj fin':>9}{'R->W':>7}{'W->R':>7}"
         f"{'fallbk':>8}{'cut':>6}")
-    base = {}
+    base, n_base = {}, collections.Counter()
     for g in groups:
         eps = runs.get((g, "none", None, None), {})
-        base[g] = eps
+        base[g] = {}
+        for i in set(eps) | set(extra[g]):
+            samples = ([eps[i]] if i in eps else []) + extra[g][i]
+            base[g][i] = average(samples)
+            n_base[len(samples)] += 1
         if not eps:
             say(f"{g:18}    0")
             continue
@@ -107,32 +137,47 @@ def main():
                                            (("r1", 8), ("final", 9), ("maj_r1", 8), ("maj", 9), ("rw", 7), ("wr", 7))) +
             f"{100 * mean([e['fallback'] for e in v]):>7.1f}%{100 * mean([e['cut'] for e in v]):>5.1f}%")
 
+    if a.extra_baseline:
+        say("")
+        say("Baseline for section 2: unsteered samples per question (this sweep + --extra-baseline): "
+            + ", ".join(f"{k} sample(s): {v} question(s)" for k, v in sorted(n_base.items())))
+
     def rows(cells, label):
         say("")
         say(label)
-        say(f"{'cell':44}{'qs':>5}{'d maj':>8}{'+-SE':>7}{'d acc':>8}{'+-SE':>7}{'steered':>9}{'others':>8}{'fallbk':>8}")
-        for name, pairs in cells:
+        say(f"{'cell':44}{'qs':>5}{'d maj':>8}{'+-SE':>7}{'d acc':>8}{'+-SE':>7}{'steered':>9}{'others':>8}{'fallbk':>8}"
+            f"{'d rnd':>8}{'+-SE':>7}")
+        for name, pairs, rnd in cells:
             if not pairs:
                 continue
             dm = [s["maj"] - b["maj"] for s, b in pairs]
             da = [s["final"] - b["final"] for s, b in pairs]
+            dr = [s["maj"] - r["maj"] for s, r in rnd]
             say(f"{name:44}{len(pairs):>5}{mean(dm):>+8.3f}{se(dm):>7.3f}{mean(da):>+8.3f}{se(da):>7.3f}"
                 f"{mean([s['steered_acc'] for s, _ in pairs]):>9.3f}{mean([s['other_acc'] for s, _ in pairs]):>8.3f}"
-                f"{100 * mean([s['fallback'] for s, _ in pairs]):>7.1f}%")
+                f"{100 * mean([s['fallback'] for s, _ in pairs]):>7.1f}%"
+                + (f"{mean(dr):>+8.3f}{se(dr):>7.3f}" if dr else ""))
 
     def paired(g, cond, trait, c):
         eps, b = runs.get((g, cond, trait, c), {}), base.get(g, {})
         return [(eps[i], b[i]) for i in sorted(eps) if i in b]
 
+    def vs_random(g, cond, trait, c):  # 'all' only: all_random is its control (every agent, same size)
+        if cond != "all":
+            return []
+        eps, r = runs.get((g, cond, trait, c), {}), runs.get((g, "all_random", trait, c), {})
+        return [(eps[i], r[i]) for i in sorted(eps) if i in r]
+
     steered = sorted({k[1:] for k in runs if k[1] != "none"}, key=lambda k: (k[0], k[1], k[2]))
     for ds in sorted({nkey(g)[0] for g in groups}):
         gs = [g for g in groups if nkey(g)[0] == ds]
-        rows([(f"{cond} {trait} c={c:+g}", [p for g in gs for p in paired(g, cond, trait, c)])
-              for cond, trait, c in steered],
+        rows([(f"{cond} {trait} c={c:+g}", [p for g in gs for p in paired(g, cond, trait, c)],
+               [p for g in gs for p in vs_random(g, cond, trait, c)]) for cond, trait, c in steered],
              f"2. {ds}, every N pooled: steered minus unsteered on the same questions")
         if a.by_n:
             for g in gs:
-                rows([(f"{cond} {trait} c={c:+g}", paired(g, cond, trait, c)) for cond, trait, c in steered],
+                rows([(f"{cond} {trait} c={c:+g}", paired(g, cond, trait, c), vs_random(g, cond, trait, c))
+                      for cond, trait, c in steered],
                      f"   {g}: steered minus unsteered")
     if BAD:
         say("")
