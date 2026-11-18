@@ -13,7 +13,7 @@ class QADebateRenderer:
     def system_prompt(self, agent_id: str, raw_obs=None) -> str:
         n = raw_obs["num_players"] if raw_obs else "several"
         rounds = raw_obs["num_rounds"] if raw_obs else "a few"
-        form = "ANSWER: <letter>" if raw_obs and raw_obs["dataset"] == "mmlu_pro" else "ANSWER: <number>"
+        form = "ANSWER: <letter>" if raw_obs and raw_obs["options"] else "ANSWER: <number>"
         if n == 1:  # the no-debate baseline: the same rounds, alone
             return (f"You are {agent_id}, answering a question over {rounds} rounds. After each round you see your "
                     "previous answer and may keep or change it. You are scored on whether your final answer is "
@@ -30,7 +30,7 @@ class QADebateRenderer:
         )
 
     def render(self, raw_obs: RawObs, agent_id: str, context: RenderContext) -> str:
-        ds, rnd = raw_obs["dataset"], raw_obs["round_index"] + 1
+        rnd = raw_obs["round_index"] + 1
         lines = [f"Round {rnd} of {raw_obs['num_rounds']}.", "", "QUESTION", raw_obs["question"]]
         if raw_obs["options"]:
             lines += [""] + [f"{'ABCDEFGHIJ'[i]}. {o}" for i, o in enumerate(raw_obs["options"])]
@@ -54,6 +54,6 @@ class QADebateRenderer:
                     t = t if len(t) <= k else "..." + t[-k:]
                     lines += [f"--- {p} (answer: {_fmt(a)}) ---", t or "(no reasoning given)"]
                 lines += ["", "Reconsider the question in light of the other agents' answers."]
-        form = "ANSWER: <letter>" if ds == "mmlu_pro" else "ANSWER: <number>"
+        form = "ANSWER: <letter>" if raw_obs["options"] else "ANSWER: <number>"
         lines += ["", f"Reason step by step, then end your reply with: {form}"]
         return "\n".join(lines)

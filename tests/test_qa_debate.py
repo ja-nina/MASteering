@@ -19,11 +19,11 @@ def test_question_follows_episode_not_players_or_seed():
 
 
 @pytest.mark.parametrize("n", [2, 3, 4, 5])
-@pytest.mark.parametrize("dataset", ["gsm8k", "mmlu_pro"])
+@pytest.mark.parametrize("dataset", ["gsm8k", "mmlu_pro", "supergpqa"])
 def test_full_episode(n, dataset):
     env, renderer, parser = game(n, dataset)
     right = env.correct
-    wrong = "B" if right == "A" else "A" if dataset == "mmlu_pro" else str(int(right) + 1)
+    wrong = "B" if right == "A" else "A" if dataset != "gsm8k" else str(int(right) + 1)
     rounds = 0
     while True:
         pend = env.pending()

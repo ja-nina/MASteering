@@ -2,7 +2,10 @@
 # right, and how does that change with group size? N agents answer the same question, read each other's answers and
 # reasoning, revise over 3 rounds; scored on correctness (testbed/envs/symbolic/qa_debate.py, Du et al. 2023).
 # N = 1 is the no-debate baseline (the same 3 rounds, alone). Two question sets: GSM8K (math, numeric answer) and
-# MMLU-Pro (14 subjects, up to 10 options). Episode i plays question i in every run and at every N (uses_episode),
+# MMLU-Pro (14 subjects, up to 10 options).
+# 2026-11-18: GSM8K was too easy (one 9B agent: ~92% right, so no room for debate or steering to help). Added
+# SuperGPQA 'hard' (mostly science and engineering, up to 10 options), aiming for 30-50% for one agent; check the
+# baseline first with config/sweeps/debate_hard_pilot.yaml. Episode i plays question i in every run and at every N (uses_episode),
 # so all conditions and group sizes answer the same 50 questions per set.
 # Settings as main_v2 (model, vectors, monitor, engine, token budget), except: traits without trustworthiness
 # (dropped from the thesis), |c| <= 1 only, conditions none / one / all / all_random / prompt_one / prompt_all.
@@ -47,3 +50,4 @@ conditions:
 games:
   qa_debate:    {family: symbolic, id: qa_debate, players: [1, 2, 3, 4, 5], env_kwargs: {dataset: gsm8k, num_rounds: 3}}
   qa_debate_mc: {family: symbolic, id: qa_debate, players: [1, 2, 3, 4, 5], env_kwargs: {dataset: mmlu_pro, num_rounds: 3}}
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1, 2, 3, 4, 5], env_kwargs: {dataset: supergpqa, num_rounds: 3}}

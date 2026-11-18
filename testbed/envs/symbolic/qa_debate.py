@@ -21,6 +21,8 @@ from testbed.types import Action, RawObs, StepResult
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 LETTERS = "ABCDEFGHIJ"
+MULTIPLE_CHOICE = ("mmlu_pro", "supergpqa")  # letter answers; gsm8k: a number
+DATASETS = ("gsm8k",) + MULTIPLE_CHOICE
 
 
 @lru_cache(maxsize=None)
@@ -34,7 +36,7 @@ def normalize(answer: Optional[str], dataset: str) -> Optional[str]:
     if answer is None:
         return None
     a = str(answer).strip()
-    if dataset == "mmlu_pro":
+    if dataset in MULTIPLE_CHOICE:
         return a.upper() if re.fullmatch(r"[A-Ja-j]", a) else None
     a = a.replace(",", "").replace("$", "").strip().rstrip(".")
     try:
@@ -50,8 +52,8 @@ class QADebateAdapter(SymbolicAdapter):
     def __init__(self, num_players: int = 3, dataset: str = "gsm8k", num_rounds: int = 3, seed: int = 0,
                  episode: Optional[int] = None, show_chars: int = 1500) -> None:
         super().__init__(num_players=num_players, num_rounds=num_rounds)
-        if dataset not in ("gsm8k", "mmlu_pro"):
-            raise ValueError(f"unknown dataset {dataset!r}: gsm8k | mmlu_pro")
+        if dataset not in DATASETS:
+            raise ValueError(f"unknown dataset {dataset!r}: {' | '.join(DATASETS)}")
         pool = questions(dataset)
         self.dataset = dataset
         self.index = (episode if episode is not None else seed) % len(pool)

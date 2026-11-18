@@ -14,7 +14,7 @@ class QADebateParser:
     def parse(self, completion: str, raw_obs: RawObs, agent_id: str,
               context: RenderContext) -> ParseResult:
         text = completion or ""
-        if raw_obs["dataset"] == "mmlu_pro":
+        if raw_obs["options"]:  # multiple choice (mmlu_pro, supergpqa)
             letters = "ABCDEFGHIJ"[:len(raw_obs["options"])]
             m = keyword_value(text, "ANSWER", rf"[{letters}{letters.lower()}](?![A-Za-z])")
             if m is None:

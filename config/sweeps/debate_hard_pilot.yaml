@@ -1,0 +1,36 @@
+# Pilot (2026-11-18): how often does an unsteered agent get SuperGPQA 'hard' right? The aim is 30-50% for one agent,
+# so that debate and steering have room to move accuracy (GSM8K: ~92%, too easy). Unsteered only, N = 1 and 3,
+# the same 50 questions as debate_acc's qa_debate_hard. Settings as debate_acc.
+#   1. python scripts/make_configs.py config/sweeps/debate_hard_pilot.yaml   (--model qwen3.5-2b for the 2B)
+#   2. bash scripts/slurm/submit_sweep.sh config/runs/debate_hard_pilot 400
+#   3. python scripts/debate_accuracy.py /scratch/inf0/user/nzukowsk/MASteer/logs/debate_hard_pilot
+name: debate_hard_pilot
+model: qwen3.5-9b
+episodes: 50
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+models:
+  qwen3.5-2b:
+    vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out/persona/qwen3.5-2b/bf16
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
+
+traits: [evil]
+coefficients: [1]
+
+conditions:
+  none: null
+
+games:
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1, 3], env_kwargs: {dataset: supergpqa, num_rounds: 3}}

@@ -12,11 +12,11 @@ answer, so steering is scored on a task instead of a payoff.
   are right.
 - **N = 1** is the no-debate baseline: the same rounds, but the agent sees only its own previous answer.
 
-Answers are given as `ANSWER: <number>` for GSM8K and `ANSWER: <letter>` for MMLU-Pro.
+Answers are given as `ANSWER: <number>` for GSM8K and `ANSWER: <letter>` for the multiple-choice sets.
 
 | env_kwargs | default | |
 |---|---|---|
-| `dataset` | `gsm8k` | `gsm8k` (math, numeric answer) or `mmlu_pro` (14 subjects, up to 10 options) |
+| `dataset` | `gsm8k` | `gsm8k` (math, numeric answer), `mmlu_pro` (14 subjects, up to 10 options) or `supergpqa` (SuperGPQA 'hard': mostly science and engineering, up to 10 options) |
 | `num_rounds` | 3 | |
 | `show_chars` | 1500 | how much of each other agent's reasoning is shown |
 
@@ -32,4 +32,4 @@ questions.
   tied answers) and `majority_correct`. From these, you can count answer switches from right to wrong and from
   wrong to right.
 
-**Sweep.** `config/sweeps/debate_acc.yaml` covers N = 1–5 on both sets, with 50 questions each.
+**Sweep.** `config/sweeps/debate_acc.yaml` covers N = 1–5 on all three sets, with 50 questions each. GSM8K turned out too easy for the 9B model (one agent: ~92% right). `config/sweeps/debate_hard_pilot.yaml` measures the unsteered SuperGPQA accuracy first (the aim is 30–50% for one agent).

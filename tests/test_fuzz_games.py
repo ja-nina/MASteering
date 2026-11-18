@@ -16,7 +16,8 @@ GAMES = [("gbs", 3, {"num_rounds": 4}), ("gbs", 5, {"hide_group_size": True, "fe
          ("werewolf", 6, {}), ("werewolf", 8, {}), ("avalon", 5, {}), ("avalon", 6, {}), ("avalon", 8, {}),
          ("hanabi", 3, {}), ("overcooked", 2, {"max_steps": 30}),
          ("tictactoe", 2, {}), ("connect_four", 2, {}), ("gomoku", 2, {}),
-         ("qa_debate", 1, {}), ("qa_debate", 4, {}), ("qa_debate", 5, {"dataset": "mmlu_pro"})]
+         ("qa_debate", 1, {}), ("qa_debate", 4, {}), ("qa_debate", 5, {"dataset": "mmlu_pro"}),
+         ("qa_debate", 3, {"dataset": "supergpqa"})]
 EPISODES = 25
 MAX_STEPS = 400
 
