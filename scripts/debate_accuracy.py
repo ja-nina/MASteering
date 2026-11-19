@@ -15,6 +15,12 @@
    groups and questions (e.g. a pilot) as more samples per question, averaged; and for 'all' cells, 'd rnd' is the
    majority accuracy minus that of all_random at the same trait and coefficient (a random direction of the same
    size, on the same questions), which needs no unsteered baseline at all.
+3. Per dataset, for 'all' cells: does d rnd grow with the number of agents (a debate effect) or stay flat (each
+   agent reasons worse, debate neither fixes nor adds to it)? Per question: d rnd at N >= 2 minus at N = 1, and the
+   slope of d rnd over N; mean +- SE over questions.
+4. Per dataset, N >= 2 pooled: how often agents change answers between rounds, how many changes go to the answer
+   most other agents held the round before (conformity), right->wrong vs wrong->right, and how often the group
+   ends unanimous, and unanimous but wrong.
 Reads only the logs; changes nothing.
 """
 import argparse
@@ -51,7 +57,23 @@ def episode(path: Path):
     first, last = turns[min(turns)], turns[max(turns)]
     c1, cf = first.get("correct", {}), last.get("correct", {})
     agents = sorted(cf)
-    return {"r1": mean([c1.get(a, False) for a in agents]), "final": mean([cf[a] for a in agents]),
+    ans = [turns[t].get("answers") or {} for t in sorted(turns)]  # every agent's answer, per round
+    trans = sw = tog = 0
+    for prev, nxt in zip(ans, ans[1:]):
+        for a in agents:
+            x, y = prev.get(a), nxt.get(a)
+            if x is None or y is None:
+                continue
+            trans += 1
+            if x != y:
+                sw += 1
+                others = collections.Counter(v for b, v in prev.items() if b != a and v is not None)
+                tog += bool(others) and others[y] == max(others.values())
+    fin = [ans[-1].get(a) for a in agents]
+    group = len(agents) > 1
+    unan = group and fin[0] is not None and len(set(fin)) == 1
+    return {"switch": sw / trans if trans else None, "to_group": tog / trans if trans else None,
+            "unan": float(unan) if group else None, "unan_wrong": float(unan and not cf[agents[0]]) if group else None,"r1": mean([c1.get(a, False) for a in agents]), "final": mean([cf[a] for a in agents]),
             "maj": float(last.get("majority_correct", 0.0)), "maj_r1": float(first.get("majority_correct", 0.0)),
             "rw": sum(c1.get(a, False) and not cf[a] for a in agents) / len(agents),
             "wr": sum(not c1.get(a, False) and cf[a] for a in agents) / len(agents),
@@ -101,6 +123,12 @@ def by_question(diffs):
         per_q[i].append(d)
     qs = [mean(v) for v in per_q.values()]
     return mean(qs), se(qs)
+
+
+def slope(points):
+    """Least-squares slope of y over x for [(x, y)], at least two distinct x."""
+    xm, ym = mean([x for x, _ in points]), mean([y for _, y in points])
+    return sum((x - xm) * (y - ym) for x, y in points) / sum((x - xm) ** 2 for x, _ in points)
 
 
 def main():
@@ -192,6 +220,48 @@ def main():
                 rows([(f"{cond} {trait} c={c:+g}", paired(g, cond, trait, c), vs_random(g, cond, trait, c))
                       for cond, trait, c in steered],
                      f"   {g}: steered minus unsteered")
+    for ds in sorted({nkey(g)[0] for g in groups}):
+        gs = [g for g in groups if nkey(g)[0] == ds]
+        cells = [k for k in steered if k[0] == "all"]
+        if cells and any(nkey(g)[1] > 1 for g in gs):
+            say("")
+            say(f"3. {ds}: does the 'all' cells' gap to all_random (d rnd) grow with the number of agents? Per question: "
+                f"the least-squares slope of d rnd over N, and d rnd at N >= 2 (mean over those N) minus at N = 1; mean "
+                f"+- SE over questions with both")
+            say(f"{'cell':44}{'qs':>5}{'N=1':>8}{'N>=2':>8}{'multi-1':>9}{'+-SE':>7}{'slope/N':>9}{'+-SE':>7}")
+            for cond, trait, c in cells:
+                per_q = collections.defaultdict(dict)  # question -> {N: d rnd}
+                for g in gs:
+                    for i, s, r in vs_random(g, cond, trait, c):
+                        per_q[i][nkey(g)[1]] = s["maj"] - r["maj"]
+                both = {i: d for i, d in per_q.items() if 1 in d and len(d) > 1}
+                if not both:
+                    continue
+                multi = [mean([v for n, v in d.items() if n > 1]) - d[1] for d in both.values()]
+                slopes = [slope(sorted(d.items())) for d in both.values()]
+                say(f"{f'{cond} {trait} c={c:+g}':44}{len(both):>5}{mean([d[1] for d in both.values()]):>+8.3f}"
+                    f"{mean([mean([v for n, v in d.items() if n > 1]) for d in both.values()]):>+8.3f}"
+                    f"{mean(multi):>+9.3f}{se(multi):>7.3f}{mean(slopes):>+9.4f}{se(slopes):>7.4f}")
+
+        say("")
+        say(f"4. {ds}, N >= 2 pooled, mean per episode: how agents change answers between rounds. switch = answer "
+            f"changes per agent per round; to-grp = changes to the answer most other agents gave the round before, "
+            f"and their share of all changes; R->W / W->R from round 1 to the final round, per agent; unanim = all "
+            f"agents end on the same answer, unan-wr = and it is wrong")
+        say(f"{'cell':44}{'eps':>5}{'maj':>7}{'switch':>8}{'to-grp':>8}{'share':>7}{'R->W':>7}{'W->R':>7}"
+            f"{'unanim':>8}{'unan-wr':>9}")
+        multi_gs = [g for g in gs if nkey(g)[1] > 1]
+        order = [("none", None, None)] + sorted(steered, key=lambda k: (k[1], k[2], k[0]))
+        for cond, trait, c in order:
+            v = [e for g in multi_gs for e in runs.get((g, cond, trait, c), {}).values()]
+            if not v:
+                continue
+            sw, tg = mean([e["switch"] for e in v]), mean([e["to_group"] for e in v])
+            name = "none" if cond == "none" else f"{cond} {trait} c={c:+g}"
+            say(f"{name:44}{len(v):>5}{mean([e['maj'] for e in v]):>7.3f}{sw:>8.3f}{tg:>8.3f}"
+                f"{(tg / sw if sw else float('nan')):>7.2f}{mean([e['rw'] for e in v]):>7.3f}"
+                f"{mean([e['wr'] for e in v]):>7.3f}{mean([e['unan'] for e in v]):>8.3f}"
+                f"{mean([e['unan_wrong'] for e in v]):>9.3f}")
     if BAD:
         say("")
         say(f"Skipped {sum(BAD.values())} damaged log line(s) in {len(BAD)} episode file(s), e.g. {next(iter(BAD))}")

@@ -37,6 +37,12 @@ def test_debate_accuracy_tables(tmp_path, monkeypatch, capsys):
     assert len(row.split()) == 13  # 'all' cells carry d rnd and its SE
     row = next(line for line in text.splitlines() if line.startswith("one evil c=+1"))
     assert len(row.split()) == 11  # no random control for 'one'
+    sec3 = text.split("3. qa_debate_mc: does")[1].split("\n4. ")[0]
+    row = next(line for line in sec3.splitlines() if line.startswith("all evil c=+1"))
+    assert len(row.split()) == 10 and row.split()[3] == "3"  # 3 questions met at N = 1 and N = 3
+    sec4 = text.split("4. qa_debate_mc, N >= 2 pooled")[1].split("\n3. ")[0]
+    assert any(line.split()[:2] == ["none", "3"] for line in sec4.splitlines())  # the 3 unsteered 3p episodes
+    assert any(line.startswith("all_random evil c=+1") for line in sec4.splitlines())
 
     from scripts import debate_traces  # the same logs: steered vs unsteered traces of a lone agent
     monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "logs" / "debate_acc"), "--group", "qa_debate_mc_3p",
@@ -48,6 +54,27 @@ def test_debate_accuracy_tables(tmp_path, monkeypatch, capsys):
     for run in ("none", "all__evil_x1", "all_random__evil_x1"):
         assert any(line.split()[:1] == [run] and len(line.split()) == 9 for line in text.splitlines()), run
     assert "2. Questions unsteered got right and all__evil_x1 got wrong:" in text
+
+
+def test_switches_conformity_and_unanimity(tmp_path):
+    import json
+    from scripts.debate_accuracy import episode, slope
+    rounds = [{"p0": "A", "p1": "B", "p2": "B"},   # p0 alone on A
+              {"p0": "B", "p1": "B", "p2": "C"},   # p0 -> B (others' majority: conforms), p2 -> C (not)
+              {"p0": "C", "p1": "C", "p2": "C"}]   # p0 -> C (others B/C tied: counts), p1 -> C (others B/C tied)
+    path = tmp_path / "episode_0.jsonl"
+    with open(path, "w") as f:
+        for t, ans in enumerate(rounds):
+            info = {"answers": ans, "correct": {p: a == "A" for p, a in ans.items()},
+                    "majority_correct": float(sum(a == "A" for a in ans.values()) > 1)}
+            for p in ans:
+                f.write(json.dumps({"turn": t, "agent_id": p, "info": info}) + "\n")
+    (tmp_path / "episode_0.summary.json").write_text("{}")
+    e = episode(path)
+    assert abs(e["switch"] - 4 / 6) < 1e-12 and abs(e["to_group"] - 3 / 6) < 1e-12
+    assert e["unan"] == 1.0 and e["unan_wrong"] == 1.0  # all on C, and A is right
+    assert abs(e["rw"] - 1 / 3) < 1e-12 and e["wr"] == 0.0  # p0 was right in round 1, wrong at the end
+    assert slope([(1, 0.0), (3, -0.2), (5, -0.4)]) == -0.1
 
 
 def test_by_question_counts_each_question_once():
