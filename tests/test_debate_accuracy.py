@@ -38,6 +38,17 @@ def test_debate_accuracy_tables(tmp_path, monkeypatch, capsys):
     row = next(line for line in text.splitlines() if line.startswith("one evil c=+1"))
     assert len(row.split()) == 11  # no random control for 'one'
 
+    from scripts import debate_traces  # the same logs: steered vs unsteered traces of a lone agent
+    monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "logs" / "debate_acc"), "--group", "qa_debate_mc_3p",
+                                      "--cell", "all__evil_x1", "--cell", "all_random__evil_x1",
+                                      "--out", str(tmp_path / "traces.txt")])
+    debate_traces.main()
+    text = (tmp_path / "traces.txt").read_text(encoding="utf-8")
+    assert "1. qa_debate_mc_3p, 3 questions every run finished" in text
+    for run in ("none", "all__evil_x1", "all_random__evil_x1"):
+        assert any(line.split()[:1] == [run] and len(line.split()) == 9 for line in text.splitlines()), run
+    assert "2. Questions unsteered got right and all__evil_x1 got wrong:" in text
+
 
 def test_by_question_counts_each_question_once():
     from scripts.debate_accuracy import by_question
