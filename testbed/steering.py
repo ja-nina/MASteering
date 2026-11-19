@@ -58,10 +58,17 @@ class Steer:
     vector_path: Optional[str]    # absolute path to a {"dir": vector} file
     label: str                    # human-readable, e.g. "evil@L16x2.5", "prompt(evil)"
     persona: Optional[str] = None  # put before the system prompt; None: no prompt persona
+    from_turn: int = 0            # unsteered (no vector, no persona) on turns before this one
 
     def to_log(self) -> dict:
-        return {"label": self.label, "layer": self.layer, "coeff": self.coeff, "vector_path": self.vector_path,
-                "persona": self.persona}
+        out = {"label": self.label, "layer": self.layer, "coeff": self.coeff, "vector_path": self.vector_path,
+               "persona": self.persona}
+        if self.from_turn:
+            out["from_turn"] = self.from_turn
+        return out
+
+    def active(self, turn: int) -> bool:
+        return turn >= self.from_turn
 
 
 def random_control(vector: torch.Tensor, seed: int) -> torch.Tensor:
@@ -171,6 +178,7 @@ class SteerGroup:
     random_control: bool = False
     via: str = "vector"           # vector | prompt | both
     roleplay: bool = False
+    from_turn: int = 0            # steer from this turn on (0: every turn; qa_debate: 1 = rounds 2+)
 
     @classmethod
     def from_dict(cls, d: dict) -> "SteerGroup":
@@ -195,6 +203,8 @@ class SteerGroup:
             raise ValueError("select: fraction needs `fraction` in (0, 1]")
         if group.select == "count" and not (group.count or 0) > 0:
             raise ValueError("select: count needs `count` > 0")
+        if not isinstance(group.from_turn, int) or group.from_turn < 0:
+            raise ValueError(f"from_turn must be an integer >= 0, got {group.from_turn!r}")
         if group.team not in (None, "good", "evil"):
             raise ValueError(f"team must be good | evil, got {group.team!r}")
         return group
@@ -208,14 +218,15 @@ class SteerGroup:
                                  for t, w in self.traits.items() if w)
             labels.append(f"prompt({'' if self.coefficient >= 0 else '-'}{mix})")
         if self.via == "prompt":
-            return Steer(layer=None, coeff=0.0, vector_path=None, label=labels[0], persona=persona)
+            return Steer(layer=None, coeff=0.0, vector_path=None, label=labels[0], persona=persona,
+                         from_turn=self.from_turn)
         layer = self.layer
         if layer == "auto":
             layer = store.best_layer(max(self.traits, key=lambda t: abs(self.traits[t])))
         layer = int(layer)
         labels.append(f"{'random(' + mix + ')' if self.random_control else mix}@L{layer}x{self.coefficient:g}")
         return Steer(layer=layer, coeff=self.coefficient, label="+".join(labels), persona=persona,
-                     vector_path=store.steer_file(self.traits, layer, self.random_control))
+                     vector_path=store.steer_file(self.traits, layer, self.random_control), from_turn=self.from_turn)
 
     def pool(self, env) -> List[str]:
         ids = list(env.agent_ids())

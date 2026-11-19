@@ -1,0 +1,48 @@
+# Gentler steering in the accuracy debate (2026-11-19), 2B, SuperGPQA hard. debate_acc showed that steering every
+# turn costs accuracy mostly because each agent reasons worse (shorter, less self-checking; debate_traces.py), not
+# because of the debate, so any social effect of a persona is buried under that.
+#   A. 'late': every agent steered from round 2 on only (from_turn: 1, testbed/steering.py). Round 1 is solved
+#      unsteered; the persona acts only when agents read each other and revise. late_random is its control (a
+#      random direction of the same size, also from round 2 on).
+#   C. c = +-0.5: all / all_random had only 50 questions; now 200, like |c| = 1 (debate_acc_more).
+# Every trait (not picked by the result). N = 1 (rounds 2-3 are self-revision only) and N = 3.
+# Logs into debate_acc's dirs (log_name): none, and all / all_random at |c| = 1, already have their 200 questions,
+# so only late / late_random and the c = +-0.5 top-up are played. debate_accuracy.py on debate_acc's logs then
+# compares late with late_random (d rnd) and with none.
+#   1. python scripts/make_configs.py config/sweeps/debate_late.yaml --model qwen3.5-2b
+#   2. bash scripts/slurm/submit_sweep.sh config/runs/debate_late_qwen3.5-2b 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G
+name: debate_late
+log_name: debate_acc
+model: qwen3.5-9b
+episodes: 200
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+models:
+  qwen3.5-2b:
+    vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out/persona/qwen3.5-2b/bf16
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]
+coefficients: [-1, -0.5, 0.5, 1]
+
+conditions:
+  none: null
+  all: {select: all}
+  all_random: {select: all, random_control: true}
+  late: {select: all, from_turn: 1}
+  late_random: {select: all, random_control: true, from_turn: 1}
+
+games:
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1, 3], env_kwargs: {dataset: supergpqa, num_rounds: 3}}

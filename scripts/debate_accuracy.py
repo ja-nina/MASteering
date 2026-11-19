@@ -14,8 +14,9 @@
    does not include it). Two remedies: --extra-baseline adds the unsteered runs of another sweep with the same game
    groups and questions (e.g. a pilot) as more samples per question, averaged; and for 'all' cells, 'd rnd' is the
    majority accuracy minus that of all_random at the same trait and coefficient (a random direction of the same
-   size, on the same questions), which needs no unsteered baseline at all.
-3. Per dataset, for 'all' cells: does d rnd grow with the number of agents (a debate effect) or stay flat (each
+   size, on the same questions), which needs no unsteered baseline at all. Any condition X with an X_random in
+   the logs gets the same (e.g. late / late_random: steered from round 2 on, config/sweeps/debate_late.yaml).
+3. Per dataset, for cells with a random control: does d rnd grow with the number of agents (a debate effect) or stay flat (each
    agent reasons worse, debate neither fixes nor adds to it)? Per question: d rnd at N >= 2 minus at N = 1, and the
    slope of d rnd over N; mean +- SE over questions.
 4. Per dataset, N >= 2 pooled: how often agents change answers between rounds, how many changes go to the answer
@@ -203,10 +204,10 @@ def main():
         eps, b = runs.get((g, cond, trait, c), {}), base.get(g, {})
         return [(i, eps[i], b[i]) for i in sorted(eps) if i in b]
 
-    def vs_random(g, cond, trait, c):  # 'all' only: all_random is its control (every agent, same size)
-        if cond != "all":
+    def vs_random(g, cond, trait, c):  # X's control is X_random (every agent, same size), if the sweep has it
+        if cond.endswith("_random") or not any(k[1] == f"{cond}_random" for k in runs):
             return []
-        eps, r = runs.get((g, cond, trait, c), {}), runs.get((g, "all_random", trait, c), {})
+        eps, r = runs.get((g, cond, trait, c), {}), runs.get((g, f"{cond}_random", trait, c), {})
         return [(i, eps[i], r[i]) for i in sorted(eps) if i in r]
 
     steered = sorted({k[1:] for k in runs if k[1] != "none"}, key=lambda k: (k[0], k[1], k[2]))
@@ -222,10 +223,10 @@ def main():
                      f"   {g}: steered minus unsteered")
     for ds in sorted({nkey(g)[0] for g in groups}):
         gs = [g for g in groups if nkey(g)[0] == ds]
-        cells = [k for k in steered if k[0] == "all"]
+        cells = [k for k in steered if not k[0].endswith("_random") and any(q[1] == f"{k[0]}_random" for q in runs)]
         if cells and any(nkey(g)[1] > 1 for g in gs):
             say("")
-            say(f"3. {ds}: does the 'all' cells' gap to all_random (d rnd) grow with the number of agents? Per question: "
+            say(f"3. {ds}: does the gap of 'all' (and 'late') cells to their random control (d rnd) grow with the number of agents? Per question: "
                 f"the least-squares slope of d rnd over N, and d rnd at N >= 2 (mean over those N) minus at N = 1; mean "
                 f"+- SE over questions with both")
             say(f"{'cell':44}{'qs':>5}{'N=1':>8}{'N>=2':>8}{'multi-1':>9}{'+-SE':>7}{'slope/N':>9}{'+-SE':>7}")

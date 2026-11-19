@@ -90,11 +90,16 @@ class EpisodeRun:
     def _context(self):
         return getattr(self.env, "context", None)
 
+    def _steer(self, agent_id):
+        """The agent's steering on the current turn: None before its group's from_turn."""
+        steer = self.steers.get(agent_id)
+        return steer if steer is not None and steer.active(self.turn) else None
+
     def requests(self) -> List[TurnRequest]:
         if not self.waiting and not self.done:
             for agent_id, raw_obs in self.env.pending():
                 system = self.renderer.system_prompt(agent_id, raw_obs)
-                steer = self.steers.get(agent_id)
+                steer = self._steer(agent_id)
                 if steer is not None and steer.persona:
                     system = f"{steer.persona}\n\n{system}"
                 user, images = observe(self.renderer, self.job.observation, raw_obs, agent_id, self._context())
@@ -106,7 +111,7 @@ class EpisodeRun:
                             system=st["system"], user=st["user"],
                             max_tokens=CONTINUE_TOKENS if st["continuation"] else self.job.max_tokens,
                             seed=stable_seed(self.job.run_id, self.job.episode, self.turn, aid, st["attempt"]),
-                            steer=self.steers.get(aid), images=st["images"], continuation=st["continuation"])
+                            steer=self._steer(aid), images=st["images"], continuation=st["continuation"])
                 for aid, st in self.waiting.items() if st["record"] is None]
 
     def deliver(self, results: Dict[tuple, TurnResult]) -> List[dict]:
@@ -151,7 +156,7 @@ class EpisodeRun:
             self.total_rewards[aid] = self.total_rewards.get(aid, 0.0) + float(r)
         self._collect_eliminations(step.info)
         for aid, st in self.waiting.items():
-            rec, res, steer = st["record"], st["record"]["result"], self.steers.get(aid)
+            rec, res, steer = st["record"], st["record"]["result"], self._steer(aid)
             self.logger.log_step(
                 game=self.job.game, turn=self.turn, agent_id=aid, system_prompt=st["system"],
                 user_prompt=st["user"], completion=res.text, parsed_action=rec["action"],

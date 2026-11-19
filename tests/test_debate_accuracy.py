@@ -82,3 +82,34 @@ def test_by_question_counts_each_question_once():
     # question 0 met at three N (all +1), question 1 once (-1): per question +1 and -1, so mean 0, not +0.5
     m, s = by_question([(0, 1.0), (0, 1.0), (0, 1.0), (1, -1.0)])
     assert m == 0.0 and abs(s - 1.0) < 1e-12  # SE over 2 questions: sd sqrt(2) / sqrt(2)
+
+
+def test_late_steering_starts_in_round_two(tmp_path, monkeypatch):
+    """debate_late's 'late' condition: no vector and no persona in round 1, the trait's vector from round 2 on;
+    the analysis pairs late with late_random."""
+    import json
+    monkeypatch.setenv("PVF_OUT", str(_pvf(tmp_path)))
+    sweep = yaml.safe_load((ROOT / "config/sweeps/debate_late.yaml").read_text(encoding="utf-8"))
+    sweep.update(episodes=2, traits=["evil"], coefficients=[1], logging_dir=str(tmp_path / "logs"), models={})
+    sweep["games"]["qa_debate_hard"].update(players=[1, 3], env_kwargs={"dataset": "mmlu_pro", "num_rounds": 3})
+    (tmp_path / "s.yaml").write_text(yaml.safe_dump(sweep))
+    make_configs([str(tmp_path / "s.yaml"), "--out", str(tmp_path / "runs")])
+    assert run_games.main(["--config-dir", str(tmp_path / "runs")], open_engines=fake_open_engines()) == 0
+    run = tmp_path / "logs" / "debate_acc" / "qa_debate_hard_3p" / "qa_debate_hard_3p__late__evil_x1"
+    recs = [json.loads(line) for f in sorted(run.glob("episode_*.jsonl")) for line in open(f, encoding="utf-8")]
+    assert {r["turn"] for r in recs} == {0, 1, 2}
+    assert all(r["steering"] is None for r in recs if r["turn"] == 0)
+    later = [r["steering"] for r in recs if r["turn"] > 0]
+    assert later and all(s and s["from_turn"] == 1 and s["coeff"] == 1 and s["layer"] is not None for s in later)
+    full = tmp_path / "logs" / "debate_acc" / "qa_debate_hard_3p" / "qa_debate_hard_3p__all__evil_x1"
+    steers = [json.loads(line)["steering"] for f in full.glob("episode_*.jsonl") for line in open(f, encoding="utf-8")]
+    assert steers and all(s and "from_turn" not in s for s in steers)  # 'all': every turn, logged as before
+
+    from scripts import debate_accuracy
+    monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "logs" / "debate_acc"), "--out", str(tmp_path / "acc.txt")])
+    debate_accuracy.main()
+    text = (tmp_path / "acc.txt").read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("late evil c=+1"))
+    assert len(row.split()) == 13  # late carries d rnd against late_random, as 'all' does against all_random
+    sec3 = text.split("\n3. ")[1].split("\n4. ")[0]
+    assert any(line.startswith("late evil c=+1") for line in sec3.splitlines())
