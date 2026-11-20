@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 
 BAD = collections.Counter()  # episode log -> damaged lines skipped
-RUN = re.compile(r"^(?P<group>.+?)__(?P<cond>[a-z_]+?)(?:__(?P<trait>[a-z]+)_x(?P<c>-?\d+(?:\.\d+)?))?$")
+RUN = re.compile(r"^(?P<group>.+?)__(?P<cond>[a-z0-9_]+?)(?:__(?P<trait>[a-z]+)_x(?P<c>-?\d+(?:\.\d+)?))?$")
 
 
 def episode(path: Path):

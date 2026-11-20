@@ -113,3 +113,33 @@ def test_late_steering_starts_in_round_two(tmp_path, monkeypatch):
     assert len(row.split()) == 13  # late carries d rnd against late_random, as 'all' does against all_random
     sec3 = text.split("\n3. ")[1].split("\n4. ")[0]
     assert any(line.startswith("late evil c=+1") for line in sec3.splitlines())
+
+
+def test_fixed_layer_sweep_steers_at_that_layer(tmp_path, monkeypatch):
+    """debate_l12: every trait at layer 12 (here 2, the fake vectors have 3), not its auto layer (evil's is 1);
+    the analysis pairs l12 with l12_random."""
+    import json
+    monkeypatch.setenv("PVF_OUT", str(_pvf(tmp_path)))
+    sweep = yaml.safe_load((ROOT / "config/sweeps/debate_l12.yaml").read_text(encoding="utf-8"))
+    assert sweep["coefficients"] == [-0.5, 0.5]
+    assert {k: (v or {}).get("layer") for k, v in sweep["conditions"].items()} == {"none": None, "l12": 12,
+                                                                                    "l12_random": 12}
+    for v in sweep["conditions"].values():
+        if v:
+            v["layer"] = 2
+    sweep.update(episodes=2, traits=["evil"], logging_dir=str(tmp_path / "logs"), models={})
+    sweep["games"]["qa_debate_hard"].update(players=[1, 3], env_kwargs={"dataset": "mmlu_pro", "num_rounds": 3})
+    (tmp_path / "s.yaml").write_text(yaml.safe_dump(sweep))
+    make_configs([str(tmp_path / "s.yaml"), "--out", str(tmp_path / "runs")])
+    assert run_games.main(["--config-dir", str(tmp_path / "runs")], open_engines=fake_open_engines()) == 0
+    for cond in ("l12", "l12_random"):
+        run = tmp_path / "logs" / "debate_acc" / "qa_debate_hard_3p" / f"qa_debate_hard_3p__{cond}__evil_x0.5"
+        steers = [json.loads(line)["steering"] for f in run.glob("episode_*.jsonl") for line in open(f, encoding="utf-8")]
+        assert steers and all(s and s["layer"] == 2 and s["coeff"] == 0.5 for s in steers), cond
+
+    from scripts import debate_accuracy
+    monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "logs" / "debate_acc"), "--out", str(tmp_path / "acc.txt")])
+    debate_accuracy.main()
+    text = (tmp_path / "acc.txt").read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("l12 evil c=+0.5"))
+    assert len(row.split()) == 13  # d rnd against l12_random

@@ -1,0 +1,45 @@
+# Every trait at layer 12, c = +-0.5, in the accuracy debate (2026-11-20), 2B, SuperGPQA hard. The PersVecFast
+# 2B dense sweep (0, +-0.5, 1.25, 2.5 at L6 / L12 / L17, judge + MMLU) put L12 at 0.5 first for every trait: a
+# clear trait change (evil +28, sarcastic +37, assertive +39, sycophantic +21, opportunistic +16 judge points
+# over unsteered) and in the other direction (under the eliciting prompt) the most suppression, with MMLU and
+# coherence about unchanged. At 1.25 L12 breaks (coherence 40-65, MMLU -4 to -7), and L6 at 0.5 barely
+# moves sycophantic / opportunistic. The 'all' runs use each trait's auto layer (the largest gain at 2.5,
+# e.g. assertive L6), so this fixes the layer instead.
+# l12_random: a random direction of the same size at L12. N = 1 (the lone agent: does L12 at 0.5 still hurt
+# reasoning?) and N = 3. Logs into debate_acc's dirs (log_name), so 'none' (200 questions) is shared and not
+# replayed; debate_accuracy.py pairs l12 with l12_random (d rnd).
+#   1. python scripts/make_configs.py config/sweeps/debate_l12.yaml --model qwen3.5-2b
+#   2. bash scripts/slurm/submit_sweep.sh config/runs/debate_l12_qwen3.5-2b 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G
+name: debate_l12
+log_name: debate_acc
+model: qwen3.5-9b
+episodes: 200
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+models:
+  qwen3.5-2b:
+    vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out/persona/qwen3.5-2b/bf16
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]
+coefficients: [-0.5, 0.5]
+
+conditions:
+  none: null
+  l12: {select: all, layer: 12}
+  l12_random: {select: all, layer: 12, random_control: true}
+
+games:
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1, 3], env_kwargs: {dataset: supergpqa, num_rounds: 3}}
