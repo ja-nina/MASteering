@@ -273,3 +273,15 @@ def test_steer_engine_submit_poll_matches_generate():
     assert [r.key for r in got] == [("a",), ("b",)]
     assert got[1].text == "so far" + "ok" and got[1].n_continued == 2 and got[1].token_ids[:2] == [0, 1]
     assert engine.poll() == []
+
+
+def test_phase_and_target_reach_vllm_hook():
+    llm = _SteerLLM()
+    engine = SteerEngine(llm, SPEC, _Tok(), "/zero.pt", {}, max_model_len=400)
+    steers = [Steer(layer=12, coeff=1.0, vector_path="/v.pt", label="x", phase="prefill"),
+              Steer(layer=12, coeff=-0.5, vector_path="/t.pt", label="y", method="target", phase="decode")]
+    engine.generate([TurnRequest((i,), "sys", "q", seed=i, steer=s, max_tokens=5) for i, s in enumerate(steers)])
+    params = llm.calls[0][1]
+    assert params[0].extra_args["steer"] == {"method": "add_vector", "coefficient": 1.0, "optimal_layer": 12,
+                                             "vector_path": "/v.pt", "phase": "prefill"}
+    assert params[1].extra_args["steer"]["method"] == "adjust_rs" and params[1].extra_args["steer"]["phase"] == "decode"

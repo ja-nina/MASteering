@@ -1,0 +1,62 @@
+# Pilots: steering without the reasoning loss (2026-11-20), 2B, SuperGPQA hard, a lone agent (N = 1), 200 questions.
+# Steering every token costs accuracy because each agent reasons less (shorter answers, less self-checking:
+# debate_traces.py). Three ways to keep the persona and lose less, each against its own random control (the same
+# treatment with a random direction of the vector's size), all at layer 12, next to ordinary steering:
+#   l12        ordinary steering, c = +-1 (debate_l12 has +-0.5 in the same dirs)
+#   pre        prompt-only: the vector acts while the model reads the prompt, its own tokens are unsteered
+#              (vLLM-Hook steering.phase: prefill; PrOSV, arXiv 2605.05983; SKOP, ICML 2026)
+#   minus      the vector minus its component along careful-reasoning (a PersVecFast trait: careful step-by-step
+#              answers vs quick unchecked ones on SuperGPQA questions 300-339), rescaled to its norm: steering
+#              without the part that points towards rushing (COAST, arXiv 2605.01167; ASC, arXiv 2507.04742)
+#   target     steer to a level, not by an amount: every generated token's projection on the vector is set to a
+#              target (vLLM-Hook adjust_rs). c = +1: the trait's positive extraction answers' mean, -1: the negative
+#              ones', 0: halfway (a clamp with no push: the control for clamping itself). Generated tokens only
+#              (phase: decode), so the prompt's first tokens, whose norms are large, are not moved (StTP, arXiv
+#              2604.08169)
+# Traits: the four whose steering hurt most (assertive +1, sycophantic +1, opportunistic -1, empathy -1), both signs.
+# 'minus' needs careful-reasoning's vector in vectors_dir first (PersVecFast, data/persona_vectors/careful-reasoning.json):
+#   PVF_STAGES="contrastive refusal fallback vectors" sbatch slurm/run_model.sbatch qwen3.5-2b \
+#     --out /scratch/inf0/user/nzukowsk/PersVecFast/out --traits Careful-Reasoning
+# Logs into debate_acc's dirs (log_name): 'none' (200 questions) is shared.
+#   1. python scripts/make_configs.py config/sweeps/debate_fix.yaml --model qwen3.5-2b
+#   2. bash scripts/slurm/submit_sweep.sh config/runs/debate_fix_qwen3.5-2b 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G
+name: debate_fix
+log_name: debate_acc
+model: qwen3.5-9b
+episodes: 200
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 64
+  max_model_len: 32768
+  max_images: 2
+  steer:   {gpus: "0", memory: 0.85}
+  monitor: {gpus: "1", memory: 0.75}
+
+models:
+  qwen3.5-2b:
+    vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out/persona/qwen3.5-2b/bf16
+    engine: {concurrent_episodes: 128, aperture_gib: 4,
+             steer: {gpus: "0", memory: 0.35}, monitor: {gpus: "0", memory: 0.4}}
+
+traits: [assertive, sycophantic, opportunistic, empathy]
+coefficients: [-1, 1]
+
+conditions:
+  none: null
+  l12: {select: all, layer: 12}
+  l12_random: {select: all, layer: 12, random_control: true}
+  pre: {select: all, layer: 12, phase: prefill}
+  pre_random: {select: all, layer: 12, phase: prefill, random_control: true}
+  minus: {select: all, layer: 12, project_out: careful-reasoning}
+  minus_random: {select: all, layer: 12, project_out: careful-reasoning, random_control: true}
+  target: {select: all, layer: 12, method: target, phase: decode, coefficients: [-1, -0.5, 0, 0.5, 1]}
+  target_random: {select: all, layer: 12, method: target, phase: decode, random_control: true,
+                  coefficients: [-1, -0.5, 0, 0.5, 1]}
+
+games:
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1], env_kwargs: {dataset: supergpqa, num_rounds: 3}}

@@ -28,6 +28,17 @@ and gives them `trait` (or a weighted mix `traits`), `coefficient` and `layer`
 (an int, or "auto" = the trait's best layer in its PersVecFast sweep).
 `random_control: true` swaps the vector for a random direction of the same norm.
 `roleplay: true` wraps prompt personas in PersVecFast's method-actor framing.
+Vector options (defaults as above; logged only when set):
+    phase: prefill | decode       steer only while reading the prompt / only the generated tokens (vLLM-Hook
+                                  steering.phase; default both)
+    method: target                vLLM-Hook adjust_rs: each steered token's projection on the unit vector is set to
+                                  a target, h += (target - h . v_hat) v_hat, instead of h += coeff * v. The
+                                  coefficient sets the target: m + coeff * |v| / 2, m the projection of the midpoint
+                                  between the trait's positive and negative extraction answers (<trait>_raw.pt), so
+                                  +1 = the positive answers' mean, -1 = the negative ones', 0 = halfway
+    project_out: <trait>          remove the vector's component along that trait's vector at the same layer, then
+                                  rescale to the original norm (e.g. careful-reasoning: steer without the part that
+                                  points towards quick answers); the random control is projected the same way
 """
 from __future__ import annotations
 
@@ -59,12 +70,18 @@ class Steer:
     label: str                    # human-readable, e.g. "evil@L16x2.5", "prompt(evil)"
     persona: Optional[str] = None  # put before the system prompt; None: no prompt persona
     from_turn: int = 0            # unsteered (no vector, no persona) on turns before this one
+    phase: str = "both"           # both | prefill | decode (vLLM-Hook steering.phase)
+    method: str = "add"           # add (add_vector) | target (adjust_rs; vector_path holds a unit dir + avg_proj)
 
     def to_log(self) -> dict:
         out = {"label": self.label, "layer": self.layer, "coeff": self.coeff, "vector_path": self.vector_path,
                "persona": self.persona}
         if self.from_turn:
             out["from_turn"] = self.from_turn
+        if self.phase != "both":
+            out["phase"] = self.phase
+        if self.method != "add":
+            out["method"] = self.method
         return out
 
     def active(self, turn: int) -> bool:
@@ -146,12 +163,25 @@ class VectorStore:
             raise ValueError(f"{trait}: no sweep_scores in {self.dir / slugify(trait)}.json; set `layer:` explicitly")
         return int(max(sweep, key=lambda l: delta(sweep[l])))
 
-    def steer_file(self, traits: Dict[str, float], layer: int, random_ctrl: bool = False) -> str:
-        """Path of a {"dir": vector} file for this trait mix at this layer, writing it if needed."""
+    def midpoint(self, trait: str, layer: int) -> torch.Tensor:
+        """Mean of the trait's positive and negative extraction answers' residuals at this layer (<trait>_raw.pt)."""
+        path = self.dir / f"{slugify(trait)}_raw.pt"
+        if not retry_io(path.exists):
+            raise FileNotFoundError(f"method: target needs {path} (PersVecFast's per-answer activations)")
+        raw = retry_io(torch.load, path, map_location="cpu")
+        pos, neg = raw["positive"][layer]["residual"].float(), raw["negative"][layer]["residual"].float()
+        return (pos.mean(0) + neg.mean(0)) / 2
+
+    def steer_file(self, traits: Dict[str, float], layer: int, random_ctrl: bool = False,
+                   project_out: Optional[str] = None, target: Optional[float] = None) -> str:
+        """Path of a {"dir": vector} file for this trait mix at this layer, writing it if needed. project_out: minus
+        the component along that trait's vector, rescaled to the norm before. target: a {"dir": unit vector,
+        "avg_proj": midpoint projection + target * |v| / 2} file for vLLM-Hook's adjust_rs."""
         slugs = {slugify(t): float(w) for t, w in traits.items()}
         name = "+".join(f"{s}" if w == 1.0 else f"{s}{w:g}" for s, w in sorted(slugs.items()))
-        suffix = "_random" if random_ctrl else ""
-        if len(slugs) == 1 and next(iter(slugs.values())) == 1.0:
+        suffix = ("_random" if random_ctrl else "") + (f"_minus-{slugify(project_out)}" if project_out else "") + \
+                 (f"_target{target:g}" if target is not None else "")
+        if len(slugs) == 1 and next(iter(slugs.values())) == 1.0 and not project_out and target is None:
             exported = self.dir / "vllm_hook" / f"{name}_L{layer}{suffix}.pt"
             if retry_io(exported.exists):
                 return str(exported.resolve())
@@ -160,7 +190,20 @@ class VectorStore:
             vector = sum(w * self.vectors(s)[layer] for s, w in slugs.items())
             if random_ctrl:
                 vector = random_control(vector, RANDOM_CONTROL_SEED + layer)
-            save_pt(path, {"dir": vector.clone()})
+            if project_out:
+                u = self.vectors(project_out)[layer]
+                u = u / u.norm()
+                norm = vector.norm()
+                vector = vector - (vector @ u) * u
+                vector = vector / vector.norm() * norm
+            if target is None:
+                save_pt(path, {"dir": vector.clone()})
+            else:
+                if len(slugs) != 1:
+                    raise ValueError("method: target takes one trait")
+                unit = vector / vector.norm()
+                mid = float(self.midpoint(next(iter(slugs)), layer) @ unit)
+                save_pt(path, {"dir": unit.clone(), "avg_proj": mid + target * float(vector.norm()) / 2})
         return str(path)
 
 
@@ -179,6 +222,9 @@ class SteerGroup:
     via: str = "vector"           # vector | prompt | both
     roleplay: bool = False
     from_turn: int = 0            # steer from this turn on (0: every turn; qa_debate: 1 = rounds 2+)
+    phase: str = "both"           # both | prefill | decode
+    method: str = "add"           # add | target (see the module docstring)
+    project_out: Optional[str] = None  # a trait whose direction is removed from the vector
 
     @classmethod
     def from_dict(cls, d: dict) -> "SteerGroup":
@@ -203,6 +249,12 @@ class SteerGroup:
             raise ValueError("select: fraction needs `fraction` in (0, 1]")
         if group.select == "count" and not (group.count or 0) > 0:
             raise ValueError("select: count needs `count` > 0")
+        if group.phase not in ("both", "prefill", "decode"):
+            raise ValueError(f"phase must be both | prefill | decode, got {group.phase!r}")
+        if group.method not in ("add", "target"):
+            raise ValueError(f"method must be add | target, got {group.method!r}")
+        if group.via == "prompt" and (group.phase != "both" or group.method != "add" or group.project_out):
+            raise ValueError("phase / method / project_out need a vector (via: vector | both)")
         if not isinstance(group.from_turn, int) or group.from_turn < 0:
             raise ValueError(f"from_turn must be an integer >= 0, got {group.from_turn!r}")
         if group.team not in (None, "good", "evil"):
@@ -224,9 +276,15 @@ class SteerGroup:
         if layer == "auto":
             layer = store.best_layer(max(self.traits, key=lambda t: abs(self.traits[t])))
         layer = int(layer)
-        labels.append(f"{'random(' + mix + ')' if self.random_control else mix}@L{layer}x{self.coefficient:g}")
+        options = [o for o in (self.phase if self.phase != "both" else None,
+                               "target" if self.method == "target" else None,
+                               f"-{self.project_out}" if self.project_out else None) if o]
+        labels.append(f"{'random(' + mix + ')' if self.random_control else mix}@L{layer}x{self.coefficient:g}"
+                      + (f"[{','.join(options)}]" if options else ""))
+        path = store.steer_file(self.traits, layer, self.random_control, self.project_out,
+                                self.coefficient if self.method == "target" else None)
         return Steer(layer=layer, coeff=self.coefficient, label="+".join(labels), persona=persona,
-                     vector_path=store.steer_file(self.traits, layer, self.random_control), from_turn=self.from_turn)
+                     vector_path=path, from_turn=self.from_turn, phase=self.phase, method=self.method)
 
     def pool(self, env) -> List[str]:
         ids = list(env.agent_ids())

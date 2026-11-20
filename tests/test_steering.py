@@ -124,3 +124,43 @@ def test_overlapping_groups_are_rejected(store):
                                      {"agents": [0], "trait": "empathy", "coefficient": 1}], store)
     with pytest.raises(ValueError, match="two steering groups"):
         plan.assign(_gbs(), 0)
+
+
+def test_project_out_removes_that_direction_and_keeps_the_norm(store):
+    v, u = store.vectors("evil")[2], store.vectors("sarcastic")[2]
+    for random_ctrl in (False, True):
+        w = torch.load(store.steer_file({"evil": 1.0}, 2, random_ctrl, project_out="sarcastic"))["dir"]
+        assert abs(float(w @ u)) < 1e-4 * float(u.norm())  # nothing left along sarcastic
+        assert torch.isclose(w.norm(), v.norm())
+    plain = torch.load(store.steer_file({"evil": 1.0}, 2))["dir"]
+    assert not torch.allclose(plain, w)
+
+
+def test_target_file_holds_unit_vector_and_level(store, tmp_path):
+    hidden = store.vectors("sarcastic")[2].shape[0]
+    pos, neg = torch.randn(5, hidden) + 1.0, torch.randn(5, hidden)
+    torch.save({"positive": {2: {"residual": pos.half()}}, "negative": {2: {"residual": neg.half()}}},
+               store.dir / "sarcastic_raw.pt")
+    v = store.vectors("sarcastic")[2]
+    unit = v / v.norm()
+    mid = float(((pos.half().float().mean(0) + neg.half().float().mean(0)) / 2) @ unit)
+    for c in (-1.0, 0.0, 0.5):
+        f = torch.load(store.steer_file({"sarcastic": 1.0}, 2, target=c))
+        assert torch.isclose(f["dir"].norm(), torch.tensor(1.0))
+        assert abs(f["avg_proj"] - (mid + c * float(v.norm()) / 2)) < 1e-4
+    r = torch.load(store.steer_file({"sarcastic": 1.0}, 2, random_ctrl=True, target=1.0))
+    assert torch.isclose(r["dir"].norm(), torch.tensor(1.0)) and not torch.allclose(r["dir"], unit)
+    with pytest.raises(FileNotFoundError):
+        store.steer_file({"empathy": 1.0}, 2, target=1.0)  # no empathy_raw.pt
+
+
+def test_vector_options_are_validated_labelled_and_logged_only_when_set(store):
+    for bad in ({"phase": "late"}, {"method": "scale"}, {"via": "prompt", "phase": "prefill"}):
+        with pytest.raises(ValueError):
+            SteerGroup.from_dict({"trait": "evil", "coefficient": 1, **bad})
+    plain = SteerGroup.from_dict({"trait": "evil", "coefficient": 1, "layer": 2}).resolve(store)
+    assert set(plain.to_log()) == {"label", "layer", "coeff", "vector_path", "persona"}  # as before
+    pre = SteerGroup.from_dict({"trait": "evil", "coefficient": 1, "layer": 2, "phase": "prefill",
+                                "project_out": "sarcastic"}).resolve(store)
+    assert pre.label == "evil@L2x1[prefill,-sarcastic]" and pre.to_log()["phase"] == "prefill"
+    assert "method" not in pre.to_log() and "minus-sarcastic" in pre.vector_path

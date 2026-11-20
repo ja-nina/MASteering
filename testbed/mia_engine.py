@@ -86,8 +86,10 @@ class SteerEngine:
     def _steer_arg(self, steer) -> dict:
         if steer is None or steer.vector_path is None:  # unsteered, or a prompt persona only
             return {"method": "add_vector", "coefficient": 0.0, "optimal_layer": 0, "vector_path": self.zero_vector}
-        return {"method": "add_vector", "coefficient": steer.coeff, "optimal_layer": steer.layer,
-                "vector_path": steer.vector_path}
+        # method target: adjust_rs ignores the coefficient and sets the projection to the file's avg_proj
+        return {"method": "adjust_rs" if steer.method == "target" else "add_vector", "coefficient": steer.coeff,
+                "optimal_layer": steer.layer, "vector_path": steer.vector_path,
+                **({"phase": steer.phase} if steer.phase != "both" else {})}
 
     def _prepare(self, r: TurnRequest):
         """(prompt, SamplingParams, meta) for vLLM, or a finished TurnResult when the prompt leaves no room.

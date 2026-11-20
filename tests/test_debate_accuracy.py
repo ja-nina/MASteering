@@ -143,3 +143,51 @@ def test_fixed_layer_sweep_steers_at_that_layer(tmp_path, monkeypatch):
     text = (tmp_path / "acc.txt").read_text(encoding="utf-8")
     row = next(line for line in text.splitlines() if line.startswith("l12 evil c=+0.5"))
     assert len(row.split()) == 13  # d rnd against l12_random
+
+
+def test_fix_pilots_sweep(tmp_path, monkeypatch):
+    """debate_fix: prompt-only, projected and target steering next to ordinary steering, each with its random
+    control; target has its own coefficients. Layer 12 -> 2 and careful-reasoning -> sarcastic for the fake vectors."""
+    import json
+    import torch
+    pvf = _pvf(tmp_path)
+    monkeypatch.setenv("PVF_OUT", str(pvf))
+    vec = pvf / "persona" / "qwen3.5-9b" / "bf16"
+    hidden = torch.load(vec / "evil.pt")[2].shape[0]
+    torch.save({"positive": {2: {"residual": torch.ones(3, hidden).half()}},
+                "negative": {2: {"residual": torch.zeros(3, hidden).half()}}}, vec / "evil_raw.pt")
+    sweep = yaml.safe_load((ROOT / "config/sweeps/debate_fix.yaml").read_text(encoding="utf-8"))
+    assert sweep["games"]["qa_debate_hard"]["players"] == [1]
+    for v in sweep["conditions"].values():
+        if v:
+            assert v["layer"] == 12
+            v["layer"] = 2
+            if v.get("project_out") == "careful-reasoning":
+                v["project_out"] = "sarcastic"
+    sweep.update(episodes=2, traits=["evil"], logging_dir=str(tmp_path / "logs"), models={})
+    sweep["games"]["qa_debate_hard"].update(env_kwargs={"dataset": "mmlu_pro", "num_rounds": 3})
+    (tmp_path / "s.yaml").write_text(yaml.safe_dump(sweep))
+    make_configs([str(tmp_path / "s.yaml"), "--out", str(tmp_path / "runs")])
+    runs = sorted(p.stem for p in (tmp_path / "runs").rglob("*.yaml"))
+    assert len(runs) == 1 + 6 * 2 + 2 * 5  # none; l12 / pre / minus and randoms at +-1; target and random at 5
+    assert "qa_debate_hard_1p__target__evil_x0" in runs and "qa_debate_hard_1p__pre__evil_x0.5" not in runs
+    assert run_games.main(["--config-dir", str(tmp_path / "runs")], open_engines=fake_open_engines()) == 0
+    logs = tmp_path / "logs" / "debate_acc" / "qa_debate_hard_1p"
+
+    def steering(run):
+        return [json.loads(line)["steering"] for f in (logs / run).glob("episode_*.jsonl")
+                for line in open(f, encoding="utf-8")]
+    pre = steering("qa_debate_hard_1p__pre__evil_x1")
+    assert pre and all(s["phase"] == "prefill" and "method" not in s for s in pre)
+    tgt = steering("qa_debate_hard_1p__target_random__evil_x-0.5")
+    assert tgt and all(s["method"] == "target" and s["phase"] == "decode" and s["coeff"] == -0.5 for s in tgt)
+    f = torch.load(tgt[0]["vector_path"])
+    assert torch.isclose(f["dir"].norm(), torch.tensor(1.0)) and "avg_proj" in f
+    assert all("minus-sarcastic" in s["vector_path"] for s in steering("qa_debate_hard_1p__minus_random__evil_x1"))
+
+    from scripts import debate_accuracy
+    monkeypatch.setattr(sys, "argv", ["x", str(tmp_path / "logs" / "debate_acc"), "--out", str(tmp_path / "acc.txt")])
+    debate_accuracy.main()
+    text = (tmp_path / "acc.txt").read_text(encoding="utf-8")
+    for row in ("pre evil c=+1", "minus evil c=-1", "target evil c=+0", "l12 evil c=+1"):
+        assert len(next(l for l in text.splitlines() if l.startswith(row)).split()) == 13, row  # with d rnd

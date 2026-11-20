@@ -11,7 +11,8 @@ Each <game>_<players>p directory is meant to be one SLURM array (scripts/slurm/s
 its runs share an engine pair and play concurrently. A condition is a steering-group template
 (pool + selection, see testbed/steering.py) that gets each trait and coefficient filled in;
 `null` is the unsteered baseline (written once per game). Prompt-only conditions (`via: prompt`)
-get one run per coefficient sign, as a persona prompt has no strength. Conditions with `team` or `roles`
+get one run per coefficient sign, as a persona prompt has no strength. A condition's own `coefficients:` list
+replaces the sweep's for that condition. Conditions with `team` or `roles`
 are only generated for games marked `roles: true`. A game's `observation` (one mode or a list of
 text | image | both) multiplies its runs; non-text runs get an `__obs-<mode>` suffix.
 Logs go to <logging_dir>/<name>/<group>; a sweep with `log_name: <other sweep>` logs into that sweep's dirs
@@ -78,7 +79,8 @@ def expand(sweep: dict) -> dict:
                                                for c in sweep["conditions"].items()):
                 if template and ("team" in template or "roles" in template) and not game.get("roles"):
                     continue
-                coeffs = sweep["coefficients"]
+                coeffs = (template or {}).get("coefficients", sweep["coefficients"])
+                template = template and {k: v for k, v in template.items() if k != "coefficients"}
                 if template and template.get("via") == "prompt":  # a persona prompt has no strength,
                     coeffs = sorted({1 if c >= 0 else -1 for c in coeffs})  # only a sign: one run per sign
                 cells = [(None, None)] if template is None else \
