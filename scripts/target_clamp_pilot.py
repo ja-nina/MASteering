@@ -71,9 +71,21 @@ def report(path: Path):
     if not path.exists():
         return print(f"{path}: no answers yet (the job writes it once its first batch is done)")
     rows = collections.defaultdict(list)
+    seen, bad, twice = set(), 0, 0
     for line in open(path, encoding="utf-8"):
-        r = json.loads(line)
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:  # a line broken by two jobs appending at once
+            bad += 1
+            continue
+        key = (r["condition"], r["trait"], r["coef"], r["question"])
+        if key in seen:  # answered by two jobs: the first one counts
+            twice += 1
+            continue
+        seen.add(key)
         rows[(r["trait"], r["coef"], r["condition"])].append(r)
+    if bad or twice:
+        print(f"{path}: skipped {bad} unreadable lines and {twice} answers written twice")
     base = {r["question"]: r for r in rows.get(("-", 0.0, "none"), [])}
     read_keys = sorted({k.split(":")[0] for v in rows.values() for r in v for k in r if k.startswith("read_")})
     head = f"{'trait':14}{'c':>5} {'cond':11}{'qs':>4}{'acc':>7}{'d none':>8}{'+-SE':>7}{'tokens':>7}{'cut':>6}" \
