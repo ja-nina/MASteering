@@ -68,6 +68,8 @@ def stats(ps: list, n: int, target, coef: float, one_sided: bool, scale: float) 
 
 
 def report(path: Path):
+    if not path.exists():
+        return print(f"{path}: no answers yet (the job writes it once its first batch is done)")
     rows = collections.defaultdict(list)
     for line in open(path, encoding="utf-8"):
         r = json.loads(line)
