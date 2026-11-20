@@ -164,3 +164,10 @@ def test_vector_options_are_validated_labelled_and_logged_only_when_set(store):
                                 "project_out": "sarcastic"}).resolve(store)
     assert pre.label == "evil@L2x1[prefill,-sarcastic]" and pre.to_log()["phase"] == "prefill"
     assert "method" not in pre.to_log() and "minus-sarcastic" in pre.vector_path
+
+
+def test_project_out_file_follows_a_rebuilt_direction(store):
+    first = store.steer_file({"evil": 1.0}, 2, project_out="sarcastic")
+    store._vectors["sarcastic"] = {l: v.flip(0) for l, v in store.vectors("sarcastic").items()}  # rebuilt vector
+    second = store.steer_file({"evil": 1.0}, 2, project_out="sarcastic")
+    assert first != second and store.steer_file({"evil": 1.0}, 2, project_out="sarcastic") == second

@@ -179,7 +179,15 @@ class VectorStore:
         "avg_proj": midpoint projection + target * |v| / 2} file for vLLM-Hook's adjust_rs."""
         slugs = {slugify(t): float(w) for t, w in traits.items()}
         name = "+".join(f"{s}" if w == 1.0 else f"{s}{w:g}" for s, w in sorted(slugs.items()))
-        suffix = ("_random" if random_ctrl else "") + (f"_minus-{slugify(project_out)}" if project_out else "") + \
+        # project_out: the cached file's name carries a fingerprint of the removed direction, so a rebuilt
+        # <project_out>.pt gives a new file instead of reusing one made from the old vector
+        fingerprint = ""
+        if project_out:
+            import hashlib
+            u = self.vectors(project_out)[layer].float().contiguous()
+            fingerprint = "-" + hashlib.sha1(u.numpy().tobytes()).hexdigest()[:8]
+        suffix = ("_random" if random_ctrl else "") + \
+                 (f"_minus-{slugify(project_out)}{fingerprint}" if project_out else "") + \
                  (f"_target{target:g}" if target is not None else "")
         if len(slugs) == 1 and next(iter(slugs.values())) == 1.0 and not project_out and target is None:
             exported = self.dir / "vllm_hook" / f"{name}_L{layer}{suffix}.pt"
