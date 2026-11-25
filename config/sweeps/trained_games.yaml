@@ -1,0 +1,68 @@
+# main_v2's games on 2B with the trained persona vectors (PersVecTrain solo_kl10_t2048: BiPO + KL, lambda 10,
+# 2048-token KL window, layer 12) next to the extracted (source) vectors at the same layer and their random
+# controls (2026-11-25). main_v2 itself is 9B and the trained vectors exist for 2B only, so this sweep plays its own
+# 2B baseline ('none') and its own source cells: everything it compares is in its own logs, same seeds per run_id.
+# Vectors: the merged dir of scripts/export_trained_vectors.py (source traits + <trait>-kl10t2048), see
+# trained_debate.yaml step 1. Settings as main_v2 (max_tokens 15360, cutoff_feedback, 32768 context, the TextArena
+# fixes); text observation only and coefficients +-1 only (the trained vectors were checked at |c| <= 1).
+# Melting Pot left out (pixel-only, 200 steps x 7 agents: the longest episodes by far); add them back from
+# main_v2.yaml if there is GPU time.
+#   1. export (trained_debate.yaml step 1), once
+#   2. python scripts/make_configs.py config/sweeps/trained_games.yaml
+#   3. bash scripts/slurm/submit_sweep.sh config/runs/trained_games 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G --time=8:00:00
+name: trained_games
+model: qwen3.5-2b
+vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona/qwen3.5-2b/bf16
+traits_dir: /scratch/inf0/user/nzukowsk/PersVecFast/data/persona_vectors
+episodes: 20
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 200
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+image_size: 448
+monitor: {layers: auto}
+engine:
+  concurrent_episodes: 128
+  max_model_len: 32768
+  max_images: 2
+  aperture_gib: 4
+  steer:   {gpus: "0", memory: 0.35}
+  monitor: {gpus: "0", memory: 0.4}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness,
+         evil-kl10t2048, sarcastic-kl10t2048, empathy-kl10t2048, assertive-kl10t2048, sycophantic-kl10t2048,
+         opportunistic-kl10t2048, agreeableness-kl10t2048]
+coefficients: [-1, 1]
+
+conditions:
+  none: null
+  l12: {select: all, layer: 12}
+  l12_random: {select: all, layer: 12, random_control: true}
+
+games:                               # main_v2's list, text only
+  gbs:            {family: symbolic, id: gbs, players: [3, 6]}
+  gbs_picking:    {family: symbolic, id: gbs, players: [5], env_kwargs: {hide_group_size: true, feedback: directional}}
+  beauty_contest: {family: symbolic, id: beauty_contest, players: [3]}
+  harvest:        {family: symbolic, id: harvest, players: [5]}
+  werewolf:       {family: symbolic, id: werewolf, players: [8], roles: true}
+  avalon:         {family: symbolic, id: avalon, players: [6], roles: true}
+  hanabi:         {family: symbolic, id: hanabi, players: [3]}
+  tictactoe:      {family: symbolic, id: tictactoe, players: [2]}
+  connect_four:   {family: symbolic, id: connect_four, players: [2]}
+  gomoku:         {family: symbolic, id: gomoku, players: [2]}
+  mafia:               {family: textarena, id: SecretMafia-v0, players: [8], roles: true}
+  debate:              {family: textarena, id: Debate-v0, players: [2], env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
+  negotiation:         {family: textarena, id: SimpleNegotiation-v0, players: [2]}
+  truth_and_deception: {family: textarena, id: TruthAndDeception-v0, players: [2]}
+  iterated_ipd:        {family: textarena, id: IteratedPrisonersDilemma-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  iterated_ultimatum:  {family: textarena, id: IteratedUltimatumGame-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  three_player_ipd:    {family: textarena, id: ThreePlayerIPD-v0, players: [3]}
+  public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
+  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
+  liars_dice:          {family: textarena, id: LiarsDice-v0, players: [3], env_kwargs: {answer_marker: ACTION}}
+  poker:               {family: textarena, id: Poker-v0, players: [4], env_kwargs: {answer_marker: ACTION}}
+  blind_auction:       {family: textarena, id: SimpleBlindAuction-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
+  high_society:        {family: textarena, id: HighSociety-v0, players: [2]}
+  taboo:               {family: textarena, id: Taboo-v0, players: [4], env_kwargs: {strip_guess_quotes: true}}
+  three_player_gops:   {family: textarena, id: ThreePlayerGOPS-v0, players: [3]}

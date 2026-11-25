@@ -1,0 +1,47 @@
+# Trained persona vectors (PersVecTrain solo_kl10_t2048: BiPO + KL, lambda 10, 2048-token KL window; 2B, layer 12)
+# in the 2B accuracy debate, next to the extracted (source) vectors at the same layer (2026-11-25).
+# Vectors: one merged dir (scripts/export_trained_vectors.py) = every PersVecFast source trait (symlinks) + the
+# trained ones as <trait>-kl10t2048, with their norm-matched random controls. So the grid's traits are the 7 source
+# traits AND their trained twins, under the same conditions and seeds:
+#   l12        source or trained vector at L12, every agent
+#   l12_random a random direction with the norm of that vector (source or trained), L12
+# Logs into debate_acc_qwen3.5-2b (log_name): 'none' (200 questions) and every source l12 cell already played
+# (debate_l12 at +-0.5, debate_fix at +-1 for 4 traits, 1 player) count as done and are not replayed; only the
+# trained cells and the missing source +-1 cells run. Same run_ids = same seeds = paired by question.
+#   1. python scripts/export_trained_vectors.py --source /scratch/inf0/user/nzukowsk/PersVecFast/out/persona/qwen3.5-2b/bf16 \
+#        --trained /scratch/inf0/user/nzukowsk/PersVecFast/out/trained/solo_kl10_t2048/persona/qwen3.5-2b/bf16 \
+#        --out /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona/qwen3.5-2b/bf16 --suffix kl10t2048
+#   2. python scripts/make_configs.py config/sweeps/trained_debate.yaml
+#   3. bash scripts/slurm/submit_sweep.sh config/runs/trained_debate 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G
+name: trained_debate
+log_name: debate_acc_qwen3.5-2b
+model: qwen3.5-2b                    # the trained vectors exist for 2B only (layer 12)
+vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona/qwen3.5-2b/bf16
+traits_dir: /scratch/inf0/user/nzukowsk/PersVecFast/data/persona_vectors
+episodes: 200
+max_tokens: 15360
+cutoff_feedback: true
+max_turns: 10                        # 3 rounds
+max_parse_retries: 3
+logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
+monitor: {layers: auto}
+engine:                              # 2B as debate_l12 / debate_fix: both engines on one GPU
+  concurrent_episodes: 128
+  max_model_len: 32768
+  max_images: 2
+  aperture_gib: 4
+  steer:   {gpus: "0", memory: 0.35}
+  monitor: {gpus: "0", memory: 0.4}
+
+traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness,
+         evil-kl10t2048, sarcastic-kl10t2048, empathy-kl10t2048, assertive-kl10t2048, sycophantic-kl10t2048,
+         opportunistic-kl10t2048, agreeableness-kl10t2048]
+coefficients: [-1, -0.5, 0.5, 1]     # the trained vectors were checked at |c| <= 1
+
+conditions:
+  none: null
+  l12: {select: all, layer: 12}
+  l12_random: {select: all, layer: 12, random_control: true}
+
+games:
+  qa_debate_hard: {family: symbolic, id: qa_debate, players: [1, 3], env_kwargs: {dataset: supergpqa, num_rounds: 3}}
