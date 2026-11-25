@@ -1,19 +1,28 @@
-# main_v2's games on 2B with the trained persona vectors (PersVecTrain solo_kl10_t2048: BiPO + KL, lambda 10,
-# 2048-token KL window, layer 12) next to the extracted (source) vectors at the same layer and their random
-# controls (2026-11-25). main_v2 itself is 9B and the trained vectors exist for 2B only, so this sweep plays its own
-# 2B baseline ('none') and its own source cells: everything it compares is in its own logs, same seeds per run_id.
-# Vectors: the merged dir of scripts/export_trained_vectors.py (source traits + <trait>-kl10t2048), see
-# trained_debate.yaml step 1. Settings as main_v2 (max_tokens 15360, cutoff_feedback, 32768 context, the TextArena
-# fixes); text observation only and coefficients +-1 only (the trained vectors were checked at |c| <= 1).
-# Melting Pot left out (pixel-only, 200 steps x 7 agents: the longest episodes by far); add them back from
-# main_v2.yaml if there is GPU time.
-#   1. export (trained_debate.yaml step 1), once
+# main_v2 on 2B with the trained persona vectors (PersVecTrain solo_kl10_t2048: BiPO + KL, lambda 10, 2048-token KL
+# window, layer 12) next to the extracted (source) vectors at the same layer (2026-11-25). main_v2 is 9B and the
+# trained vectors exist for 2B only, so this sweep plays its own 2B baseline and source cells: everything it
+# compares is in its own logs, same seeds per run_id.
+# Same as main_v2: every condition, every observation mode, episodes 20, max_tokens 15360, cutoff_feedback,
+# max_turns 200, 32768 context, the TextArena fixes. Games: those main_v2 finished >= 80 % of
+# (scripts/progress.py --configs config/runs/main_v2 --disk, 2026-11-25); left out gbs 6p 2 %, market entry 0 %,
+# taboo 0 %, poker 18 %, werewolf 27 %, Melting Pot 0-14 %.
+# Changes from main_v2: layer 12 for every vector condition (the trained vectors' layer; main_v2 used each trait's
+# auto layer); coefficients -1..1 (the trained vectors were checked at |c| <= 1); no trustworthiness (not trained;
+# dropped from the write-up); traits = the 7 source traits + their trained twins <trait>-kl10t2048. Prompt-only
+# conditions run the source traits only (grid_traits): a twin's prompt is its source trait's, so they would repeat.
+# both_one (prompt + vector) runs both: the twin gets the source prompt + the trained vector.
+#   1. vectors (done 2026-11-25 for trained_debate) and the prompt traits_dir:
+#      python scripts/export_trained_vectors.py --traits-only --suffix kl10t2048 \
+#        --trained /scratch/inf0/user/nzukowsk/PersVecFast/out/trained/solo_kl10_t2048/persona/qwen3.5-2b/bf16 \
+#        --traits-src /scratch/inf0/user/nzukowsk/PersVecFast/data/persona_vectors \
+#        --traits-out /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona_vectors
 #   2. python scripts/make_configs.py config/sweeps/trained_games.yaml
-#   3. bash scripts/slurm/submit_sweep.sh config/runs/trained_games 400 -p gpu-l40 --gres=gpu:1 -c 10 --mem=64G --time=8:00:00
+#   3. bash scripts/slurm/submit_sweep.sh config/runs/trained_games 400 -p gpu-a40 --exclude=gpu22-a40-05,gpu22-a40-06 \
+#        --gres=gpu:1 -c 10 --mem=64G --time=8:00:00
 name: trained_games
 model: qwen3.5-2b
 vectors_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona/qwen3.5-2b/bf16
-traits_dir: /scratch/inf0/user/nzukowsk/PersVecFast/data/persona_vectors
+traits_dir: /scratch/inf0/user/nzukowsk/PersVecFast/out_games_kl10t2048/persona_vectors
 episodes: 20
 max_tokens: 15360
 cutoff_feedback: true
@@ -22,7 +31,7 @@ max_parse_retries: 3
 logging_dir: /scratch/inf0/user/nzukowsk/MASteer/logs
 image_size: 448
 monitor: {layers: auto}
-engine:
+engine:                              # main_v2's 2B override: both engines on one GPU
   concurrent_episodes: 128
   max_model_len: 32768
   max_images: 2
@@ -33,24 +42,36 @@ engine:
 traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness,
          evil-kl10t2048, sarcastic-kl10t2048, empathy-kl10t2048, assertive-kl10t2048, sycophantic-kl10t2048,
          opportunistic-kl10t2048, agreeableness-kl10t2048]
-coefficients: [-1, 1]
+coefficients: [-1, -0.5, 0.5, 1]
 
 conditions:
   none: null
-  l12: {select: all, layer: 12}
-  l12_random: {select: all, layer: 12, random_control: true}
+  one: {select: one, layer: 12}
+  half: {select: fraction, fraction: 0.5, layer: 12}
+  all: {select: all, layer: 12}
+  evil_team: {team: evil, layer: 12}
+  evil_one: {team: evil, select: one, layer: 12}
+  good_one: {team: good, select: one, layer: 12}
+  good_team: {team: good, layer: 12}
+  all_random: {select: all, layer: 12, random_control: true}
+  prompt_one: {select: one, via: prompt,
+               grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
+  prompt_all: {select: all, via: prompt,
+               grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
+  both_one: {select: one, via: both, layer: 12}
+  evil_team_prompt: {team: evil, via: prompt,
+                     grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
 
-games:                               # main_v2's list, text only
-  gbs:            {family: symbolic, id: gbs, players: [3, 6]}
+games:                               # main_v2's entries, those >= 80 % complete there
+  gbs:            {family: symbolic, id: gbs, players: [3], observation: [text, image]}
   gbs_picking:    {family: symbolic, id: gbs, players: [5], env_kwargs: {hide_group_size: true, feedback: directional}}
-  beauty_contest: {family: symbolic, id: beauty_contest, players: [3]}
-  harvest:        {family: symbolic, id: harvest, players: [5]}
-  werewolf:       {family: symbolic, id: werewolf, players: [8], roles: true}
-  avalon:         {family: symbolic, id: avalon, players: [6], roles: true}
-  hanabi:         {family: symbolic, id: hanabi, players: [3]}
-  tictactoe:      {family: symbolic, id: tictactoe, players: [2]}
-  connect_four:   {family: symbolic, id: connect_four, players: [2]}
-  gomoku:         {family: symbolic, id: gomoku, players: [2]}
+  beauty_contest: {family: symbolic, id: beauty_contest, players: [3], observation: [text, image]}
+  harvest:        {family: symbolic, id: harvest, players: [5], observation: [text, image]}
+  avalon:         {family: symbolic, id: avalon, players: [6], roles: true, observation: [text, image]}
+  hanabi:         {family: symbolic, id: hanabi, players: [3], observation: [text, image]}
+  tictactoe:      {family: symbolic, id: tictactoe, players: [2], observation: [text, image]}
+  connect_four:   {family: symbolic, id: connect_four, players: [2], observation: [text, image]}
+  gomoku:         {family: symbolic, id: gomoku, players: [2], observation: [text, image]}
   mafia:               {family: textarena, id: SecretMafia-v0, players: [8], roles: true}
   debate:              {family: textarena, id: Debate-v0, players: [2], env_kwargs: {jury_model: meta-llama/llama-3.3-70b-instruct, jury_size: 1}}
   negotiation:         {family: textarena, id: SimpleNegotiation-v0, players: [2]}
@@ -59,10 +80,7 @@ games:                               # main_v2's list, text only
   iterated_ultimatum:  {family: textarena, id: IteratedUltimatumGame-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
   three_player_ipd:    {family: textarena, id: ThreePlayerIPD-v0, players: [3]}
   public_goods:        {family: textarena, id: PublicGoodsGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
-  market_entry:        {family: textarena, id: MarketEntryGame-v0, players: [4], env_kwargs: {answer_marker: ACTION, skip_eliminated: true}}
   liars_dice:          {family: textarena, id: LiarsDice-v0, players: [3], env_kwargs: {answer_marker: ACTION}}
-  poker:               {family: textarena, id: Poker-v0, players: [4], env_kwargs: {answer_marker: ACTION}}
   blind_auction:       {family: textarena, id: SimpleBlindAuction-v0, players: [2], env_kwargs: {answer_marker: ACTION}}
   high_society:        {family: textarena, id: HighSociety-v0, players: [2]}
-  taboo:               {family: textarena, id: Taboo-v0, players: [4], env_kwargs: {strip_guess_quotes: true}}
   three_player_gops:   {family: textarena, id: ThreePlayerGOPS-v0, players: [3]}

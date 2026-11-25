@@ -107,14 +107,50 @@ def export(source: Path, trained: Path, out: Path, suffix: str, force: bool = Fa
     return manifest
 
 
+def export_traits(traits_src: Path, trained: Path, traits_out: Path, suffix: str, force: bool = False) -> list[str]:
+    """A traits_dir for prompt personas: symlinks to every PersVecFast trait definition, plus <trait>-<suffix>.json =
+    a copy of <trait>.json for each trained trait (the trained twin's persona prompt is its source trait's)."""
+    traits_src, trained, traits_out = Path(traits_src).resolve(), Path(trained).resolve(), Path(traits_out)
+    if traits_out.resolve() == traits_src or traits_src in traits_out.resolve().parents:
+        raise SystemExit(f"--traits-out {traits_out} must not be inside --traits-src")
+    if traits_out.exists():
+        if not force:
+            raise SystemExit(f"{traits_out} exists (use --force to rebuild it)")
+        shutil.rmtree(traits_out)
+    traits_out.mkdir(parents=True)
+    for p in sorted(traits_src.iterdir()):
+        if p.is_file():
+            os.symlink(p, traits_out / p.name)
+    made = []
+    for t in trained_traits(trained):
+        if not (traits_src / f"{t}.json").exists():
+            raise SystemExit(f"no trait definition {traits_src / (t + '.json')}")
+        shutil.copy2(traits_src / f"{t}.json", traits_out / f"{t}-{suffix}.json")
+        made.append(f"{t}-{suffix}")
+    return made
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", required=True, help="PersVecFast vectors dir (.../persona/<model>/bf16)")
+    ap.add_argument("--traits-src", dest="traits_src", help="PersVecFast/data/persona_vectors (with --traits-out)")
+    ap.add_argument("--traits-out", dest="traits_out", help="also write a traits_dir for prompt personas here")
+    ap.add_argument("--traits-only", action="store_true", dest="traits_only",
+                    help="only the traits_dir (an existing --out vectors dir is not touched)")
+    ap.add_argument("--source", help="PersVecFast vectors dir (.../persona/<model>/bf16)")
     ap.add_argument("--trained", required=True, help="PersVecTrain run vectors dir (.../trained/<run>/persona/<model>/bf16)")
-    ap.add_argument("--out", required=True, help="new vectors dir, ending in persona/<model>/bf16")
+    ap.add_argument("--out", help="new vectors dir, ending in persona/<model>/bf16")
     ap.add_argument("--suffix", required=True, help="trained traits become <trait>-<suffix>")
-    ap.add_argument("--force", action="store_true", help="rebuild an existing --out")
+    ap.add_argument("--force", action="store_true", help="rebuild an existing --out / --traits-out")
     a = ap.parse_args(argv)
+    if bool(a.traits_src) != bool(a.traits_out):
+        raise SystemExit("--traits-src and --traits-out go together")
+    if a.traits_out:
+        made = export_traits(Path(a.traits_src), Path(a.trained), Path(a.traits_out), a.suffix, a.force)
+        print(f"traits_dir {a.traits_out}: source definitions linked, {len(made)} trained twins: {', '.join(made)}")
+    if a.traits_only:
+        return
+    if not (a.source and a.out):
+        raise SystemExit("--source and --out are needed (or --traits-only)")
     m = export(Path(a.source), Path(a.trained), Path(a.out), a.suffix, a.force)
     print(f"linked {m['linked_source_files']} source files; trained traits:")
     for k, v in m["traits"].items():

@@ -12,7 +12,9 @@ its runs share an engine pair and play concurrently. A condition is a steering-g
 (pool + selection, see testbed/steering.py) that gets each trait and coefficient filled in;
 `null` is the unsteered baseline (written once per game). Prompt-only conditions (`via: prompt`)
 get one run per coefficient sign, as a persona prompt has no strength. A condition's own `coefficients:` list
-replaces the sweep's for that condition. Conditions with `team` or `roles`
+replaces the sweep's for that condition, and its own `grid_traits:` list (a subset of the sweep's traits) narrows
+the traits it is crossed with (e.g. prompt conditions on the source traits only, when the sweep also has trained
+twins whose prompt would be the same). Conditions with `team` or `roles`
 are only generated for games marked `roles: true`. A game's `observation` (one mode or a list of
 text | image | both) multiplies its runs; non-text runs get an `__obs-<mode>` suffix.
 Logs go to <logging_dir>/<name>/<group>; a sweep with `log_name: <other sweep>` logs into that sweep's dirs
@@ -80,11 +82,15 @@ def expand(sweep: dict) -> dict:
                 if template and ("team" in template or "roles" in template) and not game.get("roles"):
                     continue
                 coeffs = (template or {}).get("coefficients", sweep["coefficients"])
-                template = template and {k: v for k, v in template.items() if k != "coefficients"}
+                grid_traits = (template or {}).get("grid_traits", sweep.get("traits"))
+                unknown = set(grid_traits or []) - set(sweep.get("traits") or [])
+                if unknown:
+                    raise ValueError(f"condition {cond_name}: grid_traits {sorted(unknown)} are not in the sweep's traits")
+                template = template and {k: v for k, v in template.items() if k not in ("coefficients", "grid_traits")}
                 if template and template.get("via") == "prompt":  # a persona prompt has no strength,
                     coeffs = sorted({1 if c >= 0 else -1 for c in coeffs})  # only a sign: one run per sign
                 cells = [(None, None)] if template is None else \
-                    [(t, c) for t in sweep["traits"] for c in coeffs]
+                    [(t, c) for t in grid_traits for c in coeffs]
                 for trait, coeff in cells:
                     run_id = f"{group_dir}__{cond_name}" + (f"__{trait}_x{coeff:g}" if trait else "") +                         ("" if obs == "text" else f"__obs-{obs}")
                     steering = None if template is None else {**template, "trait": trait, "coefficient": coeff}

@@ -118,3 +118,20 @@ def test_max_tokens_override_gets_own_name_and_logs(tmp_path):
     with pytest.raises(ValueError, match="max_tokens"):
         load_sweep(path)
     assert load_sweep(path, max_tokens=5000)["name"] == "t_5000"
+
+
+def test_grid_traits_narrow_one_condition():
+    sweep = {**SWEEP, "conditions": {"all": {"select": "all"},
+                                     "prompt_all": {"select": "all", "via": "prompt", "grid_traits": ["evil"]}}}
+    runs = expand(sweep)
+    prompt = sorted(r for r in runs if "__prompt_all__" in r and r.startswith("gbs_3p/"))
+    assert prompt == ["gbs_3p/gbs_3p__prompt_all__evil_x1.yaml"]
+    assert "grid_traits" not in runs[prompt[0]]["steering"]
+    assert sum("__all__" in r and r.startswith("gbs_3p/") for r in runs) == 4  # both traits x 2 coefficients
+    bad = {**SWEEP, "conditions": {"p": {"select": "all", "grid_traits": ["sarcastic"]}}}
+    try:
+        expand(bad)
+    except ValueError as e:
+        assert "sarcastic" in str(e)
+    else:
+        raise AssertionError("unknown grid_traits accepted")
