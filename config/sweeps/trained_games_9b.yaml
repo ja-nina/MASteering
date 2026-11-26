@@ -4,7 +4,11 @@
 # 9b_l16ea_solo_kl10_t2048 (evil, agreeableness). Every trait at layer 16, also evil and agreeableness: main_v2's
 # auto layer put those two at 8, where the persona judge shows no steering on 9B (source and trained: evil ~5/100 at
 # c = +1, agreeableness stays ~92 at c = -1); at 16 evil reaches 70 / 58 and agreeableness drops to 55 / 53.
-# This sweep plays its own baseline and source cells (same seeds per run_id), like trained_games.
+# Reuses main_v2 (2026-11-27, to finish sooner: 8,478 runs instead of 14,071): main_v2 already played the source
+# vectors of assertive, sycophantic, opportunistic, empathy and sarcastic at layer 16 (checked in its episode
+# summaries), the prompt-only conditions (no layer) and the unsteered baseline, same settings and seeds per run_id.
+# So this sweep plays only what main_v2 lacks: the 7 trained twins and source evil / agreeableness at layer 16, plus
+# the unsteered cells (29 runs) as a check that it matches main_v2. Compare against main_v2 for the other cells.
 # Same as trained_games otherwise, except c also +-2: games (main_v2's >= 80 % complete), conditions, 20 episodes, the
 # TextArena fixes; the 9B engine of main_v2 (two GPUs per job).
 #   1. vectors + prompt traits_dir (export_trained_vectors.py takes both runs):
@@ -31,7 +35,7 @@ engine:                              # main_v2's 9B engine: steering and capture
   steer:   {gpus: "0", memory: 0.85}
   monitor: {gpus: "1", memory: 0.75}
 
-traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness,
+traits: [evil, agreeableness,          # source at layer 16 (main_v2 has them at 8 only)
          evil-kl10t2048, sarcastic-kl10t2048, empathy-kl10t2048, assertive-kl10t2048, sycophantic-kl10t2048,
          opportunistic-kl10t2048, agreeableness-kl10t2048]
 coefficients: [-2, -1, -0.5, 0.5, 1, 2]   # +-2 asked for (main_v2's ends); the vectors were checked at |c| <= 1 only
@@ -46,13 +50,7 @@ conditions:
   good_one: {team: good, select: one, layer: 16}
   good_team: {team: good, layer: 16}
   all_random: {select: all, layer: 16, random_control: true}
-  prompt_one: {select: one, via: prompt,
-               grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
-  prompt_all: {select: all, via: prompt,
-               grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
-  both_one: {select: one, via: both, layer: 16}
-  evil_team_prompt: {team: evil, via: prompt,
-                     grid_traits: [evil, sarcastic, empathy, assertive, sycophantic, opportunistic, agreeableness]}
+  both_one: {select: one, via: both, layer: 16}   # prompt-only conditions: in main_v2 (no layer)
 
 games:                               # main_v2's entries, those >= 80 % complete there
   gbs:            {family: symbolic, id: gbs, players: [3], observation: [text, image]}
