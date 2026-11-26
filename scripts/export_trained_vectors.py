@@ -54,12 +54,27 @@ def trained_layer(trained: Path, trait: str) -> int:
     return int(meta["trained"]["layer"])
 
 
-def export(source: Path, trained: Path, out: Path, suffix: str, force: bool = False) -> dict:
-    source, trained, out = Path(source).resolve(), Path(trained).resolve(), Path(out)
-    for p in (source, trained):
-        if not p.is_dir():
-            raise SystemExit(f"{p} is not a directory")
-    if out.resolve() in (source, trained) or source in out.resolve().parents or trained in out.resolve().parents:
+def _trained_dirs(trained) -> list[Path]:
+    """One run dir or several; each trait may come from one run only."""
+    dirs = [Path(t).resolve() for t in ([trained] if isinstance(trained, (str, Path)) else trained)]
+    seen: dict[str, Path] = {}
+    for d in dirs:
+        if not d.is_dir():
+            raise SystemExit(f"{d} is not a directory")
+        for t in trained_traits(d):
+            if t in seen:
+                raise SystemExit(f"trait {t} is in two trained runs: {seen[t]} and {d}")
+            seen[t] = d
+    return dirs
+
+
+def export(source: Path, trained, out: Path, suffix: str, force: bool = False) -> dict:
+    """trained: one PersVecTrain run vectors dir, or a list of them (e.g. 9B: 5 traits in one run, 2 in another)."""
+    source, out = Path(source).resolve(), Path(out)
+    if not source.is_dir():
+        raise SystemExit(f"{source} is not a directory")
+    dirs = _trained_dirs(trained)
+    if any(out.resolve() == p or p in out.resolve().parents for p in [source, *dirs]):
         raise SystemExit(f"--out {out} must not be inside --source or --trained")
     if out.exists():
         if not force:
@@ -76,12 +91,12 @@ def export(source: Path, trained: Path, out: Path, suffix: str, force: bool = Fa
         os.symlink(p, out / "vllm_hook" / p.name)
         linked += 1
 
-    traits = trained_traits(trained)
-    if not traits:
-        raise SystemExit(f"no trained traits in {trained}")
-    manifest = {"source": str(source), "trained": str(trained), "suffix": suffix, "linked_source_files": linked,
-                "traits": {}}
-    for t in traits:
+    pairs = [(d, t) for d in dirs for t in trained_traits(d)]
+    if not pairs:
+        raise SystemExit(f"no trained traits in {', '.join(map(str, dirs))}")
+    manifest = {"source": str(source), "trained": str(dirs[0]) if len(dirs) == 1 else [str(d) for d in dirs],
+                "suffix": suffix, "linked_source_files": linked, "traits": {}}
+    for trained, t in pairs:
         new = f"{t}-{suffix}"
         if (source / f"{new}.pt").exists():
             raise SystemExit(f"{new}.pt already exists in the source dir; pick another --suffix")
@@ -99,7 +114,7 @@ def export(source: Path, trained: Path, out: Path, suffix: str, force: bool = Fa
         if hook_rnd.exists():
             shutil.copy2(hook_rnd, out / "vllm_hook" / f"{new}_L{layer}_random.pt")
         manifest["traits"][new] = {
-            "from": t, "layer": layer, "trained_norm": float(v.norm()), "source_norm": float(src_v.norm()),
+            "from": t, "trained_dir": str(trained), "layer": layer, "trained_norm": float(v.norm()), "source_norm": float(src_v.norm()),
             "cos_with_source": float(v @ src_v / (v.norm() * src_v.norm())),
             "sha1": {"pt": sha(out / f"{new}.pt"), "hook": sha(out / "vllm_hook" / f"{new}_L{layer}.pt")},
             "random_control": hook_rnd.exists()}
@@ -107,10 +122,11 @@ def export(source: Path, trained: Path, out: Path, suffix: str, force: bool = Fa
     return manifest
 
 
-def export_traits(traits_src: Path, trained: Path, traits_out: Path, suffix: str, force: bool = False) -> list[str]:
+def export_traits(traits_src: Path, trained, traits_out: Path, suffix: str, force: bool = False) -> list[str]:
     """A traits_dir for prompt personas: symlinks to every PersVecFast trait definition, plus <trait>-<suffix>.json =
     a copy of <trait>.json for each trained trait (the trained twin's persona prompt is its source trait's)."""
-    traits_src, trained, traits_out = Path(traits_src).resolve(), Path(trained).resolve(), Path(traits_out)
+    traits_src, traits_out = Path(traits_src).resolve(), Path(traits_out)
+    dirs = _trained_dirs(trained)
     if traits_out.resolve() == traits_src or traits_src in traits_out.resolve().parents:
         raise SystemExit(f"--traits-out {traits_out} must not be inside --traits-src")
     if traits_out.exists():
@@ -122,7 +138,7 @@ def export_traits(traits_src: Path, trained: Path, traits_out: Path, suffix: str
         if p.is_file():
             os.symlink(p, traits_out / p.name)
     made = []
-    for t in trained_traits(trained):
+    for t in [t for d in dirs for t in trained_traits(d)]:
         if not (traits_src / f"{t}.json").exists():
             raise SystemExit(f"no trait definition {traits_src / (t + '.json')}")
         shutil.copy2(traits_src / f"{t}.json", traits_out / f"{t}-{suffix}.json")
@@ -137,7 +153,9 @@ def main(argv=None) -> None:
     ap.add_argument("--traits-only", action="store_true", dest="traits_only",
                     help="only the traits_dir (an existing --out vectors dir is not touched)")
     ap.add_argument("--source", help="PersVecFast vectors dir (.../persona/<model>/bf16)")
-    ap.add_argument("--trained", required=True, help="PersVecTrain run vectors dir (.../trained/<run>/persona/<model>/bf16)")
+    ap.add_argument("--trained", required=True, nargs="+",
+                    help="PersVecTrain run vectors dir(s) (.../trained/<run>/persona/<model>/bf16); several runs with "
+                         "different traits merge into one dir")
     ap.add_argument("--out", help="new vectors dir, ending in persona/<model>/bf16")
     ap.add_argument("--suffix", required=True, help="trained traits become <trait>-<suffix>")
     ap.add_argument("--force", action="store_true", help="rebuild an existing --out / --traits-out")
@@ -145,13 +163,13 @@ def main(argv=None) -> None:
     if bool(a.traits_src) != bool(a.traits_out):
         raise SystemExit("--traits-src and --traits-out go together")
     if a.traits_out:
-        made = export_traits(Path(a.traits_src), Path(a.trained), Path(a.traits_out), a.suffix, a.force)
+        made = export_traits(Path(a.traits_src), a.trained, Path(a.traits_out), a.suffix, a.force)
         print(f"traits_dir {a.traits_out}: source definitions linked, {len(made)} trained twins: {', '.join(made)}")
     if a.traits_only:
         return
     if not (a.source and a.out):
         raise SystemExit("--source and --out are needed (or --traits-only)")
-    m = export(Path(a.source), Path(a.trained), Path(a.out), a.suffix, a.force)
+    m = export(Path(a.source), a.trained, Path(a.out), a.suffix, a.force)
     print(f"linked {m['linked_source_files']} source files; trained traits:")
     for k, v in m["traits"].items():
         print(f"  {k:28} L{v['layer']}  |v| {v['trained_norm']:.3f} (source {v['source_norm']:.3f})  "
